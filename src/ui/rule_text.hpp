@@ -3,8 +3,7 @@
 // The rule editor's words: parsing what an operator types into its boxes, and spelling
 // rules, values, routing and follow-ups back in the words the editor shows. Pure functions
 // over `trigger` and `output` types, with no window in them, so they can be read and tested
-// on their own. Out of `rules_controller.cpp` since 2026-09-28, as an earlier review
-// suggested.
+// on their own. Out of `rules_controller.cpp` since 2026-09-28.
 
 #include "core/output/output_target.hpp"
 #include "core/trigger/generator.hpp"
@@ -28,8 +27,7 @@ std::vector<std::string_view> split(std::string_view text, std::string_view sepa
 
 /// A number typed into a box, or nothing. **Only a finite one**: `from_chars` reads "nan" and
 /// "inf" as numbers, and a duration of inf made an effect that never ended, a hue of nan was
-/// undefined behaviour in `fromHsv`, and a BPM range of nan never fired (the 2026-09-25
-/// review's L5).
+/// undefined behaviour in `fromHsv`, and a BPM range of nan never fired.
 std::optional<double> readNumber(std::string_view text) noexcept;
 
 /// A finite number as an `int32_t`, clamped to its range: converting one past it is
@@ -193,9 +191,9 @@ std::string spellEuclid(const Rule::Config& rule);
 
 // --- what a folded section says ------------------------------------------------------------
 //
-// the design: every section of the rule editor folds, and **folded it reads what it holds in one
-// line** — so a folded section still reports, as the main window's do. Each is the words the open
-// section would be read as, in the order it lays them out.
+// Every section of the rule editor folds, and **folded it reads what it holds in one line** — so
+// a folded section still reports, as the main window's do. Each is the words the open section
+// would be read as, in the order it lays them out.
 
 /// A — when: "every 4 bars, counting from the first", "onset · at most once every 250 ms",
 /// "manual (M key) · no limit"; and the rate a surface has moved it to, `rate` being the live

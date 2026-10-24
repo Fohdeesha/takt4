@@ -85,7 +85,7 @@ private:
 /// The two state spaces of the particle filter cascade and their transition models, read
 /// from an `assets/statespace/*.bin` blob written by tools/dump_statespace.py.
 ///
-/// the design: these depend only on configuration, never on audio, so they are
+/// These depend only on configuration, never on audio, so they are
 /// precomputed with madmom and shipped. Reading one opens a file and allocates; nothing
 /// here belongs on the audio thread, and nothing here changes once it is read.
 class StateSpaceModel {

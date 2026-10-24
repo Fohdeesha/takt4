@@ -28,9 +28,9 @@ namespace takt4::tracking {
 /// what tests/tracking/particle_filter_test.cpp gates on. See that script's header for
 /// where the algorithm deviates from upstream and why.
 ///
-/// Allocation happens when the filter is built or reset, never in process(): the design puts
-/// this on the inference thread, which may allocate, but the resampling step is
-/// data-dependent in cost and there is no reason to add a heap to that.
+/// Allocation happens when the filter is built or reset, never in process(): it runs on the
+/// inference thread, which may allocate, but the resampling step is data-dependent in cost and
+/// there is no reason to add a heap to that.
 class ParticleFilter final : public BeatDecoder {
 public:
     struct Options {

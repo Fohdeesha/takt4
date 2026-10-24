@@ -25,8 +25,7 @@
 #
 # **A file clang could not parse is not a clean file.** It stops at the first header it cannot
 # find and then says nothing — which this script used to count as clean, for four tests/ui
-# files every run. Such a file is listed as not checked now, and
-# the run does not end on "clean".
+# files every run. Such a file is listed as not checked now, and the run does not end on "clean".
 #
 # Exits 1 if clang reports anything, 3 if a file could not be checked, 0 only if every file
 # was checked and nothing was found.

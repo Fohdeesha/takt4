@@ -52,7 +52,7 @@ struct InputDevice {
 /// PortAudio loads every ASIO driver once at initialisation to read its channel layout
 /// and names. A single-client driver that another application holds open may refuse
 /// that, and then the interface is missing from this list rather than failing later at
-/// open (the design R2). Whether it refuses at load or at open is up to the driver.
+/// open. Whether it refuses at load or at open is up to the driver.
 std::vector<InputDevice> listInputDevices(const PortAudioSession& session);
 
 /// A device's name less the "2- " Windows puts in front of the description of a second device of

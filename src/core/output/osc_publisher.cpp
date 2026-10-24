@@ -18,7 +18,7 @@ namespace {
 
 /// How many delayed datagrams may be waiting at once, across every target.
 ///
-/// A second of delay at the fastest thing anyone sends — the namespace is a handful per
+/// A second of delay at the fastest thing anyone sends — takt4's namespace is a handful per
 /// beat, and a rule on 32nd notes at 215 BPM is 115 a second — is well under this. Past it
 /// something upstream is wrong, and dropping the newest with a count is better than growing
 /// a queue on the thread that has a MIDI clock to keep.
@@ -387,8 +387,8 @@ void OscPublisher::sendChangedState(double bpm, double confidence, bool locked, 
         lastConfidence_ = confidence;
     }
     const int lockedNow = locked ? 1 : 0;
-    // the resync, on the one moment it means: the tracker has found the beat again after
-    // having said it had lost it. Documented and never sent. Not on a first
+    // `/resync`, on the one moment it means: the tracker has found the beat again after
+    // having said it had lost it. It used to be documented and never sent. Not on a first
     // state that is already locked — nothing was lost — and not when a target is added, which
     // starts this memory again at "never said".
     const bool refound = lockedNow == 1 && lastLocked_ == 0;

@@ -22,7 +22,7 @@ struct InputStreamOptions {
 /// Counts kept by the audio callback; read from any thread.
 struct InputStreamCounters {
     std::uint64_t callbacks = 0;
-    std::uint64_t framesIn = 0;      // device frames delivered (the design sample clock)
+    std::uint64_t framesIn = 0;      // device frames delivered (the monotonic sample clock)
     std::uint64_t hopsOut = 0;       // hops handed to the processor
     std::uint32_t inputOverflows = 0; // callbacks flagged paInputOverflow: the device dropped input
     std::uint64_t samplesRepaired = 0; // not a number, so passed on as silence — InputPipeline
@@ -65,7 +65,7 @@ public:
     /// — a callback's length. From here on the driver may call back as it likes; nothing reaches
     /// the processor. Makes no PortAudio call at all, so it is what a caller does on its own
     /// thread before handing the stream to another to be stopped and closed, however long the
-    /// driver takes over that.
+    /// driver takes over that (see `CallbackGate`).
     void detach() noexcept;
 
     const InputDevice& device() const noexcept;

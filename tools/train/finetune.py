@@ -442,9 +442,9 @@ def _cli_track(args):
     """Run takt4-cli over one excerpt; (set, id, beat F, downbeat F, tempo acc1, beats, error).
 
     `error` is None, or why the CLI did not run: that is not a score of zero, and it used to
-    be returned as one, so a broken CLI or a missing weights
-    file read as a model that had forgotten every beat. An excerpt the CLI ran over and found
-    no beats in *is* a zero, and still scores as one."""
+    be returned as one, so a broken CLI or a missing weights file read as a model that had
+    forgotten every beat. An excerpt the CLI ran over and found no beats in *is* a zero, and
+    still scores as one."""
     import subprocess
     import tempfile
     import mir_eval

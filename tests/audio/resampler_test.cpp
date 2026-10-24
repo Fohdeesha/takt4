@@ -140,7 +140,7 @@ TEST_CASE("Resampler produces the right number of samples", "[audio]") {
 }
 
 TEST_CASE("Resampler output does not depend on how the input is blocked", "[audio]") {
-    // the design: never assume the host block size. The same signal fed in blocks of
+    // Never assume the host block size. The same signal fed in blocks of
     // 1, 7, 441, 1000 and 4096 frames must come out the same.
     const std::vector<float> input = noise(48000 * 2, 2);
     Resampler reference(48000.0, kInternalSampleRate);

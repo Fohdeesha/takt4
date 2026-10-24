@@ -22,9 +22,9 @@ namespace {
 /// on a beat and reads on the next UI frame — so the tests wait the way an application
 /// would.
 ///
-/// **Until the capture shows it**: a fixed 50 ms was a guess
-/// about how busy the machine was, and under ASan with the suite in parallel it is a guess that
-/// can lose. Two seconds is the give-up, which nothing near a healthy machine comes close to.
+/// **Until the capture shows it**: a fixed 50 ms was a guess about how busy the machine was,
+/// and under ASan with the suite in parallel it is a guess that can lose. Two seconds is the
+/// give-up, which nothing near a healthy machine comes close to.
 ///
 /// **And never less than 50 ms**, because landing is not the whole of it. Link's own thread
 /// answers each commit by writing the session's timeline back into the app's copy, and a second
@@ -57,7 +57,7 @@ TEST_CASE("Link session starts disabled at the requested tempo", "[link]") {
     const LinkSession session(120.0);
 
     CHECK_FALSE(session.enabled());
-    CHECK_FALSE(session.startStopSyncEnabled()); // the design: off by default
+    CHECK_FALSE(session.startStopSyncEnabled()); // off by default
     CHECK(session.numPeers() == 0);
     CHECK_THAT(session.tempoBpm(), WithinAbs(120.0, 1e-9));
 }
@@ -122,7 +122,7 @@ TEST_CASE("the tracker's tempo and phase reach Link's timeline", "[link]") {
 
     SECTION("forcing a beat moves the timeline's magnitude, not just its phase") {
         // requestBeat only ever changes where the phase falls. forceBeat also moves the
-        // beat count, which is why the design keeps it for the manual downbeat snap alone.
+        // beat count, which is why it is kept for the manual downbeat snap alone.
         // A moment of its own, next to now. The magnitude is re-anchored around the present at
         // every capture, so a time that has drifted into the past — as the one at the top has,
         // on a machine busy enough — comes back a fraction of a beat out: measured, 99.80 with

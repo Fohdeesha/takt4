@@ -80,7 +80,7 @@ TEST_CASE("transports with nothing switched on send nothing and still count", "[
 }
 
 TEST_CASE("the latency offset round-trips and is what the transports fire on", "[output]") {
-    // the design: the tracker applies the offset to event.time, and this is the same number
+    // The tracker applies the offset to event.time, and this is the same number
     // applied to the host times the transports fire on. The two drifting apart is the
     // failure — a beat reported at one time and sent at another.
     Transports::Config config;
@@ -257,11 +257,10 @@ TEST_CASE("OSC targets can be replaced, and a new one is told the state", "[outp
 
 TEST_CASE("an output the network will not send to says so, and the others carry on",
           "[output][osc]") {
-    // an earlier review — sends failing because the network is down had no test — and the part
-    // of M12 that goes with it: nothing said so, and the target just went quiet. The socket
-    // refuses every send to `kUnsendableHost`, which is what a network that is down does to
-    // all of them. Both are sent takt4's own messages, which are what the state below sends —
-    // an output sent nothing has nothing to fail.
+    // Sends failing because the network is down had no test, and nothing said so: the target
+    // just went quiet. The socket refuses every send to `kUnsendableHost`, which is what a
+    // network that is down does to all of them. Both are sent takt4's own messages, which are
+    // what the state below sends — an output sent nothing has nothing to fail.
     if constexpr (!takt4::testing::kUnsendableFails) {
         SKIP(takt4::testing::kUnsendableSkip);
     }
@@ -351,7 +350,7 @@ public:
     explicit UnpluggablePort(std::shared_ptr<Cable> cable) : cable_(std::move(cable)) {}
     std::string open(std::string_view spec) override {
         ++cable_->opens;
-        // What RtMidi's port throws for each, since an earlier review said to make the fakes honest.
+        // What RtMidi's port throws for each, to keep the fake honest.
         if (!cable_->plugged) {
             throw takt4::output::MidiPortMissing("MIDI output: no port matching \"" +
                                                  std::string(spec) + "\"");
@@ -383,10 +382,10 @@ private:
 } // namespace
 
 TEST_CASE("a MIDI device pulled out mid-set comes back on its own", "[output][midi]") {
-    // an earlier reviewa. A send to a port whose device has gone failed and was counted, and
-    // nothing ever opened the port again — so a USB interface pulled out and pushed back in
-    // mid-show stayed silent until takt4 was restarted. Driven through the clock, which sends
-    // 24 times a beat and so finds a dead port within a beat.
+    // A send to a port whose device has gone failed and was counted, and nothing ever opened
+    // the port again — so a USB interface pulled out and pushed back in mid-show stayed silent
+    // until takt4 was restarted. Driven through the clock, which sends 24 times a beat and so
+    // finds a dead port within a beat.
     auto cable = std::make_shared<Cable>();
     Transports::Config config;
     config.midiClockPort = "Clock";
@@ -558,9 +557,9 @@ private:
 } // namespace
 
 TEST_CASE("a MIDI device that comes back at another number is found again", "[output][midi]") {
-    // C1's other half. The port was saved as "USB MIDI 2"; unplugged and plugged back in beside
-    // another device, it is "USB MIDI 3" — and a reconnect that looked for "USB MIDI 2" by what
-    // it contained looked for ever.
+    // The other half of coming back. The port was saved as "USB MIDI 2"; unplugged and plugged
+    // back in beside another device, it is "USB MIDI 3" — and a reconnect that looked for
+    // "USB MIDI 2" by what it contained looked for ever.
     auto list = std::make_shared<PortList>();
     list->names = {"Microsoft GS Wavetable Synth 0", "loopMIDI Port 1", "USB MIDI 2"};
     Transports::Config config;
@@ -625,10 +624,10 @@ private:
 } // namespace
 
 TEST_CASE("a MIDI receiver's bar 1 is a downbeat of the music", "[output][midi]") {
-    // an earlier review, end to end: beats heard a pipeline late with their stamps jittered, the
-    // tracker unlocked for its first eight, and the clock ticking from the press all along. A
-    // receiver counts its bars from the first tick after Start, so that tick has to be on a
-    // downbeat — and every 96th after it, or the bars have slipped.
+    // End to end: beats heard a pipeline late with their stamps jittered, the tracker unlocked
+    // for its first eight, and the clock ticking from the press all along. A receiver counts its
+    // bars from the first tick after Start, so that tick has to be on a downbeat — and every
+    // 96th after it, or the bars have slipped.
     for (const double latency : {0.0, -0.040}) {
         INFO("latency " << latency * 1000.0 << " ms");
         auto wire = std::make_shared<TimedWire>();
@@ -719,7 +718,7 @@ TEST_CASE("a beat reaches Link as a tempo and a bar position", "[output][link][n
     takt4::testing::skipWhileLinkIsOnTheNetwork();
     // The wiring, held to Link's own counters and to its own timeline. What the calls then
     // *mean* between two peers is link_peers_test.cpp's business; this is about which calls
-    // are made, and when — an earlier review and H15.
+    // are made, and when.
     Transports::Config config;
     config.link = true;
     Transports transports(config);
@@ -845,12 +844,13 @@ private:
 
 TEST_CASE("a press and its release keep their gap on every output however each is offset",
           "[output][midi][trigger]") {
-    // an earlier review, at the rule's end, and M9's MIDI half. Two MIDI devices: a desk with no
-    // lag and a laser controller set 150 ms early. A note rule fires on a beat in the music at
-    // 10.5 — fired at 10.35 on a prediction, the earliest either output needs it — with its
-    // note off 100 ms later. Each device must hear the note at the beat's moment plus its own
-    // offset, and the note off exactly 100 ms after that: measuring the release from the round
-    // that sends it would put the desk's note off *before* the desk's note on.
+    // A negative offset at the rule's end, and a MIDI output's own delay, which used to do
+    // nothing. Two MIDI devices: a desk with no lag and a laser controller set 150 ms early. A
+    // note rule fires on a beat in the music at 10.5 — fired at 10.35 on a prediction, the
+    // earliest either output needs it — with its note off 100 ms later. Each device must hear
+    // the note at the beat's moment plus its own offset, and the note off exactly 100 ms after
+    // that: measuring the release from the round that sends it would put the desk's note off
+    // *before* the desk's note on.
     auto wire = std::make_shared<Wire>();
     Transports::Config config;
     for (const auto& [name, delay] : {std::pair<std::string, double>{"desk", 0.0},
@@ -1451,11 +1451,11 @@ TEST_CASE("each Art-Net node has a beat's lighting on the beat plus its own dela
 
 TEST_CASE("each output's delay reaches that output by its id, with the Link row first",
           "[output][osc][dmx][trigger]") {
-    // an earlier review, coverage gap 8. Every rig since the window was rebuilt around one
-    // list of outputs has Link as its first row, so an output's place in the list is never its
-    // place among the OSC targets or among the nodes — and every delay test before this one had
-    // no Link row, where the two happen to agree. Here the delays are moved afterwards, by id, as
-    // a dragged slider moves them, on a list laid out the way the window lays it out.
+    // Every rig since the window was rebuilt around one list of outputs has Link as its first
+    // row, so an output's place in the list is never its place among the OSC targets or among
+    // the nodes — and every delay test before this one had no Link row, where the two happen to
+    // agree. Here the delays are moved afterwards, by id, as a dragged slider moves them, on a
+    // list laid out the way the window lays it out.
     using takt4::output::OutputTarget;
     using takt4::testing::kArtNetFrame;
     LoopbackReceiver prompt;
@@ -1559,9 +1559,9 @@ TEST_CASE("each output's delay reaches that output by its id, with the Link row 
 }
 
 TEST_CASE("MIDI Start waits for a beat whose place in the bar is known", "[output][midi]") {
-    // The tracker publishes `beatInBar` 0 until it has found a bar,
-    // and the clock read that as beat 1: a locked beat with no bar started a receiver's bar there,
-    // on whatever beat of the music it was, and the receiver kept that bar for the run.
+    // The tracker publishes `beatInBar` 0 until it has found a bar, and the clock read that as
+    // beat 1: a locked beat with no bar started a receiver's bar there, on whatever beat of the
+    // music it was, and the receiver kept that bar for the run.
     auto wire = std::make_shared<TimedWire>();
     Transports::Config config;
     config.midiClockPort = "Clock";
@@ -1620,11 +1620,11 @@ TEST_CASE("MIDI Start waits for a beat whose place in the bar is known", "[outpu
 
 TEST_CASE("a Link delay moved by more than the deadband is put under the beat at once",
           "[output][link]") {
-    // Moving the Link output's delay, or the rig's latency, was read
-    // on the next beat as a phase error and nudged out an eighth a beat: 100 ms took nine seconds
-    // to settle, with every peer's tempo up to 2.6 BPM off meanwhile — slow, wobbling feedback for
-    // an operator dragging the slider to line Resolume up. It is a place to put the beat, and it
-    // is put there on the next beat.
+    // Moving the Link output's delay, or the rig's latency, was read on the next beat as a phase
+    // error and nudged out an eighth a beat: 100 ms took nine seconds to settle, with every peer's
+    // tempo up to 2.6 BPM off meanwhile — slow, wobbling feedback for an operator dragging the
+    // slider to line Resolume up. It is a place to put the beat, and it is put there on the
+    // next beat.
     //
     // Switched on and never joined, so nothing leaves this machine: Link keeps its timeline
     // locally, which is all that is asked of it here.
@@ -1713,11 +1713,11 @@ struct LocalLink {
 
 TEST_CASE("a phase error is taken out an eighth a beat at a time, and never faster than 2%",
           "[output][link]") {
-    // an earlier review, coverage gap 7: the nudge's size and its clamp, which nothing
-    // measured. After the snap, a beat that arrives late against the session means the session
-    // is ahead, and the tempo it is sent is lowered by an eighth of the error — so a peer is
-    // pulled back over about eight beats — but never by more than a fiftieth, which a peer's
-    // tempo display barely shows. Inside the deadband, a fiftieth of a beat, nothing is nudged.
+    // The nudge's size and its clamp, which nothing measured. After the snap, a beat that arrives
+    // late against the session means the session is ahead, and the tempo it is sent is lowered by
+    // an eighth of the error — so a peer is pulled back over about eight beats — but never by more
+    // than a fiftieth, which a peer's tempo display barely shows. Inside the deadband, a fiftieth
+    // of a beat, nothing is nudged.
     const double error = GENERATE(0.08, -0.08, 0.30, -0.30, 0.01);
     INFO("the beat " << error << " of a beat late");
     LocalLink link;
@@ -1741,7 +1741,7 @@ TEST_CASE("a phase error is taken out an eighth a beat at a time, and never fast
 
 TEST_CASE("a bar the tracker counts differently is taken up after a bar of it, and not before",
           "[output][link]") {
-    // Coverage gap 7's other half. After the snap the tracker changes its mind about where the bar
+    // What the nudge is not for. After the snap the tracker changes its mind about where the bar
     // starts — every beat now numbered one on — which is a musical event, not drift: a nudge
     // would take a hundred beats over a whole beat. A bar's worth of disagreement in a row is
     // answered the way a DOWNBEAT is, with a snap; one beat of it is not.

@@ -27,18 +27,17 @@
 using Catch::Matchers::WithinAbs;
 using takt4::output::LinkSession;
 
-// The only part of the design Phase 4's exit criterion that this machine cannot check on
-// its own is "Resolume or equivalent follows it": nothing here speaks Link. Two
-// LinkSessions in one process is as close as it gets — they discover each other over the
-// same UDP multicast a real peer would, so what is checked is that takt4 announces
-// itself, that a peer sees the tempo it publishes, and that the phase it requests is the
-// phase the peer reads. What is not checked is any third-party implementation.
+// What this machine cannot check on its own is that Resolume or an equivalent follows takt4:
+// nothing here speaks Link. Two LinkSessions in one process is as close as it gets — they
+// discover each other over the same UDP multicast a real peer would, so what is checked is that
+// takt4 announces itself, that a peer sees the tempo it publishes, and that the phase it
+// requests is the phase the peer reads. What is not checked is any third-party implementation.
 //
 // **[network]**, so the default presets leave them out and the `-all` presets — and CI — run
 // them. They open multicast sockets and announce on the local network. They used to be hidden
 // (`[.link-network]`) instead, which kept them off the network but also out of every run there
-// was: no preset registered them, so an earlier review fix — force the phase once, never request
-// it — could have been reverted with every test still passing. A
+// was: no preset registered them, so the fix for Link's phase with a peer present — force the
+// phase once, never request it — could have been reverted with every test still passing. A
 // network that blocks multicast is a skip that says so, not a failure: it is not takt4's fault.
 //
 // Every other test in tests/output/link_session_test.cpp leaves the session disabled.
@@ -124,7 +123,7 @@ TEST_CASE("a Link peer sees the tempo and phase takt4 publishes", "[output][link
         // What is *not* asserted: that phase 0 lands on the time asked for.
         // requestBeatAtTime respects the quantum — it moves the request to the next time
         // our phase already matches, which is the whole point of it being the gentle
-        // call and can be up to a bar later. the design keeps forceBeatAtTime for the manual
+        // call and can be up to a bar later. forceBeatAtTime is kept for the manual
         // snap precisely because only that one places a beat outright.
         //
         // What matters, and what a peer's bar indicator reads, is that the two sides
@@ -169,13 +168,13 @@ TEST_CASE("a Link peer sees the tempo and phase takt4 publishes", "[output][link
 
 TEST_CASE("a peer that was there first is put on the music's phase", "[output][link][network]") {
     takt4::testing::skipWhileLinkIsOnTheNetwork();
-    // an earlier review, as its experiment ran it: Resolume on Link first, takt4 enabling Link
-    // after, so takt4's session adopts Resolume's timeline on join — and the music's beats fall
-    // 180 ms off it. With a peer present `requestBeatAtTime` does not move the session's phase
-    // ("the next time value ... with the same phase"), so takt4 used to change only the tempo:
-    // measured, both sessions stayed 180 ms off the music for every beat, the bar 1.6 beats
-    // wrong. The first locked beat now forces the phase — the operator's call, snap once and
-    // then nudge — and the peer reads the music's bar.
+    // Resolume on Link first, takt4 enabling Link after, so takt4's session adopts Resolume's
+    // timeline on join — and the music's beats fall 180 ms off it. With a peer present
+    // `requestBeatAtTime` does not move the session's phase ("the next time value ... with the
+    // same phase"), so takt4 used to change only the tempo: measured, both sessions stayed
+    // 180 ms off the music for every beat, the bar 1.6 beats wrong. The first locked beat now
+    // forces the phase — the operator's call, snap once and then nudge — and the peer reads the
+    // music's bar.
     LinkSession peer(128.0);
     peer.enable(true);
     // The peer's own bar, somewhere the music is not.
@@ -256,9 +255,9 @@ TEST_CASE("a peer that was there first is put on the music's phase", "[output][l
 
 TEST_CASE("a peer that joins after the snap is put on the music's phase too",
           "[output][link][network]") {
-    // an earlier review, coverage gap 7. takt4 snaps the session once and then only nudges
-    // it — and a peer that joins later can bring a timeline of its own. So a new peer is a reason
-    // to snap again, on the next beat, and only on that one.
+    // takt4 snaps the session once and then only nudges it — and a peer that joins later can
+    // bring a timeline of its own. So a new peer is a reason to snap again, on the next beat, and
+    // only on that one.
     // Measured against takt4's own session: one already on this network — the rig has a Link
     // device of its own — is the older, wins the merge and moves what is measured here.
     {

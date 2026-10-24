@@ -27,8 +27,8 @@ using takt4::trigger::Value;
 
 namespace {
 
-/// the own example, and Phase 6's exit criterion: "a rule that fires a non-repeating
-/// random clip on every fourth downbeat". Everything a preset has to carry is in it.
+/// A rule that fires a non-repeating random clip on every fourth downbeat. Everything a preset
+/// has to carry is in it.
 Rule::Config resolumeClip() {
     Rule::Config rule;
     rule.id = "drop";
@@ -57,7 +57,7 @@ Rule::Config resolumeClip() {
 
     rule.value.kind = GeneratorKind::Fixed;
     rule.value.fixed = Value::ofInt(1);
-    // the press-then-release: without the second half a clip stays latched on.
+    // Press, then release: without the second half a clip stays latched on.
     takt4::trigger::FollowUp release;
     release.value = Value::ofInt(0);
     release.delaySeconds = 0.05;
@@ -197,8 +197,8 @@ TEST_CASE("a MIDI rule carries what a MIDI rule needs", "[settings][trigger]") {
 
 TEST_CASE("a MIDI rule still waiting for its number is still waiting after a restart",
           "[settings][trigger]") {
-    // an earlier review. Saved with its generator's default, a half-built rule came back armed on
-    // a shuffle over 1 to 8.
+    // Saved with its generator's default, a half-built rule came back armed on a shuffle
+    // over 1 to 8.
     Rule::Config rule;
     rule.id = "stab";
     rule.sendKind = Message::Kind::MidiCc;
@@ -225,7 +225,7 @@ TEST_CASE("a MIDI rule still waiting for its number is still waiting after a res
 
 TEST_CASE("a rule switched to another kind and saved keeps the half it is not using",
           "[settings][trigger]") {
-    // an earlier review. `Rule::Config::dmx` promises a rule switched to MIDI and back gets its
+    // `Rule::Config::dmx` promises a rule switched to MIDI and back gets its
     // fixtures and fade back; only the kind in force was written, so a SAVE in between lost
     // the other half for good.
     Rule::Config rule;
@@ -457,8 +457,8 @@ TEST_CASE("a rule file a person edited still opens", "[settings][trigger]") {
     }
 
     SECTION("a rule that will not fire is kept, not dropped") {
-        // the policy, and the opposite of a generator's: an invalid rule is held, shown
-        // and refused at fire time. A preset that silently lost the rule an operator is
+        // The trigger engine's policy, and the opposite of a generator's: an invalid rule is held,
+        // shown and refused at fire time. A preset that silently lost the rule an operator is
         // half-way through fixing would be the worst of both.
         const Rule::Config out = first(R"([{"id":"broken","address":"/a/{x}/b"}])");
         CHECK(out.id == "broken");
@@ -540,7 +540,7 @@ TEST_CASE("a rule file written before follow-ups were a list still opens", "[set
 }
 
 TEST_CASE("a rule file written before B had a switch fires as it did", "[settings][trigger]") {
-    // the design, agreed 2026-09-30: the ONLY IF stage has an on/off tick now, off for a new
+    // Agreed 2026-09-30: the ONLY IF stage has an on/off tick now, off for a new
     // rule. A file from before it holds no switch, and upgrading must not change what fires — so
     // a rule that used any of the four conditions loads with them on, and one that used none
     // loads with them off, as a new rule starts. And the cooldown, which was one of them, is
@@ -616,7 +616,7 @@ TEST_CASE("a rule file written before B had a switch fires as it did", "[setting
 }
 
 TEST_CASE("rules travel in the preset half of the settings file", "[settings][trigger]") {
-    // Q7: a rule is about the show, not about the box it is running on.
+    // A rule is about the show, not about the box it is running on.
     takt4::settings::Settings in;
     in.preset.rules = {resolumeClip()};
 

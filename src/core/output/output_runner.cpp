@@ -28,10 +28,10 @@ namespace {
 /// Whether a count the engine keeps has moved since `seen`, bringing `seen` up to date.
 ///
 /// **A count lower than the one last seen is a new run**, not a count that moved: the engine
-/// zeroes its counts every time the tracker starts, and since an earlier review this runner keeps
-/// going across a Stop and a Start. Compared for plain inequality, the first round of every
-/// run after the first saw the old count "move" to zero and fired every onset rule once for
-/// nothing. A new run counts as moved only if it has already counted something.
+/// zeroes its counts every time the tracker starts, and this runner keeps going across a Stop
+/// and a Start. Compared for plain inequality, the first round of every run after the first saw
+/// the old count "move" to zero and fired every onset rule once for nothing. A new run counts
+/// as moved only if it has already counted something.
 bool countMoved(std::uint64_t now, std::uint64_t& seen) noexcept {
     const bool moved = now < seen ? now > 0 : now != seen;
     seen = now;
@@ -205,9 +205,9 @@ void restoreTimerResolution(bool raised) noexcept {
 
 /// One message as a person reads it: the address for OSC, the target for MIDI.
 ///
-/// The *sent* form, with every `{}` already filled in — the design asks for "the actually-sent
-/// message", and a card showing the template would be showing what the operator typed back
-/// at them rather than what happened.
+/// The *sent* form, with every `{}` already filled in — the message as it went out: a card
+/// showing the template would be showing what the operator typed back at them rather than
+/// what happened.
 std::string describeDmx(const trigger::Message& message) {
     const dmx::Payload& payload = message.payload;
     std::string text(dmx::labelOf(payload.kind));
@@ -276,8 +276,8 @@ std::string describe(const trigger::Message& message) {
         return describeDmx(message);
     }
     // Every kind by its own name. This said "note" for one of them and "cc" for the other
-    // five, so a Note Off logged as a CC and the one line the design calls "what turns a config
-    // screen into an instrument" was describing a message that had not been sent.
+    // five, so a Note Off logged as a CC and the last-fired line, the one that turns a config
+    // screen into an instrument, was describing a message that had not been sent.
     const std::string channel = " ch " + std::to_string(message.channel);
     switch (message.kind) {
     case trigger::Message::Kind::MidiNote:
@@ -306,7 +306,7 @@ std::string describe(const trigger::Message& message) {
 
 OutputRunner::OutputRunner(engine::BeatSource& source, const Transports::Config& config)
     : source_(source), transports_(config), sink_(transports_), triggers_(sink_) {
-    // the last-fired line and event log. Copied out of the output thread and into a
+    // The last-fired line and event log. Copied out of the output thread and into a
     // buffer a UI drains, which is what keeps `TriggerEngine` single-threaded.
     triggers_.setFireObserver([this](std::string_view ruleId, const trigger::Message& message,
                                      bool followUp, std::span<const trigger::Value> slots,
@@ -676,15 +676,15 @@ void OutputRunner::start() {
     //
     // `started_` used to be taken here, so `elapsed()` — which is `Context::now` — went back
     // to zero on every Start while the state measured against it did not. `Rule::lastFired_`
-    // still held the time of the last fire of the previous run, so the cooldown test read
+    // still held the time of the last fire of the previous run, so the rules' cooldown test read
     // `now - lastFired < cooldown` as a large *negative* number, which is below even a zero
     // cooldown. Every rule that had ever fired was then blocked until the clock climbed back
     // past where it had been — five minutes of playing, for a rig stopped five minutes in.
     //
     // A clock that only goes forwards is the fix, and it is the fix for the whole class:
-    // pending follow-ups, the log's timestamps and the "12s ago" were all measured against
-    // it too. `started_` is taken once, at construction, and nothing writes it again — which
-    // also takes the reader on the UI thread out of a race with `start()`.
+    // pending follow-ups, the log's timestamps and the last-fired line's "12s ago" were all
+    // measured against it too. `started_` is taken once, at construction, and nothing writes it
+    // again — which also takes the reader on the UI thread out of a race with `start()`.
     raisedTimer_ = raiseTimerResolution();
     // A count from the run that just ended means nothing to the run beginning: a source's start
     // zeroes its own (`BeatEngine::start`), so a stale one here made the first round after a
@@ -903,7 +903,7 @@ void OutputRunner::apply(const OutputCommand& command) {
                 // Every release owed goes now — except the lighting's, which would move the lamps
                 // PANIC is about to freeze where they are. Most are still held for their moment
                 // and dropped below; a release the rig's negative offset has already made due
-                // would otherwise start at once.
+                // would otherwise start at once (see `holdLighting`).
                 sink_.holdLighting(true);
                 triggers_.panic(contextAt(now));
                 // And every note still on that nothing owed a release for — a rule that sends a
@@ -1001,15 +1001,15 @@ void OutputRunner::apply(const OutputCommand& command) {
             // `apply`, and this uses the same clock so that a hand-fired effect and a rule's
             // land on one timeline.
             //
-            // **Not while PANIC is engaged**. It went past the rules, and so
-            // past the halt too: a color-picker drag or an IDENTIFY lit fixtures in the middle
-            // of a panic. The editors check `panicked()` and say why nothing happened.
+            // **Not while PANIC is engaged.** It went past the rules, and so past the halt too: a
+            // color-picker drag or an IDENTIFY lit fixtures in the middle of a panic. The editors
+            // check `panicked()` and say why nothing happened.
             if (!panicked_.load(std::memory_order_relaxed)) {
                 transports_.dmx().start(command.fixtureMask, command.payload, now);
             }
             break;
         case OutputCommand::Kind::ChannelTest:
-            if (!panicked_.load(std::memory_order_relaxed)) { // M17, as above
+            if (!panicked_.load(std::memory_order_relaxed)) { // not during PANIC, as above
                 transports_.dmx().holdChannel(command.universe, command.channel, command.level,
                                               command.factor, now);
             }
@@ -1026,11 +1026,11 @@ void OutputRunner::apply(const OutputCommand& command) {
                 // `Transports::resnapLink`.
                 transports_.resnapLink();
             } else {
-                // **STOP: nothing fires after it** (an earlier review, H3, and the
-                // operator's answer to its Q3). Up to two predicted beats went on firing their
-                // rules after the blackout, because nothing reset the scheduler and nothing
-                // gated it — so a flash, a colour or a clip came back on with takt4 stopped. Now:
-                // the predictions go, and so do the beats the tracker called on its way down;
+                // **STOP: nothing fires after it** (the operator's call). Up to two predicted
+                // beats went on firing their rules after the blackout, because nothing reset the
+                // scheduler and nothing gated it — so a flash, a colour or a clip came back on
+                // with takt4 stopped. Now: the predictions go, and so do the beats the tracker
+                // called on its way down;
                 quiet_ = true;
                 triggers_.setListening(false);
                 scheduler_.reset();
@@ -1050,8 +1050,8 @@ void OutputRunner::apply(const OutputCommand& command) {
                 transports_.osc().flushAll();
                 // a Note Off a full queue refused, now that the queue is empty;
                 releaseRefused();
-                // and the lights go out and stay out — sent, because the outputs keep running
-                //. The blackout disarms every laser zone with them.
+                // and the lights go out and stay out — sent, because the outputs keep running (the
+                // operator's call of 2026-09-23). The blackout disarms every laser zone with them.
                 transports_.stopClock();
                 transports_.dmx().blackout(now);
                 forgetZones();
@@ -1231,8 +1231,8 @@ void OutputRunner::applyCommands() noexcept {
 }
 
 void OutputRunner::run() noexcept {
-    // Ahead of the window's drawing: a round that waits behind a redraw is a
-    // late MIDI tick and a late cue. See rt/thread_priority.hpp.
+    // Ahead of the window's drawing: a round that waits behind a redraw is a late MIDI tick and
+    // a late cue. See rt/thread_priority.hpp.
     const rt::PriorityScope priority(rt::ThreadWork::Output);
     threadRaised_.store(priority.raised(), std::memory_order_release);
     // A millisecond between rounds that is a millisecond, minimised or not — see `rt::RoundTimer`.
@@ -1278,7 +1278,7 @@ void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
     // For the window's dots: when the rig plays this beat (see `shownBeat`).
     shown_.publish(ShownBeat{beat.moment, beat.moment + transports_.latencySeconds(),
                              beat.event.beatInBar, beat.bars, ++shownSerial_});
-    // the beat-counting triggers, off the state *at this beat* rather than off the engine's
+    // The rules' beat-counting triggers, off the state *at this beat* rather than off the engine's
     // newest: a round can fire several beats, and a rule counting bars has to see each of them
     // where it happened. And *about* the beat's own moment, which every message it sends is
     // then held to — see `trigger::Message::moment`.
@@ -1333,26 +1333,25 @@ void OutputRunner::drainOnce(double now) {
     // duration, so the sink has to know where on this clock the round is. See
     // `RuleSink::setNow`.
     sink_.setNow(now);
-    // Link's clock and this one read together, which is what turns a beat's the design stamp — the
+    // Link's clock and this one read together, which is what turns a beat's host-clock stamp — the
     // moment it was in the audio, on Link's clock — into a moment on the clock the rounds run on.
     const std::int64_t linkNow = transports_.link().now().count();
     const double lead = transports_.leadSeconds();
     // How late a beat may be heard and still be worth firing: as late as the latest output
     // wants it, plus the pipeline and some. See `kStaleSeconds`.
     const double staleAfter = transports_.tailSeconds() + kStaleSeconds;
-    // **Every stage on its own, and every beat through each**. One try round
-    // the whole round meant a stage that threw once skipped every stage after it, and one that
-    // threw every round switched them all off, silently: a clock throwing on each beat would
-    // have taken the rules, the lighting and the held releases with it. A stage that throws is
-    // counted and named now — `Snapshot::Trouble` — and the round carries on past it.
+    // **Every stage on its own, and every beat through each.** One try round the whole round
+    // meant a stage that threw once skipped every stage after it, and one that threw every round
+    // switched them all off, silently: a clock throwing on each beat would have taken the rules,
+    // the lighting and the held releases with it. A stage that throws is counted and named now —
+    // `Snapshot::Trouble` — and the round carries on past it.
     engine::EngineBeat beat;
     while (source_.popBeat(beat)) {
         if (quiet_) {
             continue; // stopped: see `Tracking` in `apply`
         }
         // A beat the last run left in the ring, which a source's start no longer drains from
-        // the UI thread (`BeatEngine::start`; an earlier review, L42): from a run that is
-        // over.
+        // the UI thread (`BeatEngine::start`): from a run that is over.
         if (beat.run != source_.runNumber()) {
             continue;
         }
@@ -1385,7 +1384,7 @@ void OutputRunner::drainOnce(double now) {
             guarded("the beat observer", [&] { observer_(beat); });
         }
     }
-    // And the beats that are due before they are heard — an earlier review. See `BeatScheduler`.
+    // And the beats that are due before they are heard. See `BeatScheduler`.
     // None while stopped: the engine's last locked state stays published, and the scheduler
     // would go on predicting from it.
     guarded("a predicted beat's rules", [&] {
@@ -1423,8 +1422,8 @@ void OutputRunner::drainOnce(double now) {
     if (countMoved(source_.intensity().onsets, onsetsSeen_) && !quiet_) {
         guarded("the onset rules", [&] { triggers_.onOnset(context); });
     }
-    // A bar a late DOWNBEAT press declared, whose first beat had already gone out as another
-    //: its bar and downbeat rules fire now, as that bar's.
+    // A bar a late DOWNBEAT press declared, whose first beat had already gone out as another:
+    // its bar and downbeat rules fire now, as that bar's.
     const tracking::TempoState state = source_.state();
     // **The input gone quiet disarms the lasers** (the operator, 2026-10-05). Nothing fires until
     // the next lock, so a laser zone would otherwise hold its last clip through the silence — a

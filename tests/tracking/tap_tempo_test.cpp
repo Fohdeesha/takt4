@@ -102,7 +102,7 @@ TEST_CASE("a clock that does not move forward is not a tempo", "[tracking][tempo
 }
 
 TEST_CASE("a switch that bounces taps once, not twice", "[tracking][tempo]") {
-    // an earlier review: two taps 20 ms apart used to be a tempo of 3000 BPM, and with the fold
+    // Two taps 20 ms apart used to be a tempo of 3000 BPM, and with the fold
     // off that went to Link and the MIDI clock as an octave shift. A tap inside the bounce
     // window is not a tap at all — not counted, and not a reason to start the set again.
     TapTempo tap;

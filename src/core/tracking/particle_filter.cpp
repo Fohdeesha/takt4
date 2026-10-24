@@ -317,7 +317,7 @@ std::uint32_t ParticleFilter::meterOf(const std::vector<std::uint32_t>& particle
     // does not cross over because one of them moved.
     //
     // **This deliberately does not touch `downMax_`.** That one decides `isBeatState`, and
-    // so decides whether a beat is emitted as a downbeat; it is column 1 of the Phase 4
+    // so decides whether a beat is emitted as a downbeat; it is column 1 of the
     // parity gate and the emit decision is column 2. Both stay exactly as they were, which
     // is why that gate still passes bit for bit. Only the meter — which the gate does not
     // carry — is derived differently.
@@ -389,7 +389,7 @@ TrackedFrame ParticleFilter::process(float beatActivation, float downbeatActivat
     frame.phase = beat.statePositions()[frame.gathering];
 
     // Two things from one pass over the cloud that produced this median. How much of it
-    // agrees with the median's tempo — nothing upstream reads that, but the design's
+    // agrees with the median's tempo — nothing upstream reads that, but `TempoTracker`'s
     // confidence gate does — and the mean period over the particles on that tempo or
     // either neighbour, which is the tempo without the state space's integer steps.
     std::size_t agreeing = 0;

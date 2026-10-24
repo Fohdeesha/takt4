@@ -13,9 +13,9 @@
 #include <string>
 
 // The check the patched ASIO SDK makes before it offers a driver (cmake/asiosdk.cmake): false only
-// for a DLL Windows says is not there. What `OpenFile` got wrong — an earlier review, M9 —
-// was a path of 127 bytes or more and the `%SystemRoot%\...` of a REG_EXPAND_SZ value, both of
-// which COM loads, and both of which hid a working driver.
+// for a DLL Windows says is not there. What `OpenFile` got wrong was a path of 127 bytes or more
+// and the `%SystemRoot%\...` of a REG_EXPAND_SZ value, both of which COM loads, and both of which
+// hid a working driver.
 
 namespace {
 

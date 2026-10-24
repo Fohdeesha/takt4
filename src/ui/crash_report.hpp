@@ -21,8 +21,8 @@ namespace takt4::ui {
 /// **Why it exists.** takt4 crashed on a rig on 2026-09-16 and the only reason the cause was
 /// ever found is that Windows Error Reporting happened to be configured to keep a dump. Nothing
 /// in takt4 wrote one, so on any other machine a crash was a window that vanished and nothing
-/// to read afterwards. This writes `takt4-crash-<date>-<time>.dmp` for every
-/// way a C++ program can die that can be caught at all:
+/// to read afterwards. This writes `takt4-crash-<date>-<time>.dmp` for every way a C++ program
+/// can die that can be caught at all:
 ///
 ///   * an unhandled SEH exception — an access violation, a stack overflow;
 ///   * `std::terminate` — an exception with nowhere to go, a `noexcept` that threw;

@@ -466,7 +466,7 @@ json ruleToJson(const Rule::Config& rule) {
         }
     }
     if (!rule.outputs.empty()) {
-        // the rule subset. Left out when a rule goes everywhere, which is the default and
+        // The rule's routing. Left out when a rule goes everywhere, which is the default and
         // the majority — a preset should say what an operator chose, not restate the default
         // for every rule in it.
         json outputs = json::array();
@@ -488,8 +488,8 @@ json ruleToJson(const Rule::Config& rule) {
     // an older takt4 keeps the cooldown on the onset rules it was set for.
     out["cooldownSeconds"] = rule.cooldownSeconds;
     out["conditions"]["cooldownSeconds"] = rule.cooldownSeconds;
-    // **Every half an operator has filled in, whichever kind the rule sends now** (an earlier review
-    // M22). `Rule::Config::dmx` promises that a rule switched to MIDI and back gets its fixtures
+    // **Every half an operator has filled in, whichever kind the rule sends now.**
+    // `Rule::Config::dmx` promises that a rule switched to MIDI and back gets its fixtures
     // and its fade back, and the loader reads every half whatever the kind — but only the kind
     // in force was written, so a lighting rule tried as MIDI and then saved lost its whole
     // lighting setup, and a MIDI rule tried as OSC its channel and number. The halves not in
@@ -636,9 +636,9 @@ Rule::Config ruleFromJson(const json& node) {
     if (node.contains("conditions")) {
         rule.conditions = conditionsFromJson(node.at("conditions"));
     }
-    // **B's switch, and what a file from before it means** (the design, agreed 2026-09-30): a
-    // rule that used any of the conditions loads with them on, so nothing fires differently
-    // after the upgrade; one that used none loads with them off, as a new rule starts.
+    // **B's switch, and what a file from before it means** (agreed 2026-09-30): a rule that
+    // used any of the conditions loads with them on, so nothing fires differently after the
+    // upgrade; one that used none loads with them off, as a new rule starts.
     if (node.contains("conditionsOn")) {
         read(node, "conditionsOn", rule.conditionsOn);
     } else {
@@ -724,7 +724,7 @@ Rule::Config ruleFromJson(const json& node) {
         rule.enabled = false;
     }
     // Nothing is validated here. `Rule`'s constructor decides whether this is usable and
-    // `Rule::problem()` says why it is not — the policy, which is that an invalid rule is
+    // `Rule::problem()` says why it is not — the rules' policy, which is that an invalid rule is
     // held and shown rather than dropped. A preset that silently lost the rule an operator
     // is trying to fix would be the worst of both.
     return rule;

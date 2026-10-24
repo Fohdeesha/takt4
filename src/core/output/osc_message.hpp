@@ -12,7 +12,7 @@ namespace takt4::output {
 /// control character, nothing outside printable ASCII, and none of the reserved characters
 /// `# * , ? [ ] { }`.
 ///
-/// Out here rather than inside `OscMessage` because Phase 6's rules build addresses from
+/// Out here rather than inside `OscMessage` because the rules build addresses from
 /// templates and have to know whether what they built can be sent — and "what OSC allows"
 /// must have exactly one statement in this codebase, or the two will drift and a rule will
 /// happily assemble an address the encoder then refuses.
@@ -20,7 +20,7 @@ bool addressIsLegal(std::string_view address) noexcept;
 
 /// One OSC 1.0 message, built into a fixed buffer.
 ///
-/// the design lists the OSC encoder as ours rather than a dependency, and this is why it
+/// The OSC encoder is takt4's own rather than a dependency, and this is why it
 /// can be: a message is an address pattern, a type tag string and the arguments, each
 /// null-terminated and padded with nulls to a multiple of four bytes, integers and
 /// floats big-endian. There is nothing else to it, and no library is worth the
@@ -30,8 +30,8 @@ bool addressIsLegal(std::string_view address) noexcept;
 /// OSC does not allow, goes invalid and stays that way rather than sending nonsense.
 class OscMessage {
 public:
-    /// Enough for every address in the design and the design with room to spare; a
-    /// Resolume clip address with both indices filled in is about 45 bytes.
+    /// Enough for every address of takt4's namespace and its control input with room to spare;
+    /// a Resolume clip address with both indices filled in is about 45 bytes.
     static constexpr std::size_t kCapacity = 256;
     static constexpr std::size_t kMaxArguments = 16;
 

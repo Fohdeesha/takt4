@@ -8,8 +8,7 @@ Each system argument is DIR or DIR:TAG, where files are <stem>[.TAG].beats with
 and the first five seconds trimmed as `mir_eval.beat.trim_beats` trims them — and the last
 five seconds too, which trim_beats and tools/evaluate.py do not. Every system here is scored
 that one way, so the harness's numbers compare with each other; a number here and a Ballroom
-number from evaluate.py are close but not the same measure. (Said otherwise until 2026-09-26,
-an earlier review.)
+number from evaluate.py are close but not the same measure. (Said otherwise until 2026-09-26.)
 
 The published tempo is the median of the beat file's third column over the beats after
 5 s when there is one (takt4's `--out` writes it), and 60 over the median beat gap when

@@ -31,8 +31,7 @@ its `provenance` field; `--write` records the build whose files it scored.
 **One build at a time.** run_takt4.py records which build wrote each track's files, and the
 gate refuses to score files no record accounts for or files from more than one build. It
 used to score whatever was on disk: after `run_takt4.py --only` on a new build the rest were
-the old build's, and `--write` then named the CLI of the moment rather than the one measured
-.
+the old build's, and `--write` then named the CLI of the moment rather than the one measured.
 """
 import argparse
 import datetime

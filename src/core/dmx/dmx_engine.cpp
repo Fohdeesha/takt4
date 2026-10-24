@@ -340,7 +340,7 @@ void DmxEngine::composeVirtuals() noexcept {
             continue;
         }
         for (std::size_t e = 0; e < kEmitters.size(); ++e) {
-            // Every cell of a bar that has several (`channelOf`'s `nth`, an earlier review).
+            // Every cell of a bar that has several (`channelOf`'s `nth`).
             for (const std::uint16_t channel : state.channels[e]) {
                 writeChannel(static_cast<std::uint32_t>(buffer), channel, kNoChannel,
                              state.color[e] * state.intensity);
@@ -384,8 +384,7 @@ void DmxEngine::releaseTestHolds() noexcept {
 
 void DmxEngine::cancelAll() noexcept {
     // A TEST is not part of the look being frozen: it is the patch editor asking which lamp a
-    // channel is, for a few seconds. Frozen, it held the channel at the test level for good
-    //.
+    // channel is, for a few seconds. Frozen, it held the channel at the test level for good.
     releaseTestHolds();
     running_.clear();
 }
@@ -412,8 +411,7 @@ void DmxEngine::blackout(double now) {
     dark.kind = EffectKind::Blackout;
     // Every fixture of the patch — not through a mask, which names the first
     // `kMaxRoutableFixtures` only. The patch is not capped there, only warned about, and a
-    // blackout that stopped at the mask's end left the rest lit through Stop and quit (the
-    // 2026-09-25 review's L8).
+    // blackout that stopped at the mask's end left the rest lit through Stop and quit.
     launch(dark, now, 0, true);
     // A snap: nothing to animate, so nothing left running to be advanced on the next tick.
     running_.clear();
@@ -998,9 +996,8 @@ void DmxEngine::evaluate(const Running& running, double now) {
         toHsv(payload.color, baseHue, saturation, value);
         // A color with no saturation — white, which is what a rule's color is until somebody
         // picks one — would sweep the hue of white, which is white: an effect that changed
-        // nothing while the editor offered its hue range. It sweeps at full
-        // saturation instead, at the color's own brightness; a grey sweep is not a thing
-        // anybody means.
+        // nothing while the editor offered its hue range. It sweeps at full saturation instead,
+        // at the color's own brightness; a grey sweep is not a thing anybody means.
         if (saturation <= 0.0) {
             saturation = 1.0;
         }

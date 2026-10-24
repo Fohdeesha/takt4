@@ -29,38 +29,38 @@ namespace takt4::output {
 
 /// A change to what the transports are sending.
 ///
-/// Posted by whoever owns the controls — a window, the inbound OSC later — and applied
-/// by the output thread between rounds, because the transports belong to it. Exactly the
-/// shape `engine::Command` has for the tracker, and for the same reason: many producers,
-/// one consumer, and no caller reaching into something another thread is using.
+/// Posted by whoever owns the controls — the windows, and the OSC and MIDI control surfaces —
+/// and applied by the output thread between rounds, because the transports belong to it.
+/// Exactly the shape `engine::Command` has for the tracker, and for the same reason: many
+/// producers, one consumer, and no caller reaching into something another thread is using.
 struct OutputCommand {
     enum class Kind : std::uint8_t {
         LinkEnabled,
         OscTargets,
         MidiClockPort,
-        /// the named targets, whole. Every rule's routing is resolved again afterwards,
+        /// The named targets, whole. Every rule's routing is resolved again afterwards,
         /// because a name means a *bit*, and the bit a name resolves to moves the moment a
         /// target above it is added or deleted.
         Outputs,
-        /// the rules, whole. Replacing the set rather than editing one is what a preset
-        /// load does and what the editor will do on every change; a rule is small and the
+        /// The rules, whole. Replacing the set rather than editing one is what a preset
+        /// load does and what the rule editor does on every change; a rule is small and the
         /// set is short, so there is no reason for a finer command.
         Rules,
-        /// the PANIC, and letting go of it.
+        /// PANIC, and letting go of it.
         Panic,
-        /// the `/ctl/rule/<id>/enable <0|1>`.
+        /// `/ctl/rule/<id>/enable <0|1>`.
         RuleEnabled,
-        /// the *"on manual hotkey"*, and the per-rule `[test]` button.
+        /// The manual hotkey, and the rule editor's per-rule `[test]` button.
         Manual,
         TestRule,
         /// The lighting patch, whole — the same shape and the same reasoning as `Rules`.
         /// Every rule's fixture routing is resolved again afterwards, because a name means a
         /// *bit* and the bit moves the moment a fixture above it is added or deleted.
         Patch,
-        /// the `/ctl/rule/<id>/mute <0|1>`. Distinct from `RuleEnabled`, which is a
+        /// `/ctl/rule/<id>/mute <0|1>`. Distinct from `RuleEnabled`, which is a
         /// different state — see `trigger::Rule::muted`.
         RuleMuted,
-        /// the `/ctl/rule/<id>/double`, `halve`, `rate <f>` and `reset`, which are all one
+        /// `/ctl/rule/<id>/double`, `halve`, `rate <f>` and `reset`, which are all one
         /// thing: a multiplier on how often the rule fires. `factor` is absolute when
         /// `relative` is false and is applied to whatever the rule is already at when it is
         /// true, which is what lets "double" be pressed twice.
@@ -253,7 +253,7 @@ struct OutputCommand {
     bool relative = false;
 };
 
-/// The rule id that means **every rule** — the `/ctl/rule/all/enable` and its neighbours.
+/// The rule id that means **every rule** — `/ctl/rule/all/enable` and its neighbours.
 ///
 /// A reserved word rather than a second address shape, because a Stream Deck button that
 /// mutes the lighting rules and one that mutes a single rule should differ by one word in the
@@ -262,9 +262,9 @@ struct OutputCommand {
 /// differently.
 inline constexpr std::string_view kAllRules = "all";
 
-/// the output thread.
+/// The output thread.
 ///
-/// the design wants the transports off the audio thread *and* off the caller's loop, so that
+/// The transports are kept off the audio thread *and* off the caller's loop, so that
 /// neither a UI redraw nor a console print can decide when a beat reaches a peer. The
 /// tracking already does not wait on anyone — the engine's inference thread runs at the
 /// audio's pace — so what this buys is punctuality: a MIDI clock tick is 19 ms apart at
@@ -282,7 +282,7 @@ inline constexpr std::string_view kAllRules = "all";
 /// around it:
 ///
 ///   * `engine.setHostTimeSource(&runner.hostTimeClock())` **before the audio stream is
-///     opened**, because the stamp is taken on the audio thread and there has to be a
+///     opened**, because the host-clock stamp is taken on the audio thread and there has to be a
 ///     clock in place before there is one.
 ///   * Draining `popFrame`, if anything wants the frames. Nobody has to, but a ring that
 ///     nobody drains fills and the engine starts counting frames lost.
@@ -351,12 +351,12 @@ public:
     /// Enables the transports and starts the thread. `start()` on a running runner does
     /// nothing.
     ///
-    /// **An application starts this once and leaves it running** — an earlier review, and the
-    /// operator's call of 2026-09-23. It used to start and stop with the tracker, so before
-    /// Start nothing was transmitted at all: the patch editor's IDENTIFY and TEST changed a
-    /// buffer nobody sent, a Stop to change input dropped the Art-Net keep-alive so nodes fell
-    /// back to their failsafe, and a control surface's PANIC reached rules that could not
-    /// hear it. The tracker's Start and Stop reach this as `setTracking`.
+    /// **An application starts this once and leaves it running** — the operator's call of
+    /// 2026-09-23. It used to start and stop with the tracker, so before Start nothing was
+    /// transmitted at all: the patch editor's IDENTIFY and TEST changed a buffer nobody sent, a
+    /// Stop to change input dropped the Art-Net keep-alive so nodes fell back to their failsafe,
+    /// and a control surface's PANIC reached rules that could not hear it. The tracker's Start
+    /// and Stop reach this as `setTracking`.
     ///
     /// **The clock does not restart.** `elapsed()` runs from construction and only ever goes
     /// forwards, across as many stops and starts as an operator makes — see the note in the
@@ -394,7 +394,7 @@ public:
     /// For an observer, set before `start()`.
     rt::RoundLateness& lateness() noexcept { return lateness_; }
 
-    /// Whether the output thread got a raised priority when it started (an earlier review; see
+    /// Whether the output thread got a raised priority when it started (see
     /// rt/thread_priority.hpp), as the thread itself saw it. False before it has started.
     bool threadRaised() const noexcept { return threadRaised_.load(std::memory_order_acquire); }
     /// Whether the output thread waits between rounds on a high-resolution timer
@@ -433,13 +433,13 @@ public:
     static constexpr int kQuitFrames = 3;
 
     /// Seconds since this runner was **constructed**, on the steady clock the transports are
-    /// driven from — and the clock `trigger::Context::now` is, so the cooldowns and
+    /// driven from — and the clock `trigger::Context::now` is, so the rules' cooldowns and
     /// follow-up delays are measured on it.
     ///
     /// Monotonic for the runner's whole life, stops and starts included. Anything comparing a
     /// remembered instant against "now" has to use this one and no other: a second clock with
-    /// a different origin is what made the "12s ago" read minutes wrong. Safe from any
-    /// thread, because nothing writes the origin after construction.
+    /// a different origin is what made the last-fired line's "12s ago" read minutes wrong. Safe
+    /// from any thread, because nothing writes the origin after construction.
     double elapsed() const noexcept;
 
     /// The newest beat the output thread has fired, for the window's beat dots. `due` is when the
@@ -477,7 +477,7 @@ public:
     /// Taken again by the output thread after every command it applies, so it is at worst one
     /// round — a millisecond — behind what is really being sent.
     struct Snapshot {
-        /// the targets, in the order a rule's routing mask indexes them.
+        /// The targets, in the order a rule's routing mask indexes them.
         std::vector<OutputTarget> outputs;
         bool link = false;
         /// The beats are Link's own, so Link is followed and not led, whatever its switch says —
@@ -488,7 +488,7 @@ public:
         /// one failure an operator has to be told about.
         std::optional<std::string> midiClockPort;
         bool midiClockOpen = false;
-        /// the namespace prefix. Fixed at construction and never reassigned, so reading it
+        /// The namespace prefix. Fixed at construction and never reassigned, so reading it
         /// off the transports would in fact be safe — it is here so that the rule can be the
         /// simple one: a thread that is not the output thread reads the snapshot and nothing
         /// else. `WindowController::currentSettings` is the caller that has to save it.
@@ -508,9 +508,9 @@ public:
         /// will not resolve is found out on a thread of its own, after the command that set it
         /// has long been answered, so this is where it is reported.
         std::vector<Transports::Problem> outputProblems;
-        /// What went wrong on the output thread that nothing else says — an earlier review,
-        /// whose counters were kept and never shown. Counted since the runner started, which is
-        /// launch: the thread runs for the application's life.
+        /// What went wrong on the output thread that nothing else says — counters that used to
+        /// be kept and never shown. Counted since the runner started, which is launch: the
+        /// thread runs for the application's life.
         struct Trouble {
             /// Stages of a round that threw (`errors`), and the last one, as "stage: what".
             std::uint64_t roundErrors = 0;
@@ -529,14 +529,14 @@ public:
     Snapshot snapshot() const;
     /// How many snapshots have been taken. Any thread. A reader at redraw rate copies the
     /// snapshot only when this has moved: the copy is every target and every fixture, and
-    /// thirty of them a second of the same thing was an earlier review Low items. Read before
-    /// `snapshot()`, so a snapshot taken between the two is caught by the next look.
+    /// thirty of them a second of the same thing was needless work. Read before `snapshot()`, so
+    /// a snapshot taken between the two is caught by the next look.
     std::uint64_t snapshotVersion() const noexcept {
         return snapshotVersion_.load(std::memory_order_acquire);
     }
 
     /// One rule's live switches as the output thread has them: the three things a control
-    /// surface can change behind the editor. See `liveRules`.
+    /// surface can change behind the rule editor. See `liveRules`.
     struct LiveRule {
         std::string id;
         bool enabled = true;
@@ -581,13 +581,13 @@ public:
 
     /// Link's clock, for `engine::BeatEngine::setHostTimeSource`.
     ///
-    /// the stamp is taken on the audio thread, so this has to be installed before the
+    /// The host-clock stamp is taken on the audio thread, so this has to be installed before the
     /// stream is opened. It is stable for this runner's life — the session is built once
     /// and switched on and off, never replaced — which is exactly why switching Link off
     /// mid-set cannot leave the audio thread holding a destroyed clock.
     audio::HostTimeSource& hostTimeClock() noexcept { return transports_.link(); }
 
-    /// the latency offset. Any thread: it writes one atomic.
+    /// The latency offset. Any thread: it writes one atomic.
     void setLatencySeconds(double seconds) noexcept { transports_.setLatencySeconds(seconds); }
 
     /// Asks for a change to what is being sent. Any thread; applied by the output thread
@@ -618,8 +618,9 @@ public:
 
     /// Calls `look(rules, transports, sink)` **between two of the output thread's rounds**, and
     /// returns what it returns — the one safe way to read the rules or the transports from
-    /// another thread while the runner is running, which since an earlier review is always. It
-    /// holds the output thread up for as long as `look` takes, so keep it to copying things out.
+    /// another thread while the runner is running, which, as it runs for the application's
+    /// whole life, is always. It holds the output thread up for as long as `look` takes, so
+    /// keep it to copying things out.
     template <typename Look>
     decltype(auto) inspect(Look&& look) const {
         const std::lock_guard<std::mutex> owner(ownerMutex_);
@@ -638,7 +639,7 @@ public:
     /// nothing.
     static constexpr std::chrono::milliseconds kWaitForSync{5000};
 
-    /// the `/ctl/panic` and `/ctl/rule/<id>/enable`, for a `control::ControlSurface`.
+    /// `/ctl/panic` and `/ctl/rule/<id>/enable`, for a `control::ControlSurface`.
     ///
     /// Both are `post` under another name — the rules belong to the output thread, so there
     /// is no other way in — and both are safe from a socket's thread or RtMidi's callback
@@ -661,12 +662,12 @@ public:
     /// left wondering why nothing ticks.
     std::string lastError() const;
 
-    /// the rules, for reading — how many there are, whether one is valid, what it has
+    /// The rules, for reading — how many there are, whether one is valid, what it has
     /// fired. **Only while the thread is stopped**: the rules belong to the output thread,
     /// like the transports, and for the same reason. Change them through `post`.
     const trigger::TriggerEngine& triggers() const noexcept { return triggers_; }
 
-    /// Whether the halt is engaged. **Any thread, running or not** — unlike everything
+    /// Whether the PANIC halt is engaged. **Any thread, running or not** — unlike everything
     /// reached through `triggers()`, which is the output thread's alone.
     ///
     /// Its own atomic rather than `triggers_.panicked()`, because that is a plain `bool`
@@ -678,23 +679,23 @@ public:
     /// counters on the output thread; a snapshot from anywhere else.
     const RuleSink& ruleSink() const noexcept { return sink_; }
 
-    /// One message a rule sent, as the last-fired line and Phase 6's event log want it.
+    /// One message a rule sent, as the last-fired line and the event log want it.
     struct Fired {
         /// `Rule::Config::id` — which rule, so a card can show only its own.
         std::string ruleId;
         /// The OSC address, or "note 36 ch 10", exactly as it went out with every `{}`
-        /// already filled in. the design: *"showing the actually-sent message"*, not the template.
+        /// already filled in — the message actually sent, not the template.
         std::string message;
         /// Seconds since the runner was made — `elapsed()`, a clock that only goes forwards and
         /// that the transports are driven from. Not since `start()`: that went back to zero on
         /// every Start (see `start`).
         double when = 0.0;
-        /// the release half rather than a fire of its own. It belongs in the log — a
-        /// release that never left is a clip left held, and nothing else would say so — but
-        /// **a rule that fired once has to count once**, and a Resolume connect sends a 1 and
-        /// then a 0. See `trigger::TriggerEngine::FireObserver`.
+        /// The release half of a press-then-release rather than a fire of its own. It belongs
+        /// in the log — a release that never left is a clip left held, and nothing else would
+        /// say so — but **a rule that fired once has to count once**, and a Resolume connect
+        /// sends a 1 and then a 0. See `trigger::TriggerEngine::FireObserver`.
         bool followUp = false;
-        /// What each generator produced, in the order the editor draws the chips. Empty
+        /// What each generator produced, in the order the rule editor draws the chips. Empty
         /// for a follow-up. See `trigger::Rule::lastSlots`.
         std::vector<trigger::Value> slots;
         /// The rule fired and was **not sent**, because it is muted. In the log for the reason
@@ -720,7 +721,7 @@ public:
     /// When beats have been fired, for a test to read. Output thread only, like `triggers()`.
     const BeatScheduler& scheduler() const noexcept { return scheduler_; }
 
-    /// **What the rig is being held on, and by which rule** — an earlier review of releases the operator
+    /// **What the rig is being held on, and by which rule** — the review of releases the operator
     /// asked for on 2026-10-06, after a laser went on playing under a muted rule: *"anything that
     /// needs an explicit release/disarm ... this is dangerous"*.
     ///
@@ -751,7 +752,7 @@ private:
     /// One round: every beat heard, every beat predicted and due, then the clock. **The caller
     /// must hold `ownerMutex_`.**
     void drainOnce(double now);
-    /// One beat to the namespace and the beat triggers, about its own moment.
+    /// One beat to takt4's namespace and the rules' beat triggers, about its own moment.
     void fireBeat(const ScheduledBeat& beat, double now);
     /// Everything posted since the last round, in order, under `ownerMutex_` — so this is
     /// the way in for a thread that is not the output thread, and the output thread's own
@@ -793,7 +794,7 @@ private:
     void resolveRouting() noexcept;
     /// Applies `act` to the rule `id` names, or to every rule when it is `kAllRules`.
     void forEachNamed(std::string_view id, const std::function<void(trigger::Rule&)>& act);
-    /// The instant every rule in this round is judged against — the ONLY IF stage, made
+    /// The instant every rule in this round is judged against — the rules' ONLY IF stage, made
     /// once so that two rules with the same condition cannot disagree about it.
     trigger::Context contextAt(double now) const;
 
@@ -842,8 +843,8 @@ private:
     /// `BeatScheduler`.
     BeatScheduler scheduler_;
     /// Stopped by `setTracking(false)` and not started since: no beat heard or predicted is fired,
-    /// and no onset. False until told, so a runner nobody tells —
-    /// the console's, the tests' — fires what it hears. The output thread's own.
+    /// and no onset. False until told, so a runner nobody tells — the console's, the tests' —
+    /// fires what it hears. The output thread's own.
     bool quiet_ = false;
     /// The onset count last seen from the source. The output thread has no frames of its
     /// own, so a count that moved is how it learns one happened.
@@ -878,7 +879,7 @@ private:
     ///
     /// It exists because `post` applies on the *caller's* thread while the runner is
     /// stopped — which is what lets an app be configured before it is started — and there is
-    /// more than one caller. the `panic` and `rule/<id>/enable` are documented safe from
+    /// more than one caller. `panic` and `rule/<id>/enable` are documented safe from
     /// RtMidi's callback and from the OSC receiver's loop, and the window opens both of
     /// those ports before Start on purpose, so an inbound message and a keystroke in the rule
     /// editor really can be inside `apply` at the same time. Both mutate the same vector of
@@ -930,7 +931,7 @@ private:
     /// in the middle of a round rather than in a command, so the round compares against this
     /// and takes a fresh snapshot only when the count moves.
     std::size_t lostInSnapshot_ = 0;
-    /// the fired messages, written by the output thread and drained by a UI. A mutex
+    /// The fired messages, written by the output thread and drained by a UI. A mutex
     /// rather than a ring because the entries hold strings and both sides are far from the
     /// audio thread — the output thread already takes two of these every round.
     mutable std::mutex firedMutex_;

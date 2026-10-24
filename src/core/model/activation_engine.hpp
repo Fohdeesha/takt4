@@ -30,7 +30,7 @@ struct FrameActivation {
     float downbeat = 0.0f;
     float nonBeat = 0.0f;
 
-    /// the intensity classifier, riding along with the activation because it is
+    /// The intensity classifier, riding along with the activation because it is
     /// made from the same feature frame and on the same thread — see
     /// `features::IntensityClassifier`, which reuses the difference half of the frame and so
     /// costs 144 additions rather than a second FFT.
@@ -39,7 +39,7 @@ struct FrameActivation {
     /// exists. `tracking::TrackedFrame` is the particle filter's output and has no business
     /// carrying it, and the output thread never sees a frame at all.
     features::Intensity intensity = features::Intensity::Normal;
-    /// True on a frame the classifier called a flux peak — the *"on onset"*.
+    /// True on a frame the classifier called a flux peak — for the rules that fire *on onset*.
     bool onset = false;
     /// The raw spectral flux, unsmoothed. For a diagnostic trace; nothing should threshold
     /// it directly, because its scale is a fact about the master rather than about the music.
@@ -51,10 +51,10 @@ struct FrameActivation {
     float rms = 0.0f;
 };
 
-/// The live half of Phase 3: hops in from the audio callback, class
+/// The model, run live: hops in from the audio callback, class
 /// probabilities out at 50 Hz.
 ///
-/// Per the ruling the audio thread does nothing but copy each hop into a lock-free
+/// By design, the audio thread does nothing but copy each hop into a lock-free
 /// ring; a worker thread drains it and runs the feature front end and the model. The
 /// audio path therefore cannot be blamed for a dropout, at the cost of a few
 /// milliseconds — on top of the 40 ms that madmom's centred framing costs inherently,
@@ -142,7 +142,7 @@ public:
         return samplesRepaired_.load(std::memory_order_relaxed);
     }
 
-    /// The Phase 3 real-time check: the worst the worker has taken over one hop,
+    /// The real-time check: the worst the worker has taken over one hop,
     /// and over the model alone, in microseconds. One hop is 20000 µs of audio.
     double worstHopMicros() const noexcept {
         return worstHopMicros_.load(std::memory_order_relaxed);
@@ -158,8 +158,8 @@ public:
     /// false when the queue is empty. Only valid while the worker is not running.
     bool step() noexcept;
 
-    /// What the worker got from the scheduler and the FPU when it started (an earlier review;
-    /// see rt/thread_priority.hpp), as the worker itself saw it. False before it has started.
+    /// What the worker got from the scheduler and the FPU when it started (see
+    /// rt/thread_priority.hpp), as the worker itself saw it. False before it has started.
     bool workerRaised() const noexcept { return workerRaised_.load(std::memory_order_acquire); }
     bool workerFlushesDenormals() const noexcept {
         return workerFlushes_.load(std::memory_order_acquire);

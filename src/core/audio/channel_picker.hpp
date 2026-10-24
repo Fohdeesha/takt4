@@ -27,7 +27,7 @@ enum class PickMode {
 
 const char* toString(PickMode mode) noexcept;
 
-/// The one ChannelPicker abstraction of the design with its two implementations
+/// The one ChannelPicker abstraction with its two implementations
 /// behind it. Decides how many channels to open and which, and turns each interleaved
 /// input block into the mono signal the rest of the engine sees.
 ///

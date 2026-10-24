@@ -30,18 +30,18 @@ namespace takt4::ui {
 ///
 /// Replacing the patch is cheap and, more to the point, *safe*: levels survive a re-patch where
 /// they can (`DmxEngine::setPatch`). And nothing is re-patched per keystroke: typing 101 into the
-/// address used to patch the fixture at 1, then 10, then 101, parking each channel it passed over
-///, and a name re-patched the rig on every letter. Every box
-/// commits on Enter, on a click away, or before any other action (`commitDrafts`) — and a number
-/// box's Up and Down, which are a step each and commit it, as a spin box's arrows would. Nothing is
-/// re-patched that has not changed: a re-patch ends a channel's TEST.
+/// address used to patch the fixture at 1, then 10, then 101, parking each channel it passed over,
+/// and a name re-patched the rig on every letter. Every box commits on Enter, on a click away, or
+/// before any other action (`commitDrafts`) — and a number box's Up and Down, which are a step
+/// each and commit it, as a spin box's arrows would. Nothing is re-patched that has not changed: a
+/// re-patch ends a channel's TEST.
 ///
 /// **Every row is written in place** (`writeRows`): the window's controls are weltformat.slint's,
 /// none of which sets its own value, so no row has to be built again to show what the model
 /// holds — and no element is destroyed under the hand that is using it.
 ///
 /// Nothing here touches a Slint property outside `tick()` and the callbacks, both of which run
-/// on the UI thread — the rule.
+/// on the UI thread — the only thread a Slint property may be touched from.
 class FixturesController {
 public:
     /// Called whenever the patch changes, so the owner can save it and keep its own copy
@@ -322,11 +322,10 @@ private:
     /// when that click may have put another fixture in the editor. If that fixture holds what the
     /// first one did there — two pars at universe 0, two channels parked at 0 — nothing changes
     /// the box, which goes on holding what was typed, and its late commit lands it on the second
-    /// fixture (an earlier review, H10, M18; measured 2026-10-01: with this check taken
-    /// out, "what is typed in the patch editor goes to the fixture it was typed for" fails on the
-    /// universe and the parked level). So every action commits what was typed first
-    /// (`commitDrafts`), and a commit nothing was typed for — or typed for a fixture no longer
-    /// showing — is dropped.
+    /// fixture (measured 2026-10-01: with this check taken out, "what is typed in the patch editor
+    /// goes to the fixture it was typed for" fails on the universe and the parked level). So every
+    /// action commits what was typed first (`commitDrafts`), and a commit nothing was typed for —
+    /// or typed for a fixture no longer showing — is dropped.
     struct Typed {
         std::string fixtureId;
         Numbered box = Numbered::Address;

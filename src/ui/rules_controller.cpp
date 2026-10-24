@@ -146,11 +146,10 @@ RulesController::RulesController(output::OutputRunner& runner,
     }
     window_->set_laser_moves(moves);
 
-    // **Every action commits what was being typed before it runs** (an earlier review,
-    // M18) — see `typing_`. A box's own commit is not wrapped: its setter clears its own record
-    // (`typed`), and while it has the keyboard no other box can have one. What the box keystrokes
-    // are is said once, here, rather than at the top of forty setters, where the forty-first
-    // would have been the one that forgot.
+    // **Every action commits what was being typed before it runs** — see `typing_`. A box's own
+    // commit is not wrapped: its setter clears its own record (`typed`), and while it has the
+    // keyboard no other box can have one. What the box keystrokes are is said once, here, rather
+    // than at the top of forty setters, where the forty-first would have been the one that forgot.
     const auto finishing = [this](auto action) {
         return [this, action](auto... args) {
             commitTyping();
@@ -528,8 +527,8 @@ void RulesController::noteTyping(TypedIn where, int index, int field, std::strin
 void RulesController::rowRemoved(TypedIn where, int index) noexcept {
     // What was being typed into a row follows the row: gone with the one removed, or up one
     // with a row below it. Left at its old index, the next `commitTyping` wrote it into the row
-    // that took that place, or into nothing. The window commits
-    // before a × runs; any other caller does not.
+    // that took that place, or into nothing. The window commits before a × runs; any other
+    // caller does not.
     const Rule::Config* rule = current();
     if (!typing_ || typing_->where != where || rule == nullptr || typing_->ruleId != rule->id) {
         return;
@@ -726,14 +725,14 @@ void RulesController::commit() {
 }
 
 void RulesController::matchSegmentsToAddress(Rule::Config& rule) {
-    // the validity is mostly this count, so an edit that adds a `{}` should hand the
+    // A rule's validity is mostly this count, so an edit that adds a `{}` should hand the
     // operator a chip rather than a rule that refuses to fire until they work out why.
     // Extra generators are kept until the address stops needing them, and a shortened
     // address drops from the end — which is where a deleted placeholder came from.
     const std::size_t wanted = trigger::countPlaceholders(rule.address);
     while (rule.segments.size() < wanted) {
         Generator::Config segment;
-        // Shuffle over 1-8 is the own default and the useful thing for a clip grid.
+        // Shuffle over 1-8 is the generator's own default and the useful thing for a clip grid.
         segment.seed = rule.seed + rule.segments.size() + 1;
         rule.segments.push_back(segment);
     }
@@ -752,8 +751,8 @@ void RulesController::setRules(std::vector<trigger::Rule::Config> rules) {
     // worse than one that reads zero.
     firesSeen_.clear();
     slotsSeen_.clear();
-    // And the mutes and rates last seen on the running rules, which the loaded set starts without
-    //: kept, they showed a rule muted that the new set had not.
+    // And the mutes and rates last seen on the running rules, which the loaded set starts without:
+    // kept, they showed a rule muted that the new set had not.
     mutedSeen_.clear();
     rateSeen_.clear();
     rules_ = std::move(rules);
@@ -865,10 +864,10 @@ std::string RulesController::newRuleId(const std::vector<Rule::Config>& rules) {
 void RulesController::add() {
     commitTyping();
     Rule::Config rule;
-    // A fresh id that is legal as an OSC address segment (the design addresses a rule by it) and
-    // that nothing else has. **Random, as an output's and a fixture's are**, never a number
-    // counted from the rules there are: delete rule3, add a rule, and the new one was "rule3" —
-    // and a control surface's button aimed at the old one drove the new one.
+    // A fresh id that is legal as an OSC address segment (a control surface addresses a rule by
+    // it) and that nothing else has. **Random, as an output's and a fixture's are**, never a
+    // number counted from the rules there are: delete rule3, add a rule, and the new one was
+    // "rule3" — and a control surface's button aimed at the old one drove the new one.
     rule.id = newRuleId(rules_);
     // A name, rather than the blank the list showed as "(unnamed)". It is the operator's to
     // change and most of them will, but a list of "(unnamed)" rows is a list that cannot be
@@ -897,8 +896,8 @@ void RulesController::add() {
     // nothing happened. Reported from a rig: "it's not obvious that they're entirely
     // disabled". The box is labelled now, and a rule an operator asked for is armed.
     rule.enabled = true;
-    // **And its ONLY IF switched off, and folded**: nothing optional is on by
-    // default. `conditionsOn` starts off in the struct; the fold is the window's.
+    // **And its ONLY IF switched off, and folded**: nothing optional is on by default.
+    // `conditionsOn` starts off in the struct; the fold is the window's.
     rules_.push_back(rule);
     resettle(static_cast<int>(rules_.size()) - 1);
     window_->set_only_if_folded(true);
@@ -1015,7 +1014,7 @@ void RulesController::appendRig(std::vector<Rule::Config> added) {
     // Appended rather than replacing: an operator adding a second rig to a set they have
     // already built has not asked to lose the first.
     for (Rule::Config rule : added) {
-        // An id already in use would make the `/ctl/rule/<id>/enable` ambiguous, and
+        // An id already in use would make `/ctl/rule/<id>/enable` ambiguous, and
         // `TriggerEngine::find` takes the first. Numbered up rather than refused: adding the
         // same rig twice is a reasonable thing to do with three more layers in mind.
         std::uint64_t copies = 0;
@@ -1062,11 +1061,11 @@ void RulesController::setEnabled(bool on) {
         commit();
         // Back into the tick, which never ticks itself (weltformat.slint's `Tick`).
         window_->set_rule_enabled(on);
-        // **And to the running rule itself**, as MUTE is. A set
-        // posted with the switch unchanged keeps the live switch (`Rule::carryFrom`), and after a
-        // control surface had switched this rule the editor's copy said what the surface did — so
-        // unticking it posted the value the running rule was already configured with, the rule
-        // went on firing, and the box said it was off.
+        // **And to the running rule itself**, as MUTE is. A set posted with the switch unchanged
+        // keeps the live switch (`Rule::carryFrom`), and after a control surface had switched
+        // this rule the editor's copy said what the surface did — so unticking it posted the
+        // value the running rule was already configured with, the rule went on firing, and the
+        // box said it was off.
         runner_.post(output::OutputCommand::ruleEnabled(rule->id, on));
     }
 }
@@ -1473,11 +1472,11 @@ void RulesController::pickSend(int index) {
     }
     const trigger::Message::Kind was = rule->sendKind;
     rule->sendKind = trigger::kMessageKinds[static_cast<std::size_t>(index)];
-    // **A number nobody chose does not go out** (an earlier review, and the operator's call: the
-    // rule stays armed and waits). A rule switched to a note or a controller used to fire at
-    // once with whatever the number generator held — a shuffle over 1 to 8 by default, so CC 7
-    // at one on channel 1, to every MIDI output, on some bar: a synth's volume gone. A number
-    // carries over only where it means the same thing (`trigger::sameNumber`).
+    // **A number nobody chose does not go out** (the operator's call: the rule stays armed and
+    // waits). A rule switched to a note or a controller used to fire at once with whatever the
+    // number generator held — a shuffle over 1 to 8 by default, so CC 7 at one on channel 1, to
+    // every MIDI output, on some bar: a synth's volume gone. A number carries over only where it
+    // means the same thing (`trigger::sameNumber`).
     if (trigger::sendsNumber(rule->sendKind) && !trigger::sameNumber(was, rule->sendKind)) {
         const std::uint64_t seed = rule->number.seed;
         rule->number = Generator::Config{};
@@ -1765,7 +1764,7 @@ void RulesController::pickHostPreset(int index) {
         if (presetOf(rule->address) == 0) {
             return;
         }
-        // the *"blank custom option"*, blanked. The address goes, its chips go with it —
+        // The blank custom option, blanked. The address goes, its chips go with it —
         // `matchSegmentsToAddress` drops a generator when the placeholder it filled does —
         // and so does the press-then-release, which is a thing about Resolume's `connect`
         // and not about OSC. What is left is a rule that sends a value to an address the
@@ -1782,9 +1781,9 @@ void RulesController::pickHostPreset(int index) {
     rule->sendKind = trigger::Message::Kind::Osc;
     rule->address = preset.address;
     matchSegmentsToAddress(*rule);
-    // the Resolume line, whole: "int 1 (press) then 0 (release)". the design is emphatic that
-    // a rule sending only the 1 leaves the clip held, so a preset that filled the address
-    // and left the release off would have shipped the trap rather than the answer.
+    // Resolume's connect, whole: int 1 (press) then 0 (release). A rule sending only the 1
+    // leaves the clip held, so a preset that filled the address and left the release off
+    // would have shipped the trap rather than the answer.
     if (trigger::countPlaceholders(rule->address) > 0 ||
         rule->address.find("connect") != std::string::npos) {
         rule->value.kind = GeneratorKind::Fixed;
@@ -2022,9 +2021,9 @@ void RulesController::tick() {
     if (!fired.empty()) {
         for (const output::OutputRunner::Fired& entry : fired) {
             // **By the name the list shows**, not the id — "rule1-copy2" is a word this window
-            // shows nowhere else, so a log line could not be matched to a rule (an earlier review of
-            // 2026-09-25, L38). Named as the rule is called when it fired; the id stays the
-            // key, and only one no longer in the set is said to be gone.
+            // shows nowhere else, so a log line could not be matched to a rule. Named as the
+            // rule is called when it fired; the id stays the key, and only one no longer in the
+            // set is said to be gone.
             const auto named =
                 std::find_if(rules_.begin(), rules_.end(),
                              [&entry](const Rule::Config& one) { return one.id == entry.ruleId; });
@@ -2032,8 +2031,8 @@ void RulesController::tick() {
                                     : named->name.empty() ? "(unnamed)"
                                                           : named->name;
             // A muted rule still runs and still "fires" — that is what keeps it in phase — but
-            // nothing left, and the log said it had: the line says so, drawn
-            // apart from the message.
+            // nothing left, and the log said it had: the line says so, drawn apart from the
+            // message.
             log_.push_back(LogEntry{spellNumber(entry.when) + "s", who, entry.message, entry.muted});
             lastFiredAnywhere_ =
                 entry.muted ? entry.message + "  (muted, not sent)" : entry.message;

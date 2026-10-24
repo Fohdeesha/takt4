@@ -1,6 +1,6 @@
 """Compare two evaluate.py reports, for the accuracy gate.
 
-the rule is that anything touching `TempoTracker` or `ParticleFilter` re-runs
+The accuracy gate's rule is that anything touching `TempoTracker` or `ParticleFilter` re-runs
 the Ballroom evaluation and diffs it against
 `tests/data/tracking/evaluation/ballroom-generic-nofold.json`, and that **bit-identical is
 the standard, not "close"**. Eyeballing the summary table does not meet it: the seven
@@ -27,8 +27,8 @@ became a bar of four alone is with the waltz put back:
 
 (The committed reports carried `cli_args ""` from before that default changed until
 2026-09-24, so this procedure failed on `cli_args` every time it was followed, and a gate that
-is always red teaches people to read past it — an earlier review Python-tools list. They were
-regenerated that day, with `--meters 3,4` recorded.)
+is always red teaches people to read past it. They were regenerated that day, with
+`--meters 3,4` recorded.)
 
 Exit status is 1 when any shared value differs, so it can gate a script.
 """

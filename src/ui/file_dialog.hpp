@@ -7,7 +7,7 @@
 
 namespace takt4::ui {
 
-/// A native "open" / "save as" dialog, for the import and export.
+/// A native "open" / "save as" dialog, for import and export.
 ///
 /// **Why a platform call rather than a Slint dialog.** Slint has no file picker, and a
 /// hand-drawn one would be a file browser to write and maintain — with no idea of the

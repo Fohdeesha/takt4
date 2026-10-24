@@ -142,10 +142,10 @@ void runTo(MidiClock& clock, Wire& wire, double until) {
 
 TEST_CASE("MIDI Start waits for a downbeat, and the downbeat's tick is the first after it",
           "[output][midi]") {
-    // an earlier review. A receiver starts on the first tick after Start and counts its bars from
-    // there, and Start used to go out on the press — so a drum machine's bar 1 was wherever the
-    // operator's finger fell. The clock ticks from the press now, so the receiver has a tempo,
-    // and Start waits for the downbeat it is given.
+    // A receiver starts on the first tick after Start and counts its bars from there, and Start
+    // used to go out on the press — so a drum machine's bar 1 was wherever the operator's finger
+    // fell. The clock ticks from the press now, so the receiver has a tempo, and Start waits for
+    // the downbeat it is given.
     Wire wire;
     MidiClock clock(wire, 120.0); // a beat every half second, a tick every 1/48 s
     clock.startTicking(0.0);
@@ -231,7 +231,7 @@ std::size_t count(const Wire& wire, unsigned char status) {
 
 TEST_CASE("a DOWNBEAT pressed after Start moves a receiver's bars with the tracker's",
           "[output][midi]") {
-    // an earlier review, the half it left open. A receiver counts its bars from the
+    // Start waiting for a downbeat leaves one case open. A receiver counts its bars from the
     // first tick after Start, and Song Position only moves it while it is stopped — so a DOWNBEAT
     // press once the clock had started moved the lights and Link and left every drum machine a
     // beat off for the rest of the run. Now the clock sends Stop, Song Position 0 and Start ahead
@@ -332,8 +332,8 @@ TEST_CASE("syncing steers the next beat tick towards the beat and adds no tick",
     REQUIRE(clock.pulseInQuarter() == 10);
 
     // The tracker calls a beat at 1.02, twenty milliseconds after the clock's own beat tick
-    // at 1.0. The clock does not jump there — that is what added a tick —
-    // it respaces the fourteen ticks left so the beat tick lands half-way, at 1.01.
+    // at 1.0. The clock does not jump there — that is what added a tick — it respaces the
+    // fourteen ticks left so the beat tick lands half-way, at 1.01.
     clock.syncToBeat(1.02);
     CHECK(clock.pulseInQuarter() == 10);
     CHECK(clock.advance(1.0099) == 14); // pulses 10 to 23
@@ -476,10 +476,10 @@ Landing landing(const ClockRun& run, double latency, std::size_t settle) {
 } // namespace
 
 TEST_CASE("the clock sends exactly 24 ticks a beat against jittered beats", "[output][midi]") {
-    // an earlier review, as it asked for it: beats with ±10 ms of jitter, thousands of them, and
-    // exactly 24 ticks to every one. The clock this replaced sent 25 on 44 % of beats at 128
-    // BPM with no offset, and 26 to 28 on every beat at −40 ms, in zero-gap bursts — a drum
-    // machine counting ticks walked off the music by two beats a minute.
+    // Beats with ±10 ms of jitter, thousands of them, and exactly 24 ticks to every one. The
+    // clock this replaced sent 25 on 44 % of beats at 128 BPM with no offset, and 26 to 28 on
+    // every beat at −40 ms, in zero-gap bursts — a drum machine counting ticks walked off the
+    // music by two beats a minute.
     for (const double latency : {0.0, -0.040, 0.030}) {
         for (const double bpm : {128.0, 174.0, 93.7}) {
             INFO("latency " << latency * 1000.0 << " ms at " << bpm << " BPM");

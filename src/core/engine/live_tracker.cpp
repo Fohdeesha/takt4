@@ -161,7 +161,7 @@ void LiveTracker::readyForRun() {
     while (meter_.pop(level)) {
     }
 
-    // the stamp is taken on the audio thread, so the clock has to be in place before
+    // The host-time stamp is taken on the audio thread, so the clock has to be in place before
     // there is one. A restarted stream begins its sample counter again, and the filter's
     // regression is fitted to the old one, so it is forgotten with the run it belonged to.
     if (hostTime_ != nullptr) {
@@ -177,7 +177,7 @@ std::function<void()> LiveTracker::openJob(std::shared_ptr<OpenSlot> slot,
                                            const audio::ChannelSelection& selection) {
     // Opened and started on the audio thread, where it will be stopped and closed. Opening can
     // throw — a channel the device does not have (std::invalid_argument), or a driver that will
-    // not give up the interface (PortAudioError, the design R2) — and that reaches the caller.
+    // not give up the interface (PortAudioError) — and that reaches the caller.
     //
     // The processor by address, though the job can outlive the tracker: everything the stream
     // sends reaches it through the stream's gate, and `giveUp` — which the tracker's way out goes

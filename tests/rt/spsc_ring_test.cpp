@@ -94,7 +94,7 @@ TEST_CASE("SpscRing carries every item across threads in order", "[rt]") {
 }
 
 TEST_CASE("SpscRing's size read from a third thread is never more than it holds", "[rt]") {
-    // an earlier review Low items: read head-then-tail from a thread that is neither end, a consumer
+    // Read head-then-tail from a thread that is neither end, a consumer
     // popping in between made the tail pass the head that was read, and the count wrapped to
     // the quintillions. A producer and a consumer running flat out on a small ring, which is
     // the ring nearly empty and both indices moving — the state that race needs — and a third

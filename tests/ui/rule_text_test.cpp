@@ -20,9 +20,8 @@
 #include <vector>
 
 // The rule editor's words, on their own: what `rule_text` makes of what is typed into a box,
-// and what it says back. These ran only through the window until they had a file of their own
-//, so the window tests are where the gestures are;
-// these are the answers.
+// and what it says back. These ran only through the window until they had a file of their own,
+// so the window tests are where the gestures are; these are the answers.
 
 using Catch::Approx;
 using takt4::output::OutputTarget;
@@ -54,7 +53,7 @@ TEST_CASE("rule text: a list typed into a box is split and trimmed", "[ui][trigg
 }
 
 TEST_CASE("rule text: only a finite number is a number", "[ui][trigger]") {
-    // an earlier review: `from_chars` reads these as numbers, and each one broke a rule.
+    // `from_chars` reads these as numbers, and each one broke a rule.
     CHECK_FALSE(rule_text::readNumber("nan"));
     CHECK_FALSE(rule_text::readNumber("inf"));
     CHECK_FALSE(rule_text::readNumber("-inf"));
@@ -210,8 +209,8 @@ TEST_CASE("rule presets: the picker follows the address", "[ui][trigger]") {
 }
 
 TEST_CASE("a folded section of the editor reads what it holds in one line", "[ui][trigger]") {
-    // the design: each of A to D folds, and folded it still reports, in the words the open
-    // section would be read as.
+    // Each of A to D folds, and folded it still reports, in the words the open section would be
+    // read as.
     using takt4::trigger::Trigger;
 
     SECTION("A, when") {

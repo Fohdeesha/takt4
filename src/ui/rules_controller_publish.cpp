@@ -158,8 +158,8 @@ void RulesController::publishSelected() {
     const Rule::Config* rule = current();
     window_->set_selected(selected_);
     if (rule == nullptr) {
-        // No rule picked: every control dashed and switched off, and the name box says what to do
-        // — the markup's `none`.
+        // No rule picked: every control dashed and switched off, and the name box says what to
+        // do — the markup's `none`.
         window_->set_rule_name(slint::SharedString(""));
         window_->set_rule_id(slint::SharedString(""));
         window_->set_rule_enabled(false);
@@ -204,7 +204,7 @@ void RulesController::publishSelected() {
     // the engine ignores it too (`trigger::takesCooldown`).
     window_->set_trigger_takes_cooldown(trigger::takesCooldown(rule->trigger));
 
-    // the rule subset, and what it currently reaches. Both are needed: the first is what
+    // The rule's routing, and what it currently reaches. Both are needed: the first is what
     // the rule names and the second is whether this rig has it, which is the one question a
     // preset from another rig raises.
     publishOutputChoices();
@@ -223,8 +223,7 @@ void RulesController::publishSelected() {
     //
     // And so writing one writes over what is being typed in it. Every action commits that first
     // (`commitTyping`), so this skips only a republish from outside — the main window's outputs
-    // or patch changing — which would otherwise take the keystrokes out from under the operator
-    //.
+    // or patch changing — which would otherwise take the keystrokes out from under the operator.
     if (!typingInto(kBpmRangeBox)) {
         window_->set_bpm_range(shared(spellNumber(rule->conditions.minBpm) + " - " +
                                       spellNumber(rule->conditions.maxBpm)));
@@ -325,11 +324,11 @@ void RulesController::publishFollowUps() {
     //
     // And OSC goes, because on an OSC rule it *is* the first entry: the same address with a
     // different argument is what a release means, so the two would behave identically. DMX
-    // goes for the same reason on a lighting rule: a DMX follow-up with no
-    // effect of its own — and nothing here can give it one — is exactly the release, so the
-    // list offered "release" and "DMX" and both did the same thing. A MIDI kind matching the
-    // rule's own is a different matter and stays — it carries a number of its own where a
-    // release inherits the one that fired, which is a real second gesture.
+    // goes for the same reason on a lighting rule: a DMX follow-up with no effect of its own —
+    // and nothing here can give it one — is exactly the release, so the list offered "release"
+    // and "DMX" and both did the same thing. A MIDI kind matching the rule's own is a different
+    // matter and stays — it carries a number of its own where a release inherits the one that
+    // fired, which is a real second gesture.
     std::vector<trigger::Message::Kind> allowed;
     for (const trigger::Message::Kind kind : trigger::kMessageKinds) {
         if (kind != trigger::Message::Kind::Osc && kind != trigger::Message::Kind::Dmx &&
@@ -405,8 +404,7 @@ void RulesController::publishFollowUps() {
     }
 
     // In place: no control on these rows sets its own value, so none goes deaf and no row is built
-    // again — which took the box the operator had just tabbed into down with it (an earlier review of
-    // 2026-09-25, M17).
+    // again — which took the box the operator had just tabbed into down with it.
     followRows_.write(rows);
 }
 
@@ -509,8 +507,7 @@ void RulesController::publishFixtureChoices() {
     }
     // Only the first `dmx::kMaxRoutableFixtures` (512): a rule carries its fixtures as a bit
     // each, and `dmx::resolveFixtures` reaches no further, so a tick past them would look like
-    // aiming and reach nothing. The patch editor says as much when one past the
-    // last is added.
+    // aiming and reach nothing. The patch editor says as much when one past the last is added.
     const std::size_t reachable = std::min(patch_.size(), dmx::kMaxRoutableFixtures);
     for (std::size_t i = 0; i < reachable; ++i) {
         const dmx::Fixture& fixture = patch_[i];
@@ -985,7 +982,7 @@ void RulesController::publishSlots() {
         row.shape_index = static_cast<int>(shapeIndex);
         row.ramp_bars = static_cast<int>(config.rampBars);
         row.ramp_float = config.rampFloat;
-        // the "what this slot last produced", paired by position: this chip is being
+        // What this slot last produced, paired by position: this chip is being
         // pushed at index `rows.size()`, which is the slot `Rule::lastSlots` put there.
         // Blank rather than stale when the rule has not fired since it was last edited —
         // adding a placeholder shifts every chip after it, and a number under the wrong box
@@ -1039,8 +1036,8 @@ void RulesController::publishSlots() {
         rows.push_back(std::move(row));
     };
 
-    // Named by the placeholder they fill, so a chip and the address read together — the design's
-    // "template segments render as editable chips".
+    // Named by the placeholder they fill, so a chip and the address read together — each
+    // template segment is an editable chip.
     const std::vector<std::string> names = [&rule] {
         std::vector<std::string> found;
         std::size_t at = 0;
@@ -1057,9 +1054,9 @@ void RulesController::publishSlots() {
     // One row per generator the rule draws, in `trigger::slotLayout`'s order — the order a fire
     // records in `Rule::lastSlots`, and the order `slotConfig` finds a row's generator by. It
     // used to be walked here and in `slotConfig` beside the core's own, with comments saying the
-    // three must not drift apart; there is one walk now, and a test
-    // holds it to what a fire records. Program change has nowhere to put a value and pitch
-    // bend is nothing but one; a lighting effect has only the generators it uses.
+    // three must not drift apart; there is one walk now, and a test holds it to what a fire
+    // records. Program change has nowhere to put a value and pitch bend is nothing but one; a
+    // lighting effect has only the generators it uses.
     for (const trigger::Slot& slot : trigger::slotLayout(*rule)) {
         const Generator::Config& generator = trigger::slotGenerator(*rule, slot);
         switch (slot.role) {
@@ -1068,8 +1065,8 @@ void RulesController::publishSlots() {
             break;
         case trigger::SlotRole::Value:
             push(valueLabelOf(rule->sendKind), generator);
-            // An OSC rule's value band carries the "send a value" tick: whether the
-            // address takes an argument at all. A MIDI value is the kind's to decide.
+            // An OSC rule's value band carries the "send a value" tick: whether the address takes
+            // an argument at all. A MIDI value is the kind's to decide.
             rows.back().is_osc_value = rule->sendKind == trigger::Message::Kind::Osc;
             break;
         case trigger::SlotRole::Number:

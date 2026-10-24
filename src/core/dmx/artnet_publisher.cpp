@@ -67,8 +67,7 @@ void ArtNetPublisher::forgetHistory() noexcept {
 
 void ArtNetPublisher::record(const DmxEngine& engine, double now) {
     // A universe the patch no longer has is not kept: its history was only ever freed when no
-    // node lagged, so re-patching while one did grew it by half a megabyte a universe (the
-    // 2026-09-25 review's L17).
+    // node lagged, so re-patching while one did grew it by half a megabyte a universe.
     const std::span<const PortAddress> patched = engine.universes();
     std::erase_if(history_, [patched](const History& history) {
         return std::find(patched.begin(), patched.end(), history.universe) == patched.end();
@@ -337,7 +336,7 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
     for (Target& target : targets_) {
         const double lag = target.lag;
         // The patch's universes, and then those it has just dropped, which are sent their zeros
-        // like any other frame.
+        // like any other frame (see `DmxEngine::released`).
         const std::size_t patched = engine.universes().size();
         const std::size_t total = patched + engine.released().size();
         for (std::size_t u = 0; u < total; ++u) {
@@ -346,7 +345,7 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
                 released ? engine.released()[u - patched] : engine.universes()[u];
             // Nothing is due within the 44 Hz period after the last frame sent, whatever has
             // moved, so such a round does not look the past frame up at all — the other half
-            // of an earlier review, beside the halving in `frameAt`.
+            // of keeping that lookup cheap, beside the halving in `frameAt`.
             if (const Paced* const known = findPaced(target, universe);
                 known != nullptr && known->everSent && now - known->lastSentAt < kMinFramePeriod) {
                 continue;

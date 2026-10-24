@@ -13,7 +13,7 @@
 
 namespace takt4::trigger {
 
-/// the six value generators.
+/// The value generators: the six below, and `Ramp`.
 ///
 /// | Generator | Behaviour |
 /// |---|---|
@@ -24,7 +24,7 @@ namespace takt4::trigger {
 /// | Fixed | Literal int, float, string or bool |
 /// | Live | A live value — BPM raw or normalised, beat, bar, confidence, meter, intensity |
 ///
-/// the design spells the last one **Value**, and this does not, because `Value` is already the
+/// The last one was first called **Value**, and is not, because `Value` is already the
 /// name of the thing every generator produces — a generator called Value, being the one
 /// whose output it does not choose, is the worst possible place for that collision.
 /// `labelOf` gives a UI the words a person should see.
@@ -37,7 +37,7 @@ enum class GeneratorKind : std::uint8_t {
     Live,
     /// A value that sweeps its range over a whole number of bars, locked to the downbeat.
     ///
-    /// **Not in the list**, and added on the user's ask for *"algorithmic settings ...
+    /// **Not one of the six**, and added on the user's ask for *"algorithmic settings ...
     /// based on the bpm of the song and downbeat"*. It is the one generator whose output is
     /// neither drawn nor read but *computed from where in the music we are*, which is what a
     /// Resolume dashboard parameter, a layer opacity or a clip speed wants — a value that
@@ -49,7 +49,7 @@ enum class GeneratorKind : std::uint8_t {
     Ramp,
 };
 
-/// Every kind, in the order a UI should offer them: the own order, which puts the
+/// Every kind, in the order a UI should offer them: the table's own order, which puts the
 /// default first and the deliberate choice second.
 inline constexpr std::array<GeneratorKind, 7> kGeneratorKinds{
     GeneratorKind::Shuffle, GeneratorKind::Random, GeneratorKind::Cycle, GeneratorKind::Weighted,
@@ -103,9 +103,9 @@ std::optional<RampShape> rampShapeOf(std::string_view name) noexcept;
 /// tracker's own downbeat rather than to a clock of its own: a ramp over four bars restarts
 /// on bar 1, 5, 9, and a manual downbeat snap moves it with the music.
 ///
-/// `meter` of zero means the filter has no opinion about the bar yet (the design — nothing assumes
-/// four), in which case the beat within the bar cannot be used and the phase advances a whole
-/// bar at a time.
+/// `meter` of zero means the filter has no opinion about the bar yet (nothing assumes four),
+/// in which case the beat within the bar cannot be used and the phase advances a whole bar at
+/// a time.
 double rampPhase(const Context& context, std::uint32_t bars) noexcept;
 
 std::string_view labelOf(GeneratorKind kind) noexcept;
@@ -116,7 +116,7 @@ std::optional<GeneratorKind> generatorKindOf(std::string_view name) noexcept;
 /// What the `Live` generator can read out of a `Context`.
 enum class LiveSource : std::uint8_t {
     Bpm,
-    /// the Resolume tempo: *"float, normalised 0-1 across 20-500 BPM"*. The range is a
+    /// Resolume's tempo: a float, normalised 0-1 across 20-500 BPM. The range is a
     /// property of the *host*, not of takt4, so it is configurable — that address is the
     /// reason this source exists and hardcoding 20-500 would make it Resolume's alone.
     BpmNormalised,
@@ -138,11 +138,12 @@ std::optional<LiveSource> liveSourceOf(std::string_view name) noexcept;
 
 /// Where `Shuffle`, `Random` and `Cycle` take their values from.
 ///
-/// the design describes those three over a *range* — "uniform random int in range", "round-robin
-/// through a range" — which is right for a clip grid and wrong for the other thing an
-/// operator wants constantly: a handful of clips they picked, in an order they chose. A
-/// range cannot say "3, 7, 1, 12", and neither could anything else here: `Weighted` holds an
-/// arbitrary list but draws from it at random, so an *ordered* list had no expression at all.
+/// `GeneratorKind`'s table describes those three over a *range* — "uniform random int in
+/// range", "round-robin through a range" — which is right for a clip grid and wrong for the
+/// other thing an operator wants constantly: a handful of clips they picked, in an order they
+/// chose. A range cannot say "3, 7, 1, 12", and neither could anything else here: `Weighted`
+/// holds an arbitrary list but draws from it at random, so an *ordered* list had no expression
+/// at all.
 ///
 /// **This is a second dimension, not two more kinds.** "Which values" and "in what order"
 /// are two questions an operator answers separately — the same four clips can be cycled or
@@ -150,7 +151,7 @@ std::optional<LiveSource> liveSourceOf(std::string_view name) noexcept;
 /// pairs would make the UI ask one question where there are two, and would leave
 /// `noRepeatWithin` meaning something subtly different in each half.
 enum class Pool : std::uint8_t {
-    /// Every integer from `low` to `high`. the own reading, and the default.
+    /// Every integer from `low` to `high`. The table's own reading, and the default.
     Range,
     /// Exactly `values`, in the order given.
     List,
@@ -162,7 +163,7 @@ std::string_view labelOf(Pool pool) noexcept;
 std::string_view nameOf(Pool pool) noexcept;
 std::optional<Pool> poolOf(std::string_view name) noexcept;
 
-/// True where a generator's `pool` means anything — the three the design spells with a range.
+/// True where a generator's `pool` means anything — the three described over a range.
 /// `Weighted` carries its own list, `Fixed` one literal, and `Live` no set at all.
 bool takesPool(GeneratorKind kind) noexcept;
 
@@ -180,10 +181,10 @@ struct WeightedChoice {
 /// A generator, as a flat configuration plus whatever state its kind needs.
 ///
 /// One class with a kind tag rather than six types behind an interface, because of what has
-/// to be done with these. the design requires the rule syntax to be *"an internal representation
-/// the user never types"*, edited by clicking a dropdown and a few fields; and Q7 requires
-/// rules to travel in a preset file. Both of those want a struct that can be copied,
-/// serialised and re-read, and neither wants a polymorphic hierarchy with a clone method.
+/// to be done with these. The rule syntax is an internal representation the user never types,
+/// edited by clicking a dropdown and a few fields; and rules travel in a preset file. Both of
+/// those want a struct that can be copied, serialised and re-read, and neither wants a
+/// polymorphic hierarchy with a clone method.
 ///
 /// **A configuration is clamped, never rejected.** `settings::load` is documented to never
 /// fail — *"settings that cannot be parsed must not be the reason an app will not open"* —
@@ -207,10 +208,9 @@ public:
     static constexpr int kGuardAttempts = 16;
 
     struct Config {
-        /// the design: *"Shuffle ... **The default.**"* — and the design is emphatic about why:
-        /// *"Plain random repeats constantly, and every repeat reads to an audience as a
-        /// bug. Shuffle-without-replacement is the difference between 'random visuals' and
-        /// 'visuals that look random'."*
+        /// Shuffle by default, and emphatically: plain random repeats constantly, and every
+        /// repeat reads to an audience as a bug. Shuffle-without-replacement is the difference
+        /// between "random visuals" and "visuals that look random".
         GeneratorKind kind = GeneratorKind::Shuffle;
 
         /// Where `Shuffle`, `Random` and `Cycle` draw from. Ignored by the other three.
@@ -237,7 +237,7 @@ public:
         /// an entry the operator did not add.
         std::vector<Value> values;
 
-        /// the *"no repeat within N guard"*, in draws. **One by default**, which for
+        /// The *no repeat within N* guard, in draws. **One by default**, which for
         /// `Shuffle` costs nothing and closes the one hole a bag has: within a bag no value
         /// can repeat, but the last draw of one bag and the first of the next are
         /// independent, so a bag of eight repeats at the seam one time in eight. That is
@@ -281,12 +281,12 @@ public:
         bool operator==(const Config&) const noexcept = default;
     };
 
-    /// the default: Shuffle over 1 to 8, with the seam guard on.
+    /// The default: Shuffle over 1 to 8, with the seam guard on.
     ///
     /// Two constructors rather than `Config config = {}`, which MSVC accepts and clang
     /// rejects — a default argument is a complete-class context, and a *nested* class's
-    /// member initialisers are not available in one. the design lists this exact
-    /// shape as a CI-only failure; `tracking::TempoTracker` is split the same way.
+    /// member initialisers are not available in one. This exact shape is a known CI-only
+    /// failure; `tracking::TempoTracker` is split the same way.
     Generator();
     explicit Generator(Config config);
 

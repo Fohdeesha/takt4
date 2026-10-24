@@ -1,6 +1,6 @@
 # `takt4-cli track --device` on this machine's default input, for a few seconds: the console's
-# live path, which is the application's own chain (`LiveTracker` and `OutputRunner`) since the
-# review's Low items. Run by ctest with -DCLI=<takt4-cli>. Opens a real input, so it is a
+# live path, which is the application's own chain (`LiveTracker` and `OutputRunner`).
+# Run by ctest with -DCLI=<takt4-cli>. Opens a real input, so it is a
 # `hardware` test; with no input device at all it is skipped rather than failed.
 
 execute_process(COMMAND "${CLI}" devices OUTPUT_VARIABLE listing RESULT_VARIABLE listed)

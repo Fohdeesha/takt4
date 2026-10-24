@@ -563,9 +563,8 @@ void assignIds(Preset& preset) {
 std::string toJson(const Settings& settings) {
     // One line each, as `formatOutputTarget` writes them: "main = 127.0.0.1:7000" and
     // "lights = midi MOTU Pro Audio Midi Out 1". Text rather than an object per target for
-    // the reason the MIDI bindings are text — this is a file a person may open and the
-    // headless mode is expected to hand-write one, and a line that reads as a sentence can
-    // be typed.
+    // the reason the MIDI bindings are text — this is a file a person may open and a headless
+    // mode is expected to hand-write one, and a line that reads as a sentence can be typed.
     json targets = json::array();
     // Link's switch and the first clock's device, in the fields an older build reads them from
     // — from the rows that hold them, or from those fields themselves for settings built by
@@ -656,8 +655,8 @@ std::string toJson(const Settings& settings) {
         {"outputs", targets},
         {"fixtures", patch},
         // Through `rule_json`, which owns the shape of a rule — as a node of this document, not
-        // as text parsed back in. the rules are the largest thing a preset carries and the
-        // only part of it with a format of its own.
+        // as text parsed back in. The rules are the largest thing a preset carries and the only
+        // part of it with a format of its own.
         {"rules", rulesToNode(settings.preset.rules)},
     };
     // The imported definitions, the same way through `profile_json`. Only when there are any.
@@ -964,7 +963,7 @@ Settings fromDocument(const json& document) {
     // ids routes rules by their names, and a hand-written line has no id: each gets one here,
     // and each rule is re-pointed from the name to that id — so the rig loads exactly as it
     // was, and renaming an output or a fixture from now on moves no rule (the operator's report
-    // of 2026-09-23, and an earlier review).
+    // of 2026-09-23).
     assignIds(settings.preset);
     return settings;
 }

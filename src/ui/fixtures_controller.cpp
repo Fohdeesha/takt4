@@ -85,11 +85,11 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     }
     window_->set_roles(roles);
 
-    // **Every action commits what the boxes hold before it runs**.
-    // `commitDrafts` used to run only when the selection moved, so a name, a group or a universe
-    // typed and not entered reverted on ADD CHANNEL, a channel's ×, or another fixture's dot. A
-    // box's own commit is not wrapped; it is the one box with the keyboard, and it counts only if
-    // it was typed in (`typed_`, `draft_`).
+    // **Every action commits what the boxes hold before it runs.** `commitDrafts` used to run
+    // only when the selection moved, so a name, a group or a universe typed and not entered
+    // reverted on ADD CHANNEL, a channel's ×, or another fixture's dot. A box's own commit is not
+    // wrapped; it is the one box with the keyboard, and it counts only if it was typed in
+    // (`typed_`, `draft_`).
     const auto finishing = [this](auto action) {
         return [this, action](auto... args) {
             commitDrafts();
@@ -220,8 +220,7 @@ FixturesController::FixturesController(output::OutputRunner& runner,
 
     // The window's own close box goes through `hide` like CLOSE does. It used to hide the window
     // behind this object's back: `visible_` stayed set, and the levels went on being redrawn thirty
-    // times a second for a window nobody could see, and a name being typed was not committed (the
-    // review of 2026-09-25, M16).
+    // times a second for a window nobody could see, and a name being typed was not committed.
     window_->window().on_close_requested([this] {
         hide();
         return slint::CloseRequestResponse::HideWindow;
@@ -513,9 +512,9 @@ void FixturesController::publishChannels() {
     // **In place, always** — another fixture, a new mode, a channel added or taken away. Each row
     // shows what its model says and nothing of its own (weltformat.slint), so updating it is
     // enough, and rebuilding was what took a dropdown away under the pointer and left a box
-    // showing the last fixture's pick. The rows a fixture with
-    // fewer channels has not got are erased from the end; a box being typed in commits first
-    // (`commitDrafts`), whatever row it is on.
+    // showing the last fixture's pick. The rows a fixture with fewer channels has not got are
+    // erased from the end; a box being typed in commits first (`commitDrafts`), whatever row
+    // it is on.
     writeRows(*channelModel_, rows);
 }
 
@@ -579,8 +578,8 @@ std::string FixturesController::summary() const {
         text += ", going to " + std::to_string(nodes) + (nodes == 1 ? " node" : " nodes");
     }
     // And two fixtures on the same channels, which drive each other — a par that dims when the
-    // head beside it pans — and which nothing said. The first pair, and how
-    // many more, since one is enough to go and look.
+    // head beside it pans — and which nothing said. The first pair, and how many more, since one
+    // is enough to go and look.
     const std::vector<dmx::Overlap> overlaps = dmx::overlappingFixtures(fixtures_);
     if (!overlaps.empty()) {
         const dmx::Overlap& one = overlaps.front();
@@ -968,9 +967,8 @@ void FixturesController::pickMode(int mode) {
     }
     if (mode <= 0) {
         // **"custom" describes a map; it sets none.** Picked, it did nothing, and the dropdown
-        // went on saying "custom" over a fixture that was still an RGB par (an earlier review of
-        // 2026-09-25, L39). It goes back to naming the map, and the line says how a custom one
-        // is made.
+        // went on saying "custom" over a fixture that was still an RGB par. It goes back to
+        // naming the map, and the line says how a custom one is made.
         window_->set_mode_index(modeOf(*fixture));
         if (modeOf(*fixture) != 0) {
             setStatus("Edit the channels below for a custom map; the mode then says custom.",
@@ -1169,8 +1167,8 @@ bool FixturesController::refusedForOff(const dmx::Fixture& fixture, const char* 
 }
 
 bool FixturesController::refusedForPanic() {
-    // The runner drops a hand-fired effect while PANIC is engaged; this is
-    // the window saying so, rather than a button that did nothing.
+    // The runner drops a hand-fired effect while PANIC is engaged; this is the window saying so,
+    // rather than a button that did nothing.
     if (!runner_.panicked()) {
         return false;
     }

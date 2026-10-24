@@ -24,9 +24,9 @@ using takt4::trigger::Value;
 
 namespace {
 
-/// Everything a rule sent, in order. the design puts the rules on the output thread and hands
-/// their messages to the transports; a test needs to say exactly what came out, which is
-/// the reason `trigger::Sink` is an interface at all.
+/// Everything a rule sent, in order. The rules run on the output thread and hand their
+/// messages to the transports; a test needs to say exactly what came out, which is the
+/// reason `trigger::Sink` is an interface at all.
 class Recorder : public takt4::trigger::Sink {
 public:
     /// Takes everything, unless told to refuse: then it records nothing and says so, as a sink
@@ -195,7 +195,7 @@ TEST_CASE("a euclidean pattern is the rhythm its two numbers name", "[trigger]")
     }
 
     SECTION("and the degenerate ones are answered rather than refused") {
-        // the clamping policy at the two edges a half-built pattern passes through.
+        // Clamped rather than refused, at the two edges a half-built pattern passes through.
         CHECK_FALSE(euclidHit(0, 0, 8)); // no pulses is silence
         CHECK_FALSE(euclidHit(0, 3, 0)); // no steps is no pattern
         CHECK(euclidHit(3, 12, 4));      // more pulses than places: every step
@@ -234,15 +234,14 @@ TEST_CASE("a rule on a euclidean pattern fires on its own beats", "[trigger]") {
     }
 
     // "x..x..x." over eight, twice: beats 1, 4, 7 and then 9, 12, 15. Counted from the first
-    // beat, like every other N in this layer (the design deviation 11).
+    // beat, like every other N in this layer.
     CHECK(firedOn == std::vector<std::uint64_t>{1, 4, 7, 9, 12, 15});
 }
 
 TEST_CASE("the WHEN stage counts beats and bars from the first, not from the modulo",
           "[trigger][engine]") {
-    // the first four: "every beat · every N beats · every bar · every N bars · on
-    // downbeat". "Every 4 bars" fires on bars 1, 5 and 9 — an operator counting a phrase in
-    // starts at one.
+    // Every beat, every N beats, every bar, every N bars, and on the downbeat. "Every 4 bars"
+    // fires on bars 1, 5 and 9 — an operator counting a phrase in starts at one.
     Recorder sink;
     TriggerEngine engine(sink);
     engine.setRules({simple("beat", Trigger::Beat), simple("four", Trigger::Beat, 4),
@@ -265,7 +264,7 @@ TEST_CASE("the WHEN stage counts beats and bars from the first, not from the mod
     CHECK(engine.dropped() == 0);
 
     SECTION("a bar rule needs a bar, and an unmetered stretch has none") {
-        // Before the filter calls a downbeat there is no bar position, and the design publishes
+        // Before the filter calls a downbeat there is no bar position, and the tracker publishes
         // that as 0 rather than guessing 1. A bar rule must not fire on every beat there.
         Recorder quiet;
         TriggerEngine unmetered(quiet);
@@ -278,8 +277,8 @@ TEST_CASE("the WHEN stage counts beats and bars from the first, not from the mod
 }
 
 TEST_CASE("a follow-up arrives after its delay and not before", "[trigger][engine]") {
-    // the "optional follow-up value after a delay", which is the press-then-release:
-    // "/composition/layers/{L}/clips/{C}/connect — int 1 (press) then 0 (release)".
+    // The optional follow-up value after a delay, which is Resolume's press-then-release:
+    // `/composition/layers/{L}/clips/{C}/connect`, an int 1 (press) then 0 (release).
     Recorder sink;
     TriggerEngine engine(sink);
     Rule::Config config = simple("clip", Trigger::Downbeat);
@@ -391,8 +390,7 @@ TEST_CASE("a follow-up arrives after its delay and not before", "[trigger][engin
         TriggerEngine overlapping(many);
         config.followUps[0].delaySeconds = 1.2; // longer than the gap between beats
         // Each press to a different clip, so the releases can be told apart. They were all to
-        // the same address, and the check below them could not see an order at all (an earlier review
-        // of 2026-09-25, T13).
+        // the same address, and the check below them could not see an order at all.
         Generator::Config clips;
         clips.kind = GeneratorKind::Cycle;
         clips.pool = takt4::trigger::Pool::List;
@@ -798,10 +796,10 @@ TEST_CASE("a rule disabled while a change happens does not fire when it comes ba
 
 TEST_CASE("a stopped tracker fires nothing the music would, and what the operator fires still goes",
           "[trigger][engine]") {
-    // an earlier review, H3: after STOP the engine's last state stays published, and a rule
-    // watching it — or a beat that reaches the rules on its way down — fired after the blackout.
-    // Stopped, the rules the music drives are silent; manual and [test] are the operator's, and a
-    // rig is built with the tracker stopped.
+    // After STOP the engine's last state stays published, and a rule watching it — or a beat
+    // that reaches the rules on its way down — fired after the blackout. Stopped, the rules the
+    // music drives are silent; manual and [test] are the operator's, and a rig is built with the
+    // tracker stopped.
     Recorder sink;
     TriggerEngine engine(sink);
     Rule::Config manual = simple("manual", Trigger::Manual);
@@ -842,8 +840,8 @@ TEST_CASE("a stopped tracker fires nothing the music would, and what the operato
 }
 
 TEST_CASE("panic halts every rule and hands back what it owes", "[trigger][engine]") {
-    // the design: "A global halt that stops every rule instantly, reachable from the UI, a
-    // keyboard shortcut, OSC and MIDI. Non-negotiable for live use."
+    // A global halt that stops every rule instantly, reachable from the UI, a keyboard
+    // shortcut, OSC and MIDI — non-negotiable for live use.
     Recorder sink;
     TriggerEngine engine(sink);
     Rule::Config config = simple("clip", Trigger::Beat);
@@ -857,7 +855,7 @@ TEST_CASE("panic halts every rule and hands back what it owes", "[trigger][engin
 
     engine.panic(beatAt(1, 1, 1, 0.5));
     CHECK(engine.panicked());
-    // The owed release goes out **now** rather than being dropped. the shape is
+    // The owed release goes out **now** rather than being dropped. A clip's shape is
     // press-then-release, so the pending half is what turns a clip off; dropping it would
     // leave the rig latched into the state panic was hit to escape.
     REQUIRE(sink.sent.size() == 2);
@@ -908,9 +906,9 @@ TEST_CASE("replacing the rules keeps what the old ones owe until it is due", "[t
 }
 
 TEST_CASE("an edited rule carries on from where it was", "[trigger][engine]") {
-    // an earlier review: every edit in the editor rebuilt every rule from its configuration, so a
-    // clip shuffle replayed its bag from the seed, a cooldown was forgotten and a rule a Stream
-    // Deck had switched off came back on.
+    // Every edit in the editor rebuilt every rule from its configuration, so a clip shuffle
+    // replayed its bag from the seed, a cooldown was forgotten and a rule a Stream Deck had
+    // switched off came back on.
     Recorder sink;
     TriggerEngine engine(sink);
     Rule::Config config = simple("clips", Trigger::Beat);
@@ -968,8 +966,8 @@ TEST_CASE("an edited rule carries on from where it was", "[trigger][engine]") {
     }
 
     SECTION("but a set that was loaded, not edited, starts afresh whatever its ids") {
-        // an earlier review, M11: an IMPORT whose rule shares an id with the show before
-        // took that rule's mute, rate, switch and place in its bag.
+        // An IMPORT whose rule shares an id with the show before took that rule's mute, rate,
+        // switch and place in its bag.
         config.value = fixedAt(1);
         engine.setRules({config});
         engine.onBeat(beatAt(1, 1, 1, 0.0));
@@ -1019,7 +1017,7 @@ TEST_CASE("an edited rule carries on from where it was", "[trigger][engine]") {
 
 TEST_CASE("the test button fires one rule past everything that would stop it",
           "[trigger][engine]") {
-    // the per-rule "[test]" button. An operator building a rule needs to see where the
+    // The per-rule "[test]" button. An operator building a rule needs to see where the
     // message lands without waiting for a downbeat at the right confidence — and the state
     // they are most likely in while building it is "not switched on yet".
     Recorder sink;
@@ -1069,10 +1067,10 @@ TEST_CASE("manual and onset fire only the rules that asked for them", "[trigger]
 }
 
 TEST_CASE("a bar declared late fires that bar's rules and no beat's", "[trigger][engine]") {
-    // an earlier review. A DOWNBEAT pressed a moment after the beat it means turns that beat
-    // into the bar's first — but it has already gone out as beat 3, so the downbeat rules
-    // never heard it. They fire when the bar is declared, as that bar's; the beat rules did
-    // fire on that beat and must not fire twice.
+    // A DOWNBEAT pressed a moment after the beat it means turns that beat into the bar's first —
+    // but it has already gone out as beat 3, so the downbeat rules never heard it. They fire
+    // when the bar is declared, as that bar's; the beat rules did fire on that beat and must not
+    // fire twice.
     Recorder sink;
     TriggerEngine engine(sink);
     engine.setRules({simple("down", Trigger::Downbeat), simple("every-bar", Trigger::Bar),
@@ -1172,10 +1170,10 @@ TEST_CASE("the ONLY IF stage is asked on every fire, not only the first", "[trig
 }
 
 TEST_CASE("a cooldown on a beat or a bar rule changes nothing", "[trigger][engine]") {
-    // The consequence accepted with the cooldown's move to A (the design, 2026-09-30): the
-    // editor shows it switched off on the steady triggers, so a saved "every 1 beat" rule whose
-    // cooldown was longer than a beat — quietly thinning it — fires on every beat again. A
-    // cooldown on a bar rule never did anything, and still does not.
+    // The consequence accepted with the cooldown's move to A on 2026-09-30: the editor shows it
+    // switched off on the steady triggers, so a saved "every 1 beat" rule whose cooldown was
+    // longer than a beat — quietly thinning it — fires on every beat again. A cooldown on a bar
+    // rule never did anything, and still does not.
     Recorder sink;
     TriggerEngine engine(sink);
     Rule::Config beat = simple("beat", Trigger::Beat);
@@ -1192,7 +1190,7 @@ TEST_CASE("a cooldown on a beat or a bar rule changes nothing", "[trigger][engin
 
 TEST_CASE("an observer is told which values a fire produced, and which sends are releases",
           "[trigger][engine]") {
-    // Two things the design draws that had no source until now: the fire count on each rule card,
+    // Two things the editor draws that had no source until now: the fire count on each rule card,
     // and "what this slot last produced" beside each generator chip. Both come from here,
     // because the rules themselves belong to the output thread and a UI cannot read them.
     Recorder sink;
@@ -1203,7 +1201,7 @@ TEST_CASE("an observer is told which values a fire produced, and which sends are
     config.segments = {fixedAt(3), fixedAt(7)};
     config.sendValue = true;
     config.value = fixedAt(1);
-    // the release, on a timer — the thing that would double a naive fire count.
+    // The release a connect needs, on a timer — the thing that would double a naive fire count.
     config.followUps.push_back(releaseAfterMs(0, 50));
     engine.setRules({config});
 

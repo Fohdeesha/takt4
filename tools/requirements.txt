@@ -1,7 +1,6 @@
-# The Python side of takt4's build-time tooling (the design, the design Phase 2): the scripts
-# in tools/ that dump madmom's filterbank and produce the golden feature files under
-# tests/data/. Their outputs are committed; nothing here is needed to build, test or run
-# takt4, and CI never installs it.
+# The Python side of takt4's build-time tooling: the scripts in tools/ that dump madmom's
+# filterbank and produce the golden feature files under tests/data/. Their outputs are
+# committed; nothing here is needed to build, test or run takt4, and CI never installs it.
 #
 # madmom's last PyPI release (0.16.1, 2018) no longer imports on a current Python, so a
 # commit of its master branch is pinned and built from source. pip cannot build it in

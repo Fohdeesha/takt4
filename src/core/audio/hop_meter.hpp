@@ -16,7 +16,7 @@ struct HopLevel {
     float peak = 0.0f; // absolute peak, linear
 };
 
-/// The Phase 1 hop consumer: measures every hop and queues the result for another
+/// The metering hop consumer: measures every hop and queues the result for another
 /// thread to print or draw. If the reader falls behind, hops are dropped and counted
 /// rather than blocking the audio thread.
 class HopMeter final : public HopProcessor {

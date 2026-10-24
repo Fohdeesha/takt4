@@ -1,12 +1,11 @@
 #pragma once
 
 // What every click sweep ends by checking: that no click on the way opened anything real — a
-// socket bound to a port, a MIDI port, a Link session, an audio device (an earlier review,
-// T2). A sweep presses whatever the layout has put under it, and one that crossed the OSC
-// "listen" box bound the control port on the machine the show runs from, thirteen times, while
-// its test passed. The sandbox refuses all of these now (src/core/sandbox.hpp); a refusal during
-// a sweep is a sweep that has wandered off what it was looking for, and this makes that a failure
-// rather than a line on stderr.
+// socket bound to a port, a MIDI port, a Link session, an audio device. A sweep presses whatever
+// the layout has put under it, and one that crossed the OSC "listen" box bound the control port
+// on the machine the show runs from, thirteen times, while its test passed. The sandbox refuses
+// all of these now (src/core/sandbox.hpp); a refusal during a sweep is a sweep that has wandered
+// off what it was looking for, and this makes that a failure rather than a line on stderr.
 //
 // REQUIRE-free, and CHECKs only, so it can be called at the end of a test.
 

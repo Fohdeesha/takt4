@@ -6,8 +6,8 @@
 
 namespace takt4::audio {
 
-/// Sample-rate converter from the device rate to the internal rate (the design:
-/// r8brain-free, device rate → 22050 Hz mono). Mono, streaming, real-time safe after
+/// Sample-rate converter from the device rate to the internal rate (r8brain-free,
+/// device rate → 22050 Hz mono). Mono, streaming, real-time safe after
 /// construction: process() neither allocates nor locks.
 ///
 /// Output is time-aligned to input: output sample k stands for input time

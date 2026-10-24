@@ -8,7 +8,7 @@
 
 namespace takt4::settings {
 
-/// the rules as text, for the portable half.
+/// The trigger rules as text, for the preset: the portable half of the settings.
 ///
 /// A file of its own rather than more of `settings.cpp`, because a rule is an order of
 /// magnitude larger than anything else that travels: `Rule::Config` has eighteen fields, and
@@ -19,12 +19,12 @@ namespace takt4::settings {
 /// `tracking::TempoTracker::Options` does: the tracker and the rules describe behaviour, and
 /// which characters that behaviour is written down as is this layer's business, not theirs.
 /// It also keeps `<nlohmann/json.hpp>` out of `core/trigger`, which anything including
-/// RTNeural must stay clear of (the design — the two bundle different copies of it).
+/// RTNeural must stay clear of (the two bundle different copies of it).
 ///
 /// **These follow `settings::load`'s contract exactly: reading never fails.** Anything
 /// missing keeps its default, anything of the wrong type is ignored, and a rule that comes
 /// back unusable is *still a rule* — held, shown and refused at fire time by
-/// `Rule::problem()`, which is the stated policy and the opposite of a generator's.
+/// `Rule::problem()`, which is the policy `Rule` states and the opposite of a generator's.
 /// A preset with one broken rule in it must still open, with the other rules working and the
 /// broken one visible enough to fix.
 

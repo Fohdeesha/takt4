@@ -70,13 +70,13 @@ std::optional<RampShape> rampShapeOf(std::string_view name) noexcept {
 double rampPhase(const Context& context, std::uint32_t bars) noexcept {
     const std::uint32_t period = std::max<std::uint32_t>(1, bars);
     // Counted from the first bar, so a four-bar ramp restarts on bars 1, 5, 9 — the same
-    // "counting from the first" every other N in this layer uses (the design deviation 11).
+    // "counting from the first" every other N in this layer uses.
     const std::uint64_t bar = context.bars >= 1 ? context.bars - 1 : 0;
     const double whole = static_cast<double>(bar % period);
 
-    // Where in the bar we are, when the filter has an opinion about the bar at all. the design:
-    // nothing assumes four, and a meter of zero means it has not decided — in which case the
-    // ramp still advances, a whole bar at a time, rather than sitting at zero.
+    // Where in the bar we are, when the filter has an opinion about the bar at all. Nothing
+    // assumes four, and a meter of zero means it has not decided — in which case the ramp
+    // still advances, a whole bar at a time, rather than sitting at zero.
     double within = 0.0;
     if (context.meter > 0 && context.beatInBar >= 1) {
         within = static_cast<double>(context.beatInBar - 1) / static_cast<double>(context.meter);
@@ -86,7 +86,7 @@ double rampPhase(const Context& context, std::uint32_t bars) noexcept {
 
 std::string_view nameOf(GeneratorKind kind) noexcept {
     // The same words as the labels, minus the space in "live value", so a settings file
-    // reads the way the UI does. See control::verbOf, which does this for the actions.
+    // reads the way the UI does. See control::verbOf, which does this for the control actions.
     return kind == GeneratorKind::Live ? "live" : labelOf(kind);
 }
 
@@ -205,8 +205,8 @@ Generator::Generator(Config config) : config_(std::move(config)) {
     }
     if (!(config_.normaliseHigh > config_.normaliseLow)) {
         // A degenerate host range would divide by zero, and a normalised value with no
-        // range to normalise against says nothing. the Resolume figures are the sane
-        // fallback because they are the only ones the design states.
+        // range to normalise against says nothing. Resolume's figures are the sane fallback:
+        // they are the default, and the one host range the code knows.
         config_.normaliseLow = 20.0;
         config_.normaliseHigh = 500.0;
     }
@@ -289,8 +289,8 @@ void Generator::refillBag() noexcept {
     // Indices into the pool, not the values themselves: that is what lets one bag shuffle a
     // range and a list without knowing which it has.
     std::iota(bag_.begin(), bag_.end(), 0);
-    // Fisher-Yates, from the top down, over the tracker's own generator (the design's
-    // xoshiro256++) so a seeded run is reproducible in a test.
+    // Fisher-Yates, from the top down, over the tracker's own generator (xoshiro256++) so a
+    // seeded run is reproducible in a test.
     for (std::size_t i = bag_.size(); i > 1; --i) {
         const auto j = static_cast<std::size_t>(random_.bounded(i));
         std::swap(bag_[i - 1], bag_[j]);
@@ -332,8 +332,9 @@ Value Generator::nextRandom() noexcept {
             break;
         }
     }
-    // Whatever the last attempt produced. the design calls this one out as the generator that
-    // "will repeat"; the guard makes it repeat less, and is not allowed to make it stall.
+    // Whatever the last attempt produced. The header's table calls this one out as the
+    // generator that "will repeat"; the guard makes it repeat less, and is not allowed to make
+    // it stall.
     remember(drawn);
     return drawn;
 }

@@ -224,8 +224,8 @@ MidiOutput* Transports::openDevice(const std::string& device) {
     if (device.empty()) {
         return nullptr;
     }
-    // Opened once however many things name it: the clock and any number of the rule
-    // targets down one cable is the ordinary rig, and some drivers refuse a second open.
+    // Opened once however many things name it: the MIDI clock and any number of rule targets
+    // down one cable is the ordinary rig, and some drivers refuse a second open.
     const auto found = midiDevices_.find(device);
     if (found != midiDevices_.end()) {
         // One that has gone quiet is looked for again now rather than at the next second's
@@ -635,7 +635,7 @@ void Transports::advance(double now, const tracking::TempoState& state, bool run
 }
 
 void Transports::setOscOffset() noexcept {
-    // the offset applies to OSC as well as to the two clock transports. It did not, for
+    // The latency offset applies to OSC as well as to the two clock transports. It did not, for
     // most of this file's life, and that was a hole rather than a decision: an operator
     // pulling the slider back to put a media server's clip change on the beat moved Link and
     // the MIDI clock and left the OSC the media server actually listens to exactly where it
@@ -705,7 +705,7 @@ void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t ho
         midi.setTempo(tempo);
         // The beat's own time, not the round that drained it: the audio arrived a pipeline's
         // worth of time before the beat was called, and the clock used to be synced to when it
-        // was *drained* — late by that pipeline, plus the offset. The clock steers
+        // was *drained* — late by that pipeline, plus the latency offset. The clock steers
         // towards the beat rather than jumping to it; see `MidiClock::syncToBeat`. And this
         // clock's own delay on top, like every output's.
         const double heardAt = beatTime + static_cast<double>(latencyMicros) / 1e6 + clock.delay;
@@ -714,10 +714,10 @@ void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t ho
         // say where the bars are, and then for the downbeat of the grid it sits on. Given again
         // on every locked beat until it has gone, so the grid follows the tempo meanwhile.
         //
-        // **Only a beat whose place in the bar is known says where the bars are** (an earlier review of
-        // 2026-09-25, M6). The tracker publishes `beatInBar` 0 before it has found a bar, and
-        // that was read as beat 1 — so a receiver's bar 1 could land on beat 2, 3 or 4 and stay
-        // there for the run. Link's path already waited for this (`phased`, below).
+        // **Only a beat whose place in the bar is known says where the bars are.** The tracker
+        // publishes `beatInBar` 0 before it has found a bar, and that was read as beat 1 — so a
+        // receiver's bar 1 could land on beat 2, 3 or 4 and stay there for the run. Link's path
+        // already waited for this (`phased`, below).
         if (event.locked && grid > 0.0 && event.beatInBar > 0 && event.beatsPerBar > 0) {
             const double beat = 60.0 / grid;
             const std::uint32_t meter = event.beatsPerBar;
@@ -734,7 +734,7 @@ void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t ho
             } else {
                 // And once it has started, its bars follow the tracker's: a DOWNBEAT press, or a
                 // bar found again elsewhere after a break, restarts the receiver on the new
-                // downbeat — Song Position cannot move it while it plays (M19's other half).
+                // downbeat — Song Position cannot move it while it plays.
                 midi.followBar(heardAt, receiverBeat, meter);
             }
         }
@@ -787,8 +787,8 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
     }
     // **Nothing while the tracker is hunting** — neither tempo nor phase. Before the first lock
     // the tempo is the hunt's, octave flips and all, and every Start used to overwrite
-    // Resolume's tempo with it for a few seconds. And the next lock snaps
-    // again: whatever the session did in between, it is put back under the music then.
+    // Resolume's tempo with it for a few seconds. And the next lock snaps again: whatever the
+    // session did in between, it is put back under the music then.
     // The beats' rate, and the operator's ×2 over it: see `publishClocks`.
     const std::uint32_t perBeat = clockBeatsPerBeat(event);
     const double tempo = gridBpmOf(event) * static_cast<double>(perBeat);
@@ -804,10 +804,10 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
     }
     linkPeers_ = peers;
     // **And so is a move of the Link output's delay, or of the rig's latency, of more than the
-    // deadband**. It used to be read on the next beat as a phase
-    // error and nudged out at an eighth a beat: 100 ms took nine seconds to settle, with every
-    // peer's tempo up to 2.6 BPM off meanwhile — slow, wobbling feedback for an operator
-    // dragging the delay to line Resolume up. The delay is a place to put the beat, not drift.
+    // deadband.** It used to be read on the next beat as a phase error and nudged out at an
+    // eighth a beat: 100 ms took nine seconds to settle, with every peer's tempo up to 2.6 BPM
+    // off meanwhile — slow, wobbling feedback for an operator dragging the delay to line
+    // Resolume up. The delay is a place to put the beat, not drift.
     if (linkSnapped_ && std::abs(static_cast<double>(latencyMicros - linkSnappedOffset_)) / 1e6 *
                                 tempo / 60.0 >
                             kLinkPhaseDeadband) {
@@ -837,7 +837,7 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
     // given time with the same phase". This used to request on every beat, so with Resolume on
     // Link the bar sat wherever the session happened to be — measured, 180 ms off the music for
     // every beat of a 32-beat run and the bar position 1.6 beats wrong. So the first locked beat
-    // *forces* the phase, and so does a DOWNBEAT (the design reserves force for that, and Link's
+    // *forces* the phase, and so does a DOWNBEAT (force was meant for that, and Link's
     // header names bridging an external clock as its legitimate use).
     if (phased && (!linkSnapped_ || event.snapped)) {
         link_->snap(tempo, beat, at, quantum);

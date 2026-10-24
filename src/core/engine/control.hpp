@@ -22,22 +22,21 @@ namespace takt4::engine {
 /// queue and are copied, not owned.
 struct Command {
     enum class Kind : std::uint8_t {
-        /// the adjustable settings, whole: the octave-fold window, the confidence
+        /// The tracker's adjustable settings, whole: the octave-fold window, the confidence
         /// gate, the latency offset, the lock timings. Idempotent — a second one says
         /// everything the first did — so the queue keeps only the newest.
         SetTempoOptions,
-        Halve,    ///< the ÷2.
-        Redouble, ///< the ×2.
-        /// the manual downbeat: the beat nearest the press starts the bar. The one
-        /// command the design calls non-negotiable, and the one an operator reaches for
-        /// first.
+        Halve,    ///< ÷2.
+        Redouble, ///< ×2.
+        /// The manual downbeat: the beat nearest the press starts the bar. The one
+        /// non-negotiable command, and the one an operator reaches for first.
         SnapDownbeat,
-        /// the tap tempo, already measured: `tracking::TapTempo` counts the taps on
+        /// Tap tempo, already measured: `tracking::TapTempo` counts the taps on
         /// whichever thread they arrive on, and only the tempo it worked out travels here.
         SeedTempo,
-        /// the `/ctl/lock <0|1>`. Deliberately *not* superseded the way SetTempoOptions
-        /// is: a pin followed by a release is not a pin, so these have to arrive in the
-        /// order they were sent.
+        /// The OSC control `/ctl/lock <0|1>`. Deliberately *not* superseded the way
+        /// SetTempoOptions is: a pin followed by a release is not a pin, so these have to
+        /// arrive in the order they were sent.
         ///
         /// On a decoder that can hold a tempo (`BeatDecoder::canHoldTempo`) the pin also
         /// holds the tempo being published, so the decoder tracks phase and nothing else,
@@ -85,11 +84,11 @@ constexpr bool isSetting(Command::Kind kind) noexcept {
 /// The road into the inference thread: many writers, one reader, bounded, no allocation
 /// once it is warm.
 ///
-/// A mutex, deliberately. the design forbids allocating and locking on the *audio* thread and
-/// says nothing of the kind about the inference thread, which is where this is drained —
-/// so the lock-free machinery `rt::SpscRing` needs would buy nothing and cost a great
-/// deal, and unlike that ring this has to accept several producers at once. A UI thread,
-/// an OSC receiver and a MIDI receiver all post here.
+/// A mutex, deliberately. The thread model forbids allocating and locking on the *audio*
+/// thread and says nothing of the kind about the inference thread, which is where this is
+/// drained — so the lock-free machinery `rt::SpscRing` needs would buy nothing and cost a
+/// great deal, and unlike that ring this has to accept several producers at once. A UI
+/// thread, an OSC receiver and a MIDI receiver all post here.
 ///
 /// **Never post from the audio thread.** That one does forbid locking, and it has nothing
 /// to say here anyway.

@@ -418,8 +418,7 @@ Attempt scanOnce(std::chrono::milliseconds limit) {
         // **Gone, and everything it wrote read: done** — not waiting for the pipe to break. A
         // driver that starts a process of its own hands it the scan's output with everything
         // else it inherits, and while that process runs the pipe stays whole: the peek went on
-        // finding nothing to read, and the UI thread waited out the whole limit (an earlier review of
-        // 2026-09-25, L24).
+        // finding nothing to read, and the UI thread waited out the whole limit.
         if (gone) {
             break;
         }

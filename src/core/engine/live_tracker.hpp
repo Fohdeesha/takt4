@@ -28,28 +28,28 @@ namespace takt4::engine {
 /// `takt4-cli track --device N` wires these together inline and never takes them apart:
 /// the console is handed its device on the command line and exits when it is done. A
 /// window cannot work that way. The operator picks a device from a list, changes their
-/// mind, finds the interface is held by Traktor (R2), unplugs it — and expects the app
+/// mind, finds the interface is held by Traktor, unplugs it — and expects the app
 /// to still be there afterwards. That small state machine, and turning a driver's
 /// refusal into something a caller can say out loud, is what this owns.
 ///
-/// It lives in `core` rather than in the window for the reason: `takt4_tests` links
-/// `takt4_core` alone, so a UI-side version of this could not be tested at all, and the
-/// headless mode would have to be written a second time.
+/// It lives in `core` rather than in the window: `takt4_tests` links `takt4_core` alone, so a
+/// UI-side version of this could not be tested at all, and a headless mode would have to be
+/// written a second time.
 ///
-/// **Every PortAudio call it makes is made on an `audio::AudioThread` of its own** (an earlier review of
-/// 2026-09-25, L23): a driver wedged in a stop, an open or a rescan holds that thread, and the
-/// caller — the window's thread, which was frozen with PANIC in it — waits for it no longer than
-/// `Limits` says: `stop` and `start` and `rescan` wait out their limits at most, and
-/// `beginStart` and `beginRescan`, which the window's outage handling uses, not at all — they are
-/// asked after (`pollStart`, `pollRescan`). Such a driver is `stuck()`: the stream it was
-/// stopping is let go of, detached first so nothing it sends reaches the engine, and until the
-/// driver answers nothing else is asked of it — `start` and `rescan`, and the two begun, throw
-/// `audio::DriverNotAnswering` at once.
+/// **Every PortAudio call it makes is made on an `audio::AudioThread` of its own**: a driver
+/// wedged in a stop, an open or a rescan holds that thread, and the caller — the window's thread,
+/// which was frozen with PANIC in it — waits for it no longer than `Limits` says: `stop` and
+/// `start` and `rescan` wait out their limits at most, and `beginStart` and `beginRescan`, which
+/// the window's outage handling uses, not at all — they are asked after (`pollStart`,
+/// `pollRescan`). Such a driver is `stuck()`: the stream it was stopping is let go of, detached
+/// first so nothing it sends reaches the engine, and until the driver answers nothing else is
+/// asked of it — `start` and `rescan`, and the two begun, throw `audio::DriverNotAnswering` at
+/// once.
 ///
 /// **It deliberately does not own the transports**, exactly as `BeatEngine` does not:
 /// `core/engine` stays clear of `core/output`, and whoever wants beats drains
 /// `engine().popBeat()`. A caller that does want Link installs its clock on
-/// `engine().setHostTimeSource()` *before* calling `start()` — the stamp is taken on
+/// `engine().setHostTimeSource()` *before* calling `start()` — the host-time stamp is taken on
 /// the audio thread, so it has to be in place before there is one.
 class LiveTracker {
 public:
@@ -101,9 +101,9 @@ public:
     /// its session over as `hostTimeClock()`.
     ///
     /// Set it once, on a tracker that is stopped, and leave it: `start()` installs it on the
-    /// engine before the stream is opened, which is the ordering the design requires and the reason
-    /// this is here rather than left to a caller to remember. `stop()` does not take it away
-    /// again — it stays installed across runs — so it must outlive the tracker, not merely
+    /// engine before the stream is opened, which is the ordering the stamp requires and the
+    /// reason this is here rather than left to a caller to remember. `stop()` does not take it
+    /// away again — it stays installed across runs — so it must outlive the tracker, not merely
     /// the run it was set for.
     void setHostTimeSource(audio::HostTimeSource* source) noexcept { hostTime_ = source; }
     audio::HostTimeSource* hostTimeSource() const noexcept { return hostTime_; }
@@ -148,7 +148,7 @@ public:
     /// Opens `device` on `selection` and starts tracking it, stopping whatever was
     /// running first — so this doubles as "switch to that one".
     ///
-    /// Throws `audio::PortAudioError`, which is how R2's single-client driver says it is
+    /// Throws `audio::PortAudioError`, which is how a single-client driver says it is
     /// busy, `std::invalid_argument` for a channel the device does not have, or
     /// `audio::DriverNotAnswering` when the driver does not answer within `Limits::open` — or
     /// is still holding the audio thread from before. Nothing is left running either way, and a
@@ -221,7 +221,7 @@ public:
     BeatEngine& engine() noexcept { return *engine_; }
     const BeatEngine& engine() const noexcept { return *engine_; }
 
-    /// The input level, hop by hop, for the input meter. Drain it on the drawing
+    /// The input level, hop by hop, for the window's input meter. Drain it on the drawing
     /// timer: it is a ring like the engine's, and one nobody drains fills up and starts
     /// dropping. 50 of them arrive a second.
     bool popLevel(audio::HopLevel& out) noexcept { return meter_.pop(out); }

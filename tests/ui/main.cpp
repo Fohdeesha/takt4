@@ -1,9 +1,9 @@
 // takt4_ui_tests' entry point.
 //
 // A binary of its own, separate from takt4_tests, on purpose. takt4_tests links
-// takt4_core and nothing else, which is what proves the engine stands up without Slint
-//; linking the UI into it would quietly retire that proof. This one links
-// takt4::ui and tests the window.
+// takt4_core and nothing else, which is what proves the engine stands up without Slint;
+// linking the UI into it would quietly retire that proof. This one links takt4::ui and
+// tests the window.
 //
 // The headless platform has to be installed before any Slint component exists, which is
 // why there is a main here rather than Catch2WithMain. It gives the runtime a window

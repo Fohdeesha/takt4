@@ -1,6 +1,6 @@
 # Particle filter reference traces
 
-The reference data for the Phase 4 gate. `tools/pf_reference.py` restates BeatNet+'s
+The reference data for the particle filter's gate. `tools/pf_reference.py` restates BeatNet+'s
 `particle_filtering_cascade` and writes what it does to the committed activations;
 `tests/tracking/particle_filter_test.cpp` requires `src/core/tracking/` to reproduce
 every row of it exactly.
@@ -44,12 +44,12 @@ compute a meter at all. That separation is cheap to keep and expensive to re-der
 
 The input is
 `tests/data/model/generic/<name>.npy` columns 3 and 4 — the softmax probabilities for
-beat and downbeat that Phase 3 recorded — so a regression in the model fails the Phase 3
-test rather than muddying this one.
+beat and downbeat recorded for the model's gate — so a regression in the model fails the
+model's test (`tests/model/beat_model_test.cpp`) rather than muddying this one.
 
 ## Why the gate is not "reproduce upstream's beat times"
 
-Phase 3 could hold the C++ against PyTorch directly, because a network is deterministic.
+The model's gate could hold the C++ against PyTorch directly, because a network is deterministic.
 A particle filter is not, and upstream's randomness comes from numpy's legacy
 `RandomState`, whose stream nothing outside numpy reproduces.
 
@@ -65,8 +65,8 @@ filter over these 18 excerpts with **eight different seeds** and comparing each 
 Upstream does not agree with *itself* on 43% of beat frames. There is no tolerance at
 which "the C++ reproduces upstream" would mean anything.
 
-So the gate is split, the way Phase 3 split `tools/beatnet_model.py` from the real `.pt`
-files.
+So the gate is split, the way the model's gate split `tools/beatnet_model.py` from the real
+`.pt` files.
 
 **The hard gate — the C++ against the restatement.** `tools/pf_reference.py` states the
 same algorithm with a generator that *is* specified: xoshiro256++ over a splitmix64

@@ -198,8 +198,8 @@ void pumpTimers(std::chrono::milliseconds span) {
 }
 
 /// What the window's output thread has, read the only safe way: once it has taken every change
-/// posted so far, and between two of its rounds. It runs for as long as the window exists
-///, so reading its rules or transports directly would race it.
+/// posted so far, and between two of its rounds. It runs for as long as the window exists, so
+/// reading its rules or transports directly would race it.
 struct OutputsSeen {
     std::vector<std::string> ruleIds;
     std::vector<bool> ruleValid;
@@ -544,8 +544,8 @@ TEST_CASE("a short window scrolls rather than losing its bottom row", "[ui]") {
 TEST_CASE("a mixed rig's output rows fit the window at its narrowest", "[ui]") {
     // Rendered, not reasoned about. At the window's width — 800, which is also its minimum —
     // with an Art-Net node and a MIDI device in the rig, every row's × is looked for, whole, at the
-    // end of its row; and every column heading is held to being centred over the column it names
-    //, since a row that merely fits can still put a box under the wrong heading.
+    // end of its row; and every column heading is held to being centred over the column it names,
+    // since a row that merely fits can still put a box under the wrong heading.
     auto window = MainWindow::create();
     auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
     const auto row = [](const char* name, int kind, const char* host, const char* port) {
@@ -830,18 +830,17 @@ TEST_CASE("the wheel moves the body and leaves PANIC where it is", "[ui]") {
     window->window().dispatch_pointer_press_event(now, slint::PointerEventButton::Left);
     window->window().dispatch_pointer_release_event(now, slint::PointerEventButton::Left);
     REQUIRE(removed.size() == 1);
-    // **Which** row: the one drawn there now. This took any of the four (an earlier review of
-    // 2026-09-25, T13), and a click landing on whatever used to be there is one of them too.
+    // **Which** row: the one drawn there now. This took any of the four, and a click landing on
+    // whatever used to be there is one of them too.
     CHECK(removed.front() == shown);
 }
 
 TEST_CASE("a status longer than the bar keeps its first line and loses its end", "[ui]") {
-    // The status text was centred in a bar two lines tall, so a
-    // message of more lines was laid out from the middle and clipped at both ends: what failed —
-    // the first line — was never drawn. The message here says which line is which in ink: a first
-    // line that starts with W's, dense — ten words of them, less than a line at this width — and
-    // many lines of full stops, nearly no ink at all. The top line of the bar has to be the dense
-    // one.
+    // The status text was centred in a bar two lines tall, so a message of more lines was laid
+    // out from the middle and clipped at both ends: what failed — the first line — was never
+    // drawn. The message here says which line is which in ink: a first line that starts with W's,
+    // dense — ten words of them, less than a line at this width — and many lines of full stops,
+    // nearly no ink at all. The top line of the bar has to be the dense one.
     auto window = MainWindow::create();
     std::string message;
     for (int i = 0; i < 10; ++i) {
@@ -895,8 +894,8 @@ TEST_CASE("a status longer than the bar keeps its first line and loses its end",
 }
 
 TEST_CASE("the fold window reaches the window unchanged", "[ui]") {
-    // the design deviation 4: the operator has to be able to see the octave-fold window,
-    // because outside it the fold turns a right answer into a wrong one.
+    // The operator has to be able to see the octave-fold window, because outside it the fold
+    // turns a right answer into a wrong one.
     auto window = MainWindow::create();
     takt4::tracking::TempoTracker::Options options;
     options.octaveFold = true;
@@ -1005,7 +1004,7 @@ TEST_CASE("picking a device fills the channel list from that device", "[ui][hard
 }
 
 TEST_CASE("the redraw timer runs on its own", "[ui]") {
-    // the design wants the engine drained on a UI timer. That the timer exists is one claim and
+    // The engine is meant to be drained on a UI timer. That the timer exists is one claim and
     // that the draining is right is another; this is the first, and it is the one a still
     // picture of the window can never show.
     LiveTracker tracker(kWeights, kStateSpace);
@@ -1244,7 +1243,7 @@ TEST_CASE("the trace scrolls while the tracker is running", "[ui][hardware]") {
 }
 
 // ---------------------------------------------------------------------------------------
-// the manual controls. Every one of these drives the window's own callback and then
+// The tracker's manual controls. Every one of these drives the window's own callback and then
 // checks the *tracker*, so what is under test is the whole path from a press to the engine
 // — not that a handler was called. What each command then means is covered by
 // tests/engine and tests/tracking; these are about the wiring, and about the settings
@@ -1299,7 +1298,7 @@ TEST_CASE("the LOCK button pins the tracker's lock and lets go of it", "[ui]") {
 }
 
 TEST_CASE("the window learns a control and remembers what it learned", "[ui]") {
-    // the learn mode, end to end through the window's own callbacks. No hardware:
+    // The control input's learn mode, end to end through the window's own callbacks. No hardware:
     // `MidiControl::dispatch` delivers the event a controller would have sent, which is the
     // only way this path is checkable without somebody standing at the machine pressing a
     // pad — and it is the same seam RtMidi's callback uses.
@@ -1331,9 +1330,8 @@ TEST_CASE("the window learns a control and remembers what it learned", "[ui]") {
     SECTION("and while no port is open the row says so, not that the binding is live") {
         // Off, because no port is open — the reading has to say that rather than claim a
         // binding is live when nothing is listening. Named for what it can show: it was "it
-        // shows on the row", and with no port open the reading never gets as far as the binding
-        //. Showing one needs a port listening, which the test
-        // sandbox refuses.
+        // shows on the row", and with no port open the reading never gets as far as the binding.
+        // Showing one needs a port listening, which the test sandbox refuses.
         controller.tick();
         CHECK_FALSE(controller.window().get_learning());
         CHECK_FALSE(controller.window().get_control_on());
@@ -1411,9 +1409,9 @@ TEST_CASE("a learned control reaches the tracker through the window", "[ui]") {
 }
 
 TEST_CASE("a learned control reaches the rules through the window", "[ui][trigger]") {
-    // The other destination. the `panic` is a question for the rules rather than for
-    // the tracker, so a binding to it has to arrive at the window's *output runner* — which
-    // is a different object, on a different thread, behind a different queue.
+    // The other destination. The control input's `panic` is a question for the rules rather
+    // than for the tracker, so a binding to it has to arrive at the window's *output runner* —
+    // which is a different object, on a different thread, behind a different queue.
     //
     // This is also what holds the member ordering in `WindowController` in place: the MIDI
     // surface now posts to the runner from RtMidi's callback thread, so it has to be
@@ -1437,22 +1435,21 @@ TEST_CASE("a learned control reaches the rules through the window", "[ui][trigge
     CHECK_FALSE(panickedNow(controller));
 
     // And now it is the panic button — with the tracker stopped, which is exactly what an
-    // operator arming a rig before a set does, and which since an earlier review reaches a runner
-    // that is running.
+    // operator arming a rig before a set does, and which since the outputs stopped waiting for
+    // the tracker reaches a runner that is running.
     CHECK(controller.control().dispatch(pad));
     CHECK(panickedNow(controller));
 
     SECTION("and the OSC socket moves the same latch the pad just moved") {
-        // the other surface, wired into the window on 2026-09-06. The pad above left
-        // panic engaged, and this releases it *from the socket* — which is the whole claim:
-        // one runner, two surfaces, one latch. Two runners would show up here as a release
-        // that does nothing.
+        // The control input's other surface, wired into the window on 2026-09-06. The pad above
+        // left panic engaged, and this releases it *from the socket* — which is the whole claim:
+        // one runner, two surfaces, one latch. Two runners would show up here as a release that
+        // does nothing.
         //
         // Driven through `dispatch` rather than a real datagram: the socket has its own
         // tests in tests/control, and nothing here needs one to exist.
         REQUIRE(panickedNow(controller));
-        // Not with `panic 0`, which engages like every panic message (an earlier review,
-        // L15 and Q1), but with `panic/release`.
+        // Not with `panic 0`, which engages like every panic message, but with `panic/release`.
         CHECK(controller.oscControl().dispatch("/takt4/ctl/panic", 0.0));
         CHECK(panickedNow(controller));
         CHECK(controller.oscControl().dispatch("/takt4/ctl/panic/release", std::nullopt));
@@ -1464,8 +1461,8 @@ TEST_CASE("a learned control reaches the rules through the window", "[ui][trigge
     }
 
     SECTION("the picker offers panic but not the ones that would need a rule named") {
-        // the `rule/<id>/…` verbs cannot be armed from a gesture: pressing a pad says
-        // which button, never which rule. The list is the actions minus those.
+        // The control input's `rule/<id>/…` verbs cannot be armed from a gesture: pressing a pad
+        // says which button, never which rule. The list is the actions minus those.
         //
         // Counted from `takesRuleId` rather than written down as "one fewer", which is what
         // this was: there was one such verb, and when mute, double, halve, rate and reset
@@ -1483,7 +1480,7 @@ TEST_CASE("a learned control reaches the rules through the window", "[ui][trigge
 }
 
 TEST_CASE("rules load from a preset, run, and are saved back", "[ui][trigger]") {
-    // Q7 puts the rules in the portable half, and this is the whole path an operator
+    // The rules are in the settings' portable half, and this is the whole path an operator
     // takes without knowing it: a file, into the output thread, and back to a file.
     using takt4::trigger::Rule;
 
@@ -1545,8 +1542,8 @@ TEST_CASE("rules load from a preset, run, and are saved back", "[ui][trigger]") 
     }
 
     SECTION("a rule that will not fire is kept, and said so") {
-        // the policy: held, shown, and refused at fire time. The alternative — dropping
-        // it on load — would delete the rule an operator is half-way through fixing.
+        // The trigger engine's policy: held, shown, and refused at fire time. The alternative —
+        // dropping it on load — would delete the rule an operator is half-way through fixing.
         Rule::Config broken;
         broken.id = "broken";
         broken.address = "/a/{x}/b"; // one placeholder, no segments
@@ -1560,8 +1557,8 @@ TEST_CASE("rules load from a preset, run, and are saved back", "[ui][trigger]") 
 }
 
 TEST_CASE("the OSC control socket opens only when asked, and is remembered", "[ui][network]") {
-    // the listening socket, which nothing opened until 2026-09-06 — the library existed
-    // and no application built one. Three separate decisions live here and each is the
+    // The control input's listening socket, which nothing opened until 2026-09-06 — the library
+    // existed and no application built one. Three separate decisions live here and each is the
     // operator's: listen at all, on which port, and whether past this machine.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
@@ -1637,10 +1634,10 @@ TEST_CASE("the OSC control socket opens only when asked, and is remembered", "[u
     }
 
     SECTION("a new port that will not bind leaves it listening on the old one") {
-        // an earlier review: the working socket was closed first and the new number tried after,
-        // so a typo — or a port another program has — left the Stream Deck with nobody
-        // listening, mid-show. A fixed port rather than 0 here, since 0 rebound would be a
-        // different "any free one" and the test could not tell where it came back.
+        // The working socket was closed first and the new number tried after, so a typo — or a
+        // port another program has — left the Stream Deck with nobody listening, mid-show. A
+        // fixed port rather than 0 here, since 0 rebound would be a different "any free one" and
+        // the test could not tell where it came back.
         std::uint16_t free = 0;
         {
             const takt4::testing::LoopbackReceiver probe;
@@ -1664,15 +1661,15 @@ TEST_CASE("the OSC control socket opens only when asked, and is remembered", "[u
     }
 
     SECTION("a port that was busy at launch is still asked for next time") {
-        // The other half of M24. Saving `running()` turned a port that was only briefly busy —
-        // another copy of takt4 still closing — into OSC control switched off for good, with
-        // nothing at the next launch to say so.
+        // The other half: saving `running()` turned a port that was only briefly busy — another
+        // copy of takt4 still closing — into OSC control switched off for good, with nothing at
+        // the next launch to say so.
         const takt4::testing::LoopbackReceiver taken;
         takt4::settings::Settings settings;
         settings.machine.oscControlEnabled = true;
         settings.machine.oscControlPort = taken.port();
-        // And a control surface left at home, so the launch meets two problems: both are said
-        // — each used to write the one before it away.
+        // And a control surface left at home, so the launch meets two problems: both are said —
+        // each used to write the one before it away.
         settings.machine.midiControlPort = "takt4 test - a control surface left at home";
         LiveTracker second(kWeights, kStateSpace);
         WindowController busy(second, settings);
@@ -1857,9 +1854,9 @@ TEST_CASE("opening the OSC control to other machines on a port another program h
 }
 
 TEST_CASE("a MIDI control input that is not here says so on its own line until it is", "[ui]") {
-    // The same for the MIDI input: a controller left at home, or held by a DAW that opened
-    // every input it saw (a WinMM input is one program's at a time). Its line used to read
-    // "off - pick a port" with a port picked.
+    // The same for the control input's MIDI half: a controller left at home, or held by a DAW
+    // that opened every input it saw (a WinMM input is one program's at a time). Its line used
+    // to read "off - pick a port" with a port picked.
     takt4::settings::Settings settings;
     settings.machine.midiControlPort = "takt4 test - a controller left at home";
     LiveTracker tracker(kWeights, kStateSpace);
@@ -2009,9 +2006,9 @@ TEST_CASE("an output that reaches nothing says why on its own row, for as long a
 TEST_CASE("a driver that does not answer leaves the window working, says so, and says when it is "
           "back",
           "[ui]") {
-    // an earlier review, L23: PortAudio's hosts wait with no limit for a driver, and one
-    // wedged there held the window's own thread — PANIC included — with nothing to press. Here the
-    // drivers do not answer RESCAN: a hook on the audio thread that waits until the test says.
+    // PortAudio's hosts wait with no limit for a driver, and one wedged there held the window's
+    // own thread — PANIC included — with nothing to press. Here the drivers do not answer RESCAN:
+    // a hook on the audio thread that waits until the test says.
     LiveTracker tracker(kWeights, kStateSpace);
     LiveTracker::Limits limits;
     limits.open = std::chrono::milliseconds(300);
@@ -2411,8 +2408,8 @@ TEST_CASE("a tap seeds the fold window onto the tapped tempo", "[ui]") {
     controller.tap(1.0);
     run.applyPosted();
 
-    // the locked decision: a tap *seeds*. The window moves onto an octave centred on the
-    // tapped tempo — 120/sqrt(2) to 120*sqrt(2) — and the tracker keeps tracking.
+    // A tap *seeds*, a decision locked on 2026-09-04. The window moves onto an octave centred on
+    // the tapped tempo — 120/sqrt(2) to 120*sqrt(2) — and the tracker keeps tracking.
     const Options options = tracker.engine().tempoOptions();
     CHECK(options.octaveFold);
     CHECK_THAT(options.minBpm, WithinAbs(84.853, 0.05));
@@ -2445,8 +2442,8 @@ TEST_CASE("the manual downbeat reaches the tracker", "[ui]") {
 
     // The next beat is the bar's second. Read from the engine's published state, not by
     // draining its beat ring: that ring has one consumer, the window's output thread, which
-    // runs for as long as the window does — a test taking beats off it too
-    // would be a second consumer, and each would see half of them.
+    // runs for as long as the window does — a test taking beats off it too would be a second
+    // consumer, and each would see half of them.
     const std::uint64_t pressedAt = tracker.engine().state().beats;
     REQUIRE(run.until([&] { return tracker.engine().state().beats > pressedAt; }));
     CHECK(tracker.engine().state().beats == pressedAt + 1);
@@ -2500,7 +2497,7 @@ TEST_CASE("the settings sliders send whole options, clamped to what they offer",
     CHECK_THAT(tracker.engine().tempoOptions().latencyOffsetSeconds, WithinAbs(-0.020, 1e-9));
 
     // Past the end of its own slider — which the markup cannot produce, but a test can and
-    // the inbound OSC will be able to.
+    // inbound OSC control will be able to.
     controller.window().invoke_latency_changed(-9999.0f);
     run.applyPosted();
     CHECK_THAT(tracker.engine().tempoOptions().latencyOffsetSeconds,
@@ -2526,10 +2523,10 @@ TEST_CASE("the settings sliders send whole options, clamped to what they offer",
 }
 
 TEST_CASE("the latency slider moves the outputs and not only the tracker", "[ui]") {
-    // an earlier review. The slider posted to the tracker, which applies the offset only to a
-    // timestamp nothing in the app reads; the transports took theirs once, at construction. So
-    // dragging it moved nothing on Link, the MIDI clock or OSC that night, and the value saved
-    // took effect at the *next* launch.
+    // The slider posted to the tracker, which applies the offset only to a timestamp nothing in
+    // the app reads; the transports took theirs once, at construction. So dragging it moved
+    // nothing on Link, the MIDI clock or OSC that night, and the value saved took effect at the
+    // *next* launch.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     REQUIRE(controller.outputs().transports().latencySeconds() == 0.0);
@@ -2541,8 +2538,8 @@ TEST_CASE("the latency slider moves the outputs and not only the tracker", "[ui]
 }
 
 TEST_CASE("keep for the next track reaches the tracker and the settings file", "[ui]") {
-    // an earlier review setting, through the controller. The click on the box itself is tested
-    // below with the other gestures.
+    // Whether a ÷2 or ×2 carries into the next track, set through the controller. The click on
+    // the box itself is tested below with the other gestures.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     SyntheticRun run(tracker);
@@ -2637,7 +2634,7 @@ TEST_CASE("the controls drive a tracker that is really running", "[ui][hardware]
 }
 
 // ---------------------------------------------------------------------------------------
-// the outputs row. The window owns the output thread now, so these check the path
+// The outputs row. The window owns the output thread now, so these check the path
 // from a control to the transports — and that the window stopped draining the beat ring,
 // which is the runner's to consume.
 // ---------------------------------------------------------------------------------------
@@ -2673,8 +2670,8 @@ TEST_CASE("the window comes up sending nothing", "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
 
-    // Running — the outputs live as long as the window does — and with
-    // nothing to send, and the tracker not listening.
+    // Running — the outputs live as long as the window does — and with nothing to send, and
+    // the tracker not listening.
     CHECK(controller.outputs().running());
     CHECK_FALSE(controller.outputs().tracking());
     const OutputsSeen live = seen(controller);
@@ -2713,8 +2710,8 @@ TEST_CASE("the Link row's tick reaches the transports", "[ui][network]") {
     CHECK(seen(controller).link);
     CHECK(controller.window().get_outputs_list()->row_data(0)->enabled);
     // **Joined on its own switch, whether or not the tracker is listening** — the operator's
-    // call of 2026-09-23. Joining publishes nothing: takt4 sends Link a tempo and a phase
-    // only from a locked beat, so a peer is not handed anything until there is one.
+    // call of 2026-09-23. Joining publishes nothing: takt4 sends Link a tempo and a phase only
+    // from a locked beat, so a peer is not handed anything until there is one.
     CHECK(controller.outputs().transports().link().enabled());
     CHECK_FALSE(controller.outputs().tracking());
 
@@ -2965,8 +2962,8 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
     CHECK(live().targets[0].kind == takt4::output::OutputTarget::Kind::Link);
     CHECK(live().targets[1].name == "127.0.0.1:57000");
 
-    // the "multiple simultaneous targets", each with a name a rule can use. One piece of
-    // text still holds several — a settings line, or a rig pasted in.
+    // Several targets at once, each with a name a rule can use. One piece of text still holds
+    // several — a settings line, or a rig pasted in.
     controller.setOscTargets("deck = 127.0.0.1:57000, wall = 127.0.0.1:57001");
     CHECK(live().oscTargets == 2);
     REQUIRE(live().targets.size() == 3);
@@ -3018,10 +3015,9 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
     }
 
     SECTION("each target carries its own delay, and only its own") {
-        // the per-output latency: a device with a lag of its own — a winch, which has to
-        // move — is offset on its own. the single slider moves the whole
-        // rig's timeline together, which is the one adjustment a rig with two different lags
-        // in it cannot use.
+        // Per-output latency: a device with a lag of its own — a winch, which has to move — is
+        // offset on its own. The single latency slider moves the whole rig's timeline together,
+        // which is the one adjustment a rig with two different lags in it cannot use.
         controller.setTargetDelay(2, 352.0f);
         REQUIRE(live().targets.size() == 3);
         CHECK(live().targets[1].delaySeconds == 0.0);
@@ -3037,7 +3033,7 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         CHECK(std::string(rows->row_data(2)->address) == "127.0.0.1:57001");
 
         // Past either limit is clamped rather than refused: a slider cannot get there, but
-        // the inbound OSC and a hand-edited settings file both can.
+        // inbound OSC control and a hand-edited settings file both can.
         controller.setTargetDelay(2, 5000.0f);
         CHECK(live().targets[2].delaySeconds ==
               Catch::Approx(takt4::output::kMaxOutputDelaySeconds));
@@ -3197,9 +3193,9 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         // *dead* `text:` binding with them: Slint drops a binding the moment somebody types
         // into the box. Delete the first of two outputs and, rewritten in place, the second's
         // name moved up a row, so a box that had been typed into went on showing the name of
-        // the target that used to be above it — and committed into it (an earlier review of
-        // 2026-09-25, M15). Reported in the trigger editor as "editing one changes them all";
-        // this is the same mechanism in the main window.
+        // the target that used to be above it — and committed into it. Reported in the trigger
+        // editor as "editing one changes them all"; this is the same mechanism in the main
+        // window.
         //
         // So the deleted row's own element goes, and every other element keeps its own output.
         const auto rows = controller.window().get_outputs_list();
@@ -3321,7 +3317,7 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
 }
 
 TEST_CASE("a MIDI target is a row like any other", "[ui]") {
-    // the targets are OSC *and* MIDI, named so a rule can pick between them. The address
+    // The targets are OSC *and* MIDI, named so a rule can pick between them. The address
     // box takes both, which is what `output::parseOutputTarget` accepts either way.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
@@ -3382,8 +3378,8 @@ TEST_CASE("the window leaves the beat ring to the output thread", "[ui][hardware
     pumpTimers(std::chrono::milliseconds(400));
     controller.toggleRun();
 
-    // The outputs go on — they live as long as the window — and are told
-    // the tracker has stopped listening.
+    // The outputs go on — they live as long as the window — and are told the tracker has
+    // stopped listening.
     CHECK(controller.outputs().running());
     REQUIRE(controller.settleOutputs());
     CHECK_FALSE(controller.outputs().tracking());
@@ -3404,9 +3400,9 @@ TEST_CASE("the window leaves the beat ring to the output thread", "[ui][hardware
 }
 
 // ---------------------------------------------------------------------------------------
-// the two layers, from the window's side: what it restores on the way in and what it
-// hands back on the way out. Where the file lives and what it looks like is
-// tests/settings/settings_test.cpp's business.
+// The settings' two layers, machine-local and portable, from the window's side: what it
+// restores on the way in and what it hands back on the way out. Where the file lives and
+// what it looks like is tests/settings/settings_test.cpp's business.
 // ---------------------------------------------------------------------------------------
 
 TEST_CASE("a window with no settings comes up on the machine's own best guess", "[ui]") {
@@ -3478,9 +3474,9 @@ TEST_CASE("a remembered device that is gone falls back rather than picking wrong
 }
 
 TEST_CASE("a remembered interface that is missing at launch is still the one saved", "[ui]") {
-    // an earlier review: one launch before the MOTU was powered on fell back to another device —
-    // right — and then saved that device as if it had been chosen, so the next show opened on
-    // the wrong interface at channel 1 even with the MOTU plugged in.
+    // One launch before the MOTU was powered on fell back to another device — right — and then
+    // saved that device as if it had been chosen, so the next show opened on the wrong
+    // interface at channel 1 even with the MOTU plugged in.
     LiveTracker tracker(kWeights, kStateSpace);
     if (tracker.devices().empty()) {
         SKIP("no input device on this machine");
@@ -3536,8 +3532,8 @@ TEST_CASE("a remembered interface is still the one saved on a machine with no in
 
 TEST_CASE("a remembered MIDI clock whose device is missing at launch is still the one saved",
           "[ui]") {
-    // an earlier review, for the clock as an output: one whose drum machine was left at home is
-    // kept asking for it, so it is sending again at the next launch it is plugged in for.
+    // The same for the clock as an output: one whose drum machine was left at home is kept
+    // asking for it, so it is sending again at the next launch it is plugged in for.
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     // As a file written before the clock was an output holds it.
@@ -3559,9 +3555,9 @@ TEST_CASE("a remembered MIDI clock whose device is missing at launch is still th
 }
 
 TEST_CASE("RESCAN reads the devices again and keeps the one chosen", "[ui]") {
-    // an earlier review: PortAudio builds its device list once, so an interface switched on after
-    // takt4 started was never offered. RESCAN restarts PortAudio — the only thing that makes it
-    // look again — and must land back on what was selected, found by name.
+    // PortAudio builds its device list once, so an interface switched on after takt4 started
+    // was never offered. RESCAN restarts PortAudio — the only thing that makes it look again —
+    // and must land back on what was selected, found by name.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     if (controller.devices().empty()) {
@@ -3810,11 +3806,11 @@ TEST_CASE("IMPORT after a RESCAN that could not bring PortAudio back up goes on,
 
 TEST_CASE("an outage that looks for the devices again finds its interface there by name",
           "[ui]") {
-    // An outage long enough to reach its third reopen reads the
-    // device list again — and kept the old *position* in the new list. So the picker, STOP and
-    // START, and the settings file autosave wrote all meant whatever now sat where the interface
-    // used to be; and with its name gone, the reopen fell back to the old entry, whose PortAudio
-    // index belonged to the session before.
+    // An outage long enough to reach its third reopen reads the device list again — and kept
+    // the old *position* in the new list. So the picker, STOP and START, and the settings file
+    // autosave wrote all meant whatever now sat where the interface used to be; and with its
+    // name gone, the reopen fell back to the old entry, whose PortAudio index belonged to the
+    // session before.
     //
     // The machine is the test's own list, which changes the way a replug changes one. Nothing in
     // it is ever opened: the sandbox refuses every device, which is exactly how a dead
@@ -3999,9 +3995,10 @@ TEST_CASE("STOP quiets the outputs before it waits on the driver", "[ui][hardwar
 }
 
 TEST_CASE("a dead input says NO AUDIO and is brought back", "[ui][hardware]") {
-    // an earlier review, the window's half. The watchdog's arithmetic is input_watchdog_test.cpp's
-    // business; this hands the window the readings a pulled cable, a moved clock and a driver
-    // reset produce, and checks what an operator would see and that the input really reopens.
+    // A dead, reset or re-clocked input, the window's half. The watchdog's arithmetic is
+    // input_watchdog_test.cpp's business; this hands the window the readings a pulled cable, a
+    // moved clock and a driver reset produce, and checks what an operator would see and that the
+    // input really reopens.
     LiveTracker tracker(kWeights, kStateSpace);
     if (!bestInputDevice(tracker)) {
         SKIP("no input device on this machine");
@@ -4145,11 +4142,10 @@ TEST_CASE("a driver that keeps asking to be reset is reopened four times a minut
 
 TEST_CASE("a loopback that goes quiet is waited for, and an interface that goes quiet is reopened",
           "[ui]") {
-    // an earlier review, M8, and the operator's call on its Q4. Windows sends a loopback
-    // nothing at all while nothing plays on the output it captures, so a paused player read as
-    // an unplugged interface: "No audio", a reopen, "Audio is back", and again, every few
-    // seconds, the tracker restarting each time. A loopback's silence is said as what it is and
-    // waited out; an interface's is still an outage.
+    // Windows sends a loopback nothing at all while nothing plays on the output it captures, so
+    // a paused player read as an unplugged interface: "No audio", a reopen, "Audio is back", and
+    // again, every few seconds, the tracker restarting each time. The operator's call: a
+    // loopback's silence is said as what it is and waited out; an interface's is still an outage.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     using Reading = takt4::audio::InputWatchdog::Reading;
@@ -4222,9 +4218,9 @@ InputDevice asioInterface() {
 } // namespace
 
 TEST_CASE("a driver saying its rate changed to the rate it runs at reopens nothing", "[ui]") {
-    // The patched host kept every sample-rate message as "the
-    // rate changed", and drivers send it for other news too — the SDK's comment names S/PDIF
-    // status — so a stream running happily was reopened, and the tracker restarted, for it.
+    // The patched host kept every sample-rate message as "the rate changed", and drivers send it
+    // for other news too — the SDK's comment names S/PDIF status — so a stream running happily
+    // was reopened, and the tracker restarted, for it.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     controller.assumeRunningOn({asioInterface(), takt4::audio::ChannelSelection::single(0)},
@@ -4270,8 +4266,8 @@ TEST_CASE("a driver that asks to be reset with the same rate is still reset", "[
 }
 
 TEST_CASE("a driver's resyncs are counted with the input's other trouble", "[ui]") {
-    // an earlier review, L26: the patch kept a driver's resync messages "so they can be
-    // shown", and nothing read them. They are the interface's own word that it lost its place.
+    // The patch kept a driver's resync messages "so they can be shown", and nothing read them.
+    // They are the interface's own word that it lost its place.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     controller.assumeRunningOn({asioInterface(), takt4::audio::ChannelSelection::single(0)},
@@ -4293,10 +4289,10 @@ TEST_CASE("a driver's resyncs are counted with the input's other trouble", "[ui]
 }
 
 TEST_CASE("an outage's next look at the machine is timed from when the last one ended", "[ui]") {
-    // During an outage the machine's devices are read again no more
-    // than every ten seconds — timed from when the look *began*, while an ASIO driver can take the
-    // scan's whole limit to answer: a look that took eight seconds made the next one due two
-    // seconds after it. Here a look is begun at the first try and answered eight seconds on.
+    // During an outage the machine's devices are read again no more than every ten seconds —
+    // timed from when the look *began*, while an ASIO driver can take the scan's whole limit to
+    // answer: a look that took eight seconds made the next one due two seconds after it. Here a
+    // look is begun at the first try and answered eight seconds on.
     LiveTracker tracker(kWeights, kStateSpace);
     int looks = 0;
     bool counting = false;
@@ -4401,7 +4397,7 @@ std::optional<InputDevice> idleLoopback(LiveTracker& tracker) {
 
 TEST_CASE("a loopback with nothing playing on it is waited for with the stream left open",
           "[ui][hardware]") {
-    // M8 end to end: the window's own redraws, the real watchdog, a real loopback of an output
+    // End to end: the window's own redraws, the real watchdog, a real loopback of an output
     // nothing plays on. Measured on this rig on 2026-09-26: such a loopback opens and sends
     // nothing at all, 0 hops in 3 s.
     LiveTracker tracker(kWeights, kStateSpace);
@@ -4446,11 +4442,11 @@ TEST_CASE("a loopback with nothing playing on it is waited for with the stream l
 }
 
 TEST_CASE("an input that opens again and sends nothing is not back", "[ui][hardware]") {
-    // M8's other half. An outage ended the moment a reopen *opened*, and said "Audio is back";
-    // an input that opens and then sends nothing began a new outage a moment later, counting its
-    // tries from nothing, so the look at the device list every third try never came. The input
-    // here is an idle loopback handed to the outage as though it were an interface — the one
-    // thing on a machine that really does open and send nothing.
+    // An outage ended the moment a reopen *opened*, and said "Audio is back"; an input that
+    // opens and then sends nothing began a new outage a moment later, counting its tries from
+    // nothing, so the look at the device list every third try never came. The input here is an
+    // idle loopback handed to the outage as though it were an interface — the one thing on a
+    // machine that really does open and send nothing.
     LiveTracker tracker(kWeights, kStateSpace);
     const std::optional<InputDevice> quiet = idleLoopback(tracker);
     if (!quiet) {
@@ -4520,11 +4516,11 @@ TEST_CASE("a MIDI port that has since been unplugged is reported, not fatal", "[
 }
 
 TEST_CASE("saved outputs that cannot open do not stop the window opening", "[ui]") {
-    // an earlier review, reproduced with the Release build before it was fixed: a saved output
-    // naming a MIDI interface that was not plugged in threw out of the runner's constructor,
-    // out of this class's, and out of `ui::run` — takt4 exited 0xC0000409 within seconds of
-    // every launch, with no window and no message. A hostname that does not resolve yet did
-    // the same. The one port that had been guarded was the MIDI *clock* (the test above).
+    // Reproduced with the Release build before it was fixed: a saved output naming a MIDI
+    // interface that was not plugged in threw out of the runner's constructor, out of this
+    // class's, and out of `ui::run` — takt4 exited 0xC0000409 within seconds of every launch,
+    // with no window and no message. A hostname that does not resolve yet did the same. The one
+    // port that had been guarded was the MIDI *clock* (the test above).
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     for (const char* line : {"lights = midi takt4 test - a device left at home",
@@ -4538,8 +4534,8 @@ TEST_CASE("saved outputs that cannot open do not stop the window opening", "[ui]
     REQUIRE_NOTHROW(controller.emplace(tracker, saved));
 
     // None is dropped. The MIDI device that is not here is said at once; the host name is an
-    // OSC target of its own, looked up on a thread of its own, and is said
-    // when that look-up fails — nothing waits for a name server any more.
+    // OSC target of its own, looked up on a thread of its own, and is said when that look-up
+    // fails — nothing waits for a name server any more.
     CHECK(seen(*controller).oscTargets == 2);
     CHECK(seen(*controller).targets.size() == 4); // the Link row, then the three
     CHECK(controller->window().get_outputs_list()->row_count() == 4);
@@ -4581,9 +4577,9 @@ TEST_CASE("a saved OSC prefix that is not an address does not stop the window op
 }
 
 TEST_CASE("the settings are saved on their own a moment after a change", "[ui][settings]") {
-    // an earlier review: the file was written on a clean exit and on SAVE, and a crash, a power
-    // cut or Windows shutting down with the window open lost the whole session. No exit and
-    // no button here — only the redraw timer, and the file appears.
+    // The file was written on a clean exit and on SAVE, and a crash, a power cut or Windows
+    // shutting down with the window open lost the whole session. No exit and no button here —
+    // only the redraw timer, and the file appears.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::test::TempDir dir;
@@ -4609,7 +4605,7 @@ TEST_CASE("the settings are saved on their own a moment after a change", "[ui][s
     CHECK(back.preset.rules[0].id == "strobe");
 
     // And a slider moved while the tracker is stopped is saved as moved, not as it was before
-    //.
+    // (the save read the engine, which takes the change only at Start).
     controller.window().invoke_fold_min_changed(91.0f);
     for (std::uint64_t i = 0; i < 4 * WindowController::kAutosaveCheckTicks; ++i) {
         controller.tick();
@@ -4797,8 +4793,8 @@ TEST_CASE("settings export and import carry the rules and the outputs", "[ui][se
     clips.id = "clips";
     clips.address = "/composition/layers/1/clips/{}/connect";
     controller.setRules({lasers, clips});
-    // And an output, which the name promised and nothing checked.
-    // At a receiver of the test's own, so the sandbox lets what the window sends to it through.
+    // And an output, which the name promised and nothing checked. At a receiver of the test's
+    // own, so the sandbox lets what the window sends to it through.
     const takt4::testing::LoopbackReceiver deck;
     controller.setOscTargets("deck = 127.0.0.1:" + std::to_string(deck.port()));
 
@@ -4835,11 +4831,11 @@ TEST_CASE("settings export and import carry the rules and the outputs", "[ui][se
 
 TEST_CASE("an import starts its rules afresh, whatever ids they share with the show before",
           "[ui][settings][trigger]") {
-    // A rule that keeps its id across an edit carries on — its
-    // mute, its ÷2 — and so did one across an IMPORT, since ids repeat from show to show (`add`
-    // numbers them rule1, rule2). A show imported mid-set came in with its first rule muted and at
-    // half rate because the old show's first rule had been. What happens is what a control
-    // surface does, then an IMPORT, and the running rule and the editor are both asked.
+    // A rule that keeps its id across an edit carries on — its mute, its ÷2 — and so did one
+    // across an IMPORT, since ids repeat from show to show (`add` numbers them rule1, rule2). A
+    // show imported mid-set came in with its first rule muted and at half rate because the old
+    // show's first rule had been. What happens is what a control surface does, then an IMPORT,
+    // and the running rule and the editor are both asked.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     takt4::trigger::Rule::Config clip;
@@ -4885,9 +4881,9 @@ TEST_CASE("an import starts its rules afresh, whatever ids they share with the s
 }
 
 TEST_CASE("an import brings the lighting patch with it", "[ui][settings][dmx]") {
-    // an earlier review. IMPORT applied the rules and the outputs and left the patch alone, so
-    // every imported lighting rule aimed at fixtures this rig did not have and reached nothing;
-    // and a file holding only a patch was "no preset in it".
+    // IMPORT applied the rules and the outputs and left the patch alone, so every imported
+    // lighting rule aimed at fixtures this rig did not have and reached nothing; and a file
+    // holding only a patch was "no preset in it".
     takt4::settings::Settings show;
     show.preset.fixtures = {takt4::dmx::fixtureFromMode("wash L", 1, 0, 1),
                             takt4::dmx::fixtureFromMode("wash R", 1, 0, 4)};
@@ -4921,11 +4917,12 @@ TEST_CASE("an import brings the lighting patch with it", "[ui][settings][dmx]") 
 }
 
 TEST_CASE("a path or a device name in any encoding reaches the status line intact", "[ui]") {
-    // an earlier review, and the wider class behind it. Every string on screen goes through
-    // `slint::SharedString`, which aborts the process on a byte that is not UTF-8 — and the
-    // status line was built from `path.string()`, which on Windows converts through the ANSI
-    // code page: "Friday’s set.json" came out as a lone 0x92 byte. A failure here is not a failed
-    // assertion but the test binary dying, which is what the operator's takt4 did.
+    // A path with characters outside ASCII, and the wider class behind it. Every string on
+    // screen goes through `slint::SharedString`, which aborts the process on a byte that is not
+    // UTF-8 — and the status line was built from `path.string()`, which on Windows converts
+    // through the ANSI code page: "Friday’s set.json" came out as a lone 0x92 byte. A failure
+    // here is not a failed assertion but the test binary dying, which is what the operator's
+    // takt4 did.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::test::TempDir dir;
@@ -4987,10 +4984,10 @@ const std::string kEscape(1, '\x1b');
 } // namespace
 
 TEST_CASE("a double click on PANIC leaves it engaged, and RELEASE lets it go", "[ui]") {
-    // an earlier review. PANIC was a plain toggle, so the way a button is hit in a hurry — twice
-    // — halted the rig and let go of it again before it had visibly lit. Driven with real
-    // clicks, because the fix is as much where RELEASE appears as what PANIC does: RELEASE
-    // shows up to PANIC's *left*, so the second click of a double-click lands on PANIC again.
+    // PANIC was a plain toggle, so the way a button is hit in a hurry — twice — halted the rig
+    // and let go of it again before it had visibly lit. Driven with real clicks, because the
+    // fix is as much where RELEASE appears as what PANIC does: RELEASE shows up to PANIC's
+    // *left*, so the second click of a double-click lands on PANIC again.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     constexpr float kWidth = 1000.0f;
@@ -5076,8 +5073,8 @@ TEST_CASE("removing an output row does not leave the keyboard dead", "[ui]") {
     // then destroyed with its row, which left Escape reaching nothing until the next click.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
-    // Rows that send to the test's own receiver, not to this machine's 9000 (an earlier review of
-    // 2026-09-25, T1: this is the test that sent the operator's receiver nine datagrams).
+    // Rows that send to the test's own receiver, not to this machine's 9000 (this is the test
+    // that sent the operator's receiver nine datagrams).
     const takt4::testing::LoopbackReceiver added;
     controller.setNewOutputPort(added.port());
     controller.addTarget();
@@ -5104,9 +5101,9 @@ TEST_CASE("removing an output row does not leave the keyboard dead", "[ui]") {
 }
 
 TEST_CASE("Escape engages PANIC, except in a text box, where it only leaves the box", "[ui]") {
-    // the design: PANIC by keyboard is "non-negotiable for live use", and no `.slint` file handled
-    // a key at all. And the other half, which is what makes Escape safe to bind: an operator
-    // who presses Escape to get out of a text box must not halt the show.
+    // PANIC by keyboard is not negotiable for live use, and no `.slint` file handled a key at
+    // all. And the other half, which is what makes Escape safe to bind: an operator who presses
+    // Escape to get out of a text box must not halt the show.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::testing::LoopbackReceiver added; // the new row's, not this machine's 9000
@@ -5285,10 +5282,10 @@ std::vector<float> outputRowsAt(WindowController& controller, float height) {
 
 TEST_CASE("typing a host and then removing the row above it keeps the host on its own output",
           "[ui]") {
-    // A box commits when it loses the keyboard, a turn of the event
-    // loop after the click that took it — and it commits by its row's index. × on a row above
-    // rewrote the list in place, so the element holding the typed host was handed the *next*
-    // output, and the late commit sent that output's messages to the host typed for this one.
+    // A box commits when it loses the keyboard, a turn of the event loop after the click that
+    // took it — and it commits by its row's index. × on a row above rewrote the list in place,
+    // so the element holding the typed host was handed the *next* output, and the late commit
+    // sent that output's messages to the host typed for this one.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::testing::LoopbackReceiver added;
@@ -5353,10 +5350,10 @@ TEST_CASE("typing a host and then removing the row above it keeps the host on it
 }
 
 TEST_CASE("an output's on tick follows its row when the rows change under it", "[ui]") {
-    // A tick box sets its own `checked` when clicked, which drops
-    // its binding to the row; the row was rebuilt for what its text boxes showed and not for
-    // this. So after a tick had been clicked, the rows changing under it — a line of outputs
-    // pasted in, an IMPORT — left that tick showing the old output's state over the new one.
+    // A tick box sets its own `checked` when clicked, which drops its binding to the row; the
+    // row was rebuilt for what its text boxes showed and not for this. So after a tick had been
+    // clicked, the rows changing under it — a line of outputs pasted in, an IMPORT — left that
+    // tick showing the old output's state over the new one.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::testing::LoopbackReceiver added;
@@ -5575,12 +5572,11 @@ TEST_CASE("takt4's own messages go to no OSC output until one is ticked in the o
 }
 
 TEST_CASE("an output's delay slider follows a real drag on the running window", "[ui]") {
-    // an earlier review, T11: no test dragged the real slider on a window with a
-    // controller behind it — the drag tests used a bare window, or called the controller. What
-    // is being guarded is the slider taken away under the pointer when its row is built again;
-    // with the element destroyed the drag stops following the hand after the first redraw, so
-    // what is counted is how many different delays one drag produces, with a redraw between
-    // every move.
+    // No test dragged the real slider on a window with a controller behind it — the drag tests
+    // used a bare window, or called the controller. What is being guarded is the slider taken
+    // away under the pointer when its row is built again; with the element destroyed the drag
+    // stops following the hand after the first redraw, so what is counted is how many different
+    // delays one drag produces, with a redraw between every move.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::testing::LoopbackReceiver added;
@@ -5643,9 +5639,9 @@ TEST_CASE("an output's delay slider follows a real drag on the running window", 
 }
 
 TEST_CASE("EXPORT carries a host still being typed", "[ui][settings]") {
-    // an earlier review, M15's other half. EXPORT and SAVE write what the output thread
-    // has, and a host typed and not entered was only a draft until the box let go of the
-    // keyboard — a turn of the event loop after the click on EXPORT.
+    // The other half of a box's late commit: EXPORT and SAVE write what the output thread has,
+    // and a host typed and not entered was only a draft until the box let go of the keyboard — a
+    // turn of the event loop after the click on EXPORT.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::testing::LoopbackReceiver added;
@@ -5696,8 +5692,8 @@ TEST_CASE("T taps and D snaps the downbeat from the keyboard, and a held key cou
 }
 
 TEST_CASE("M fires the manual rules from the keyboard", "[ui]") {
-    // an earlier review: the editor offered "manual hotkey" as a trigger and nothing anywhere could
-    // fire one, so a rule set to it never did anything. The hotkey is M.
+    // The editor offered "manual hotkey" as a trigger and nothing anywhere could fire one, so a
+    // rule set to it never did anything. The hotkey is M.
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     takt4::trigger::Rule::Config cue;
@@ -5717,8 +5713,7 @@ TEST_CASE("M fires the manual rules from the keyboard", "[ui]") {
     REQUIRE(fires() == 0);
 
     // And the key is taught where the trigger is picked: the rule editor's list of triggers names
-    // it (an earlier review, L33 — it was "manual hotkey", which said there was a key and
-    // not which).
+    // it (it was "manual hotkey", which said there was a key and not which).
     const auto triggers = controller.editor().window().get_trigger_names();
     bool taught = false;
     for (std::size_t i = 0; i < triggers->row_count(); ++i) {
@@ -5738,7 +5733,7 @@ TEST_CASE("M fires the manual rules from the keyboard", "[ui]") {
 }
 
 TEST_CASE("closing the main window closes the editor with it", "[ui]") {
-    // Slint's event loop runs until the **last** window is hidden, and the editor is a
+    // Slint's event loop runs until the **last** window is hidden, and the rule editor is a
     // window of its own — so closing the main window with the editor up left takt4 running
     // with nothing but the editor on screen. `ui::run` writes the settings only after the
     // loop returns, so the operator had closed the app, been left with a stray window, and
@@ -5755,9 +5750,9 @@ TEST_CASE("closing the main window closes the editor with it", "[ui]") {
 }
 
 TEST_CASE("closing the main window closes the patch editor with it", "[ui]") {
-    // The same failure through the other door: the close handler hid the
-    // rule editor and nothing else, so with PATCH LIGHTS open the process stayed up with the
-    // patch window alone on screen — the interface, Link and the ports all still held.
+    // The same failure through the other door: the close handler hid the rule editor and
+    // nothing else, so with PATCH LIGHTS open the process stayed up with the patch window alone
+    // on screen — the interface, Link and the ports all still held.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
 
@@ -5777,10 +5772,10 @@ TEST_CASE("closing the main window closes the patch editor with it", "[ui]") {
 }
 
 TEST_CASE("closing the main window closes the About box with it", "[ui]") {
-    // an earlier review, M16: the same failure a third time. The About box is a window of
-    // its own, the close handler hid the two editors and not it — and with ABOUT open, closing
-    // takt4 left it running with nothing on screen but that: the tracker, Link, the MIDI clock
-    // and Art-Net still going, nothing saved, the interface held.
+    // The same failure a third time. The About box is a window of its own, the close handler
+    // hid the two editors and not it — and with ABOUT open, closing takt4 left it running with
+    // nothing on screen but that: the tracker, Link, the MIDI clock and Art-Net still going,
+    // nothing saved, the interface held.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     controller.window().invoke_about_opened();
@@ -5836,9 +5831,9 @@ TEST_CASE("the add a rule button adds one when there are none, and only opens th
 }
 
 TEST_CASE("an editor's own close box closes it as CLOSE does", "[ui]") {
-    // M16's other half: the window's close box hid it behind its controller's back, so the patch
-    // editor went on redrawing its levels thirty times a second with nothing on screen, and what
-    // was being typed was never committed.
+    // The other way an editor closes: the window's close box hid it behind its controller's
+    // back, so the patch editor went on redrawing its levels thirty times a second with nothing
+    // on screen, and what was being typed was never committed.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     controller.window().show();
@@ -5913,9 +5908,9 @@ TEST_CASE("a tap does not switch the fold on", "[ui]") {
 }
 
 TEST_CASE("IDENTIFY lights a fixture before Start has ever been pressed", "[ui][dmx]") {
-    // an earlier review, where the rig met it: the patch editor's IDENTIFY said "Identifying..."
-    // and nothing went out, because the outputs only ran while the tracker did. An operator in
-    // the truss patching a rig before the doors open is exactly who presses it.
+    // Met on the rig: the patch editor's IDENTIFY said "Identifying..." and nothing went out,
+    // because the outputs only ran while the tracker did. An operator in the truss patching a
+    // rig before the doors open is exactly who presses it.
     takt4::testing::LoopbackReceiver node;
     takt4::settings::Settings settings;
     takt4::output::OutputTarget truss;
@@ -6054,10 +6049,10 @@ TEST_CASE("IDENTIFY lights a par without a dimmer that a rule left at nothing", 
 }
 
 TEST_CASE("an Art-Net row's delay slider moves that node's delay, as every row's does", "[ui]") {
-    // The operator's call of 2026-09-25, which reverses an earlier review: every output has a delay
-    // that works the same way, and a node's is honoured — the node is sent the lighting that
-    // much later (`dmx::ArtNetPublisher`). Driven by real clicks: what is under test is what the
-    // row draws and where a click on it goes.
+    // The operator's call of 2026-09-25, rather than taking the delay off the rows where it did
+    // nothing: every output has a delay that works the same way, and a node's is honoured — the
+    // node is sent the lighting that much later (`dmx::ArtNetPublisher`). Driven by real clicks:
+    // what is under test is what the row draws and where a click on it goes.
     LiveTracker tracker(kWeights, kStateSpace);
     // Receivers of the test's own: this used to aim the node at 127.0.0.1:6454, which is where
     // the rig's own Art-Net input listens.
@@ -6195,9 +6190,9 @@ TEST_CASE("a delay reading takes a typed number, and Escape leaves it as it was"
 
 TEST_CASE("an output's kind dropdown survives the redraws while it is open, and its pick lands",
           "[ui]") {
-    // an earlier review: popups inside repeaters were tested only for the two color pickers. The
-    // output rows are a repeater the window builds again whenever a row cannot be updated in
-    // place, and a row rebuilt with its dropdown open takes the popup away under the pointer.
+    // Popups inside repeaters were tested only for the two color pickers. The output rows are a
+    // repeater the window builds again whenever a row cannot be updated in place, and a row
+    // rebuilt with its dropdown open takes the popup away under the pointer.
     //
     // Swept only down one column, x = 208, where the row's kind dropdown sits (padding, the tick
     // box and the name come first), and only near the rows: nothing that opens a dialog or the
@@ -6245,12 +6240,12 @@ TEST_CASE("an output's kind dropdown survives the redraws while it is open, and 
     // the probe's own click. Both edges are found, and the row is aimed at in the middle: the
     // dropdown is shorter than the box, and its top edge is not where the box's is.
     //
-    // **Up from the footer, not down from the middle**. The deck's
-    // row is the last one, so coming up from below it is met before anything above it; going
-    // down, the sweep first crossed the Inputs block — whose "listen" box the Link row had pushed
-    // into its path — and bound the OSC control port on the machine the show runs from, thirteen
-    // times, while the test passed. Below the row there is only [+ ADD OUTPUT], and a probe that
-    // lands on it is undone.
+    // **Up from the footer, not down from the middle.** The deck's row is the last one, so
+    // coming up from below it is met before anything above it; going down, the sweep first
+    // crossed the Inputs block — whose "listen" box the Link row had pushed into its path — and
+    // bound the OSC control port on the machine the show runs from, thirteen times, while the
+    // test passed. Below the row there is only [+ ADD OUTPUT], and a probe that lands on it is
+    // undone.
     constexpr float kBackgroundX = 985.0f;
     constexpr float kBackgroundY = 1080.0f;
     const takt4::tests::NothingReal nothingReal;
@@ -6311,8 +6306,7 @@ TEST_CASE("an output's kind dropdown survives the redraws while it is open, and 
     // Then the gesture: opened, left open through ten redraws, and the same step taken. Unlike
     // the rule editor's and the patch editor's, nothing in these rows moves on its own — no
     // readout, no level — so ten redraws are all that happens to them while the list is open
-    // (an earlier review, T13, checked; the other two tests now move a readout under
-    // their list).
+    // (checked; the other two tests now move a readout under their list).
     reset();
     REQUIRE(kindOf() == 0);
     clickAt(window, kKindColumn, comboY);
@@ -6362,11 +6356,11 @@ takt4::output::OutputTarget outputNamed(WindowController& controller, const std:
 } // namespace
 
 TEST_CASE("a kind picked again on an output row still follows the row when it changes", "[ui]") {
-    // A dropdown sets its own index when it is picked from, and so
-    // stops following its row; a pick is recorded so the row is built again when something else
-    // moves it. A pick of the kind the row already was returned before recording it — and the
-    // dropdown went on showing that kind over a row a paste or an IMPORT had changed. What it
-    // shows is read the way an operator meets it: an arrow in the open list moves on from it.
+    // A dropdown sets its own index when it is picked from, and so stops following its row; a
+    // pick is recorded so the row is built again when something else moves it. A pick of the
+    // kind the row already was returned before recording it — and the dropdown went on showing
+    // that kind over a row a paste or an IMPORT had changed. What it shows is read the way an
+    // operator meets it: an arrow in the open list moves on from it.
     LiveTracker tracker(kWeights, kStateSpace);
     const takt4::testing::LoopbackReceiver deckEnd;
     takt4::settings::Settings saved;
@@ -6428,12 +6422,12 @@ TEST_CASE("a kind picked again on an output row still follows the row when it ch
 }
 
 TEST_CASE("a MIDI row's device dropdown follows its row after the device list changes", "[ui]") {
-    // L27's other half. A dropdown given a new list sets its own index (Slint's ComboBoxBase:
+    // The other half. A dropdown given a new list sets its own index (Slint's ComboBoxBase:
     // `changed model => reset-current()`), which cuts it loose from its row — so after a RESCAN,
     // which hands every MIDI row a new list, a row whose device moved in the list went on showing
     // the device that used to be there. Every MIDI row is built again with a new list. The list
-    // here is the rows' own devices, none of them on this machine: taking out the row that
-    // names the first moves every device after it up one.
+    // here is the rows' own devices, none of them on this machine: taking out the row that names
+    // the first moves every device after it up one.
     const auto build = [] {
         takt4::settings::Settings saved;
         for (const char* line : {"a = midi takt4 test A", "b = midi takt4 test B",
@@ -6531,9 +6525,9 @@ TEST_CASE("a MIDI row's device dropdown follows its row after the device list ch
 
 TEST_CASE("an output whose MIDI device is not plugged in shows that device, and says so",
           "[ui]") {
-    // The row's dropdown read "select a MIDI device" — a row with
-    // no device at all — while the row went on trying to open the one it named. It shows the
-    // device now, marked as not plugged in, and it is on the list for any row to pick.
+    // The row's dropdown read "select a MIDI device" — a row with no device at all — while the
+    // row went on trying to open the one it named. It shows the device now, marked as not
+    // plugged in, and it is on the list for any row to pick.
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
     takt4::output::OutputTarget desk;
@@ -6556,8 +6550,8 @@ TEST_CASE("an output whose MIDI device is not plugged in shows that device, and 
 }
 
 TEST_CASE("a pasted line keeps a quoted name with a comma in it whole", "[ui]") {
-    // L28's paste half: a line of outputs is split at its commas, and a name written in quotes —
-    // how a name with a comma in it is written — keeps its own.
+    // A name's round trip, the paste half: a line of outputs is split at its commas, and a name
+    // written in quotes — how a name with a comma in it is written — keeps its own.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::testing::LoopbackReceiver one;
@@ -6572,8 +6566,8 @@ TEST_CASE("a pasted line keeps a quoted name with a comma in it whole", "[ui]") 
 
 TEST_CASE("an import of a file that cannot be read says why, and changes nothing",
           "[ui][settings]") {
-    // A file damaged by a hand edit, or held by another program,
-    // was "has no preset in it", which sends an operator looking for the wrong thing.
+    // A file damaged by a hand edit, or held by another program, was "has no preset in it",
+    // which sends an operator looking for the wrong thing.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     takt4::trigger::Rule::Config keep;
@@ -6615,10 +6609,10 @@ TEST_CASE("an import of a file that cannot be read says why, and changes nothing
 }
 
 TEST_CASE("each import decides what the next launch uses, not the one before", "[ui][settings]") {
-    // A decoder and an OSC prefix cannot change while takt4 runs,
-    // so an import that brings others keeps them for the next launch — and a second import that
-    // brought the running ones left the first import's pending, so the next launch came up with
-    // a decoder and a prefix from a file the operator had since replaced.
+    // A decoder and an OSC prefix cannot change while takt4 runs, so an import that brings
+    // others keeps them for the next launch — and a second import that brought the running ones
+    // left the first import's pending, so the next launch came up with a decoder and a prefix
+    // from a file the operator had since replaced.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::tracking::Decoder running = tracker.engine().decoderKind();
@@ -6653,10 +6647,10 @@ TEST_CASE("each import decides what the next launch uses, not the one before", "
 TEST_CASE("an import restores this machine's half too, and a file without one leaves it alone",
           "[ui][settings]") {
     // The operator, 2026-10-03: export and import "should carry/restore EVERYTHING". Import
-    // applied the preset and left the input, the MIDI and OSC control and the layout as they were,
-    // by the design, so a rig restored from its own export came back without them. Every part of
-    // the machine half that can differ from a fresh window without hardware, from a file, back out
-    // of what the window would save.
+    // applied the preset and left the input, the MIDI and OSC control and the layout as they
+    // were — by design, since they are the machine's half — so a rig restored from its own export
+    // came back without them. Every part of the machine half that can differ from a fresh window
+    // without hardware, from a file, back out of what the window would save.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::settings::Settings before = controller.currentSettings();
@@ -6754,13 +6748,13 @@ takt4::settings::Settings settingsWithHandFiredCueTo(const std::string& name) {
 } // namespace
 
 TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
-    // Where the operator meets an earlier review: a network that is down, or a cable that is
-    // out, fails every send, and the window said nothing — the output just went quiet.
-    // The socket refuses every send to `kUnsendableHost`, the stand-in here, since no test can
-    // pull a cable. Nothing is started: the outputs run from launch, and the status has
-    // to say so before START — for an output that is sent something; one sent nothing has
-    // nothing to fail. A stopped window sends the global messages nothing (they wait for a
-    // lock), so it is sent a cue fired by hand, as a control surface fires one.
+    // A network that is down, or a cable that is out, fails every send, and the window said
+    // nothing — the output just went quiet. The socket refuses every send to `kUnsendableHost`,
+    // the stand-in here, since no test can pull a cable. Nothing is started: the outputs run
+    // from launch, and the status has to say so before START — for an output that is sent
+    // something; one sent nothing has nothing to fail. A stopped window sends the global
+    // messages nothing (they wait for a lock), so it is sent a cue fired by hand, as a control
+    // surface fires one.
     if constexpr (!takt4::testing::kUnsendableFails) {
         SKIP(takt4::testing::kUnsendableSkip);
     }
@@ -6784,9 +6778,9 @@ TEST_CASE("an output the network refuses is named in the status line", "[ui]") {
 
 TEST_CASE("a single problem met starting is still on the status line when the window is up",
           "[ui]") {
-    // Several were joined and said together; one was left where it
-    // was and the constructor's own later news wrote over it. A set with a rule that cannot fire
-    // is one such problem, and the OSC listener starting after it — on any free port — is the
+    // Several problems met starting were joined and said together; one was left where it was
+    // and the constructor's own later news wrote over it. A set with a rule that cannot fire is
+    // one such problem, and the OSC listener starting after it — on any free port — is the
     // later news.
     LiveTracker tracker(kWeights, kStateSpace);
     takt4::settings::Settings saved;
@@ -6806,7 +6800,7 @@ TEST_CASE("a single problem met starting is still on the status line when the wi
 }
 
 TEST_CASE("the settings notice and what the first redraws find are said together", "[ui]") {
-    // M13's other half. A damaged settings file's notice is put up once the window exists — and
+    // The other half. A damaged settings file's notice is put up once the window exists — and
     // the first redraw that found an output it could not reach wrote over it, before anybody
     // could have read it. For its first seconds, what the window finds out on its own joins what
     // it met starting; what the operator does still says what it did.
@@ -6858,10 +6852,11 @@ TEST_CASE("the settings notice and what the first redraws find are said together
 
 TEST_CASE("a click made while START is still opening the input does not stop it again",
           "[ui][hardware]") {
-    // an earlier review, with the pointer on the button. Opening a driver holds the window's
-    // thread; a click made meanwhile is delivered once it is free, and pressed STOP on an input
-    // that had only just opened. Here the second click comes before the press has been carried
-    // out and a third straight after it has — the two moments such a click can arrive.
+    // A click queued behind a slow open, with the pointer on the button. Opening a driver holds
+    // the window's thread; a click made meanwhile is delivered once it is free, and pressed STOP
+    // on an input that had only just opened. Here the second click comes before the press has
+    // been carried out and a third straight after it has — the two moments such a click can
+    // arrive.
     LiveTracker tracker(kWeights, kStateSpace);
     if (!bestInputDevice(tracker)) {
         SKIP("no input device on this machine");
@@ -6911,8 +6906,8 @@ TEST_CASE("a click made while START is still opening the input does not stop it 
 }
 
 TEST_CASE("the TRIGGERS row counts the rules that would fire, as they are edited", "[ui]") {
-    // Counted when the rules change rather than on every redraw, so the
-    // count has to follow every way they change: a whole set arriving, and the editor.
+    // Counted when the rules change rather than on every redraw, so the count has to follow
+    // every way they change: a whole set arriving, and the editor.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     takt4::trigger::Rule::Config clips;
@@ -6949,9 +6944,9 @@ TEST_CASE("the TRIGGERS row counts the rules that would fire, as they are edited
 TEST_CASE("an edit is kept while the output thread has not yet got to it", "[ui]") {
     // Found by the ASan run of 2026-09-24, as the test above failing four runs in six there and
     // never in Release. The editor takes the output thread's live switches, to show what a
-    // control surface changed, and it took them whenever they moved — the set
-    // before its own last edit included, while the thread had not got to that edit yet. So a
-    // rule switched on went off again at the next redraw, and the next edit posted it off.
+    // control surface changed, and it took them whenever they moved — the set before its own
+    // last edit included, while the thread had not got to that edit yet. So a rule switched on
+    // went off again at the next redraw, and the next edit posted it off.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     takt4::trigger::Rule::Config clips;
@@ -7006,9 +7001,9 @@ TEST_CASE("an edit is kept while the output thread has not yet got to it", "[ui]
 }
 
 TEST_CASE("what the output thread lost is said under the outputs heading", "[ui]") {
-    // an earlier review: every rule message that reached no output was counted, and the count was
-    // shown nowhere. A MIDI rule on a rig with no MIDI output, fired with TEST, the way an
-    // operator finds out their laser rule goes nowhere.
+    // Every rule message that reached no output was counted, and the count was shown nowhere. A
+    // MIDI rule on a rig with no MIDI output, fired with TEST, the way an operator finds out
+    // their laser rule goes nowhere.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     takt4::trigger::Rule::Config lasers;
@@ -7043,10 +7038,10 @@ TEST_CASE("what the output thread lost is said under the outputs heading", "[ui]
 }
 
 TEST_CASE("a window opens no taller than the screen has room for", "[ui]") {
-    // an earlier review. At 125 % a 1920 x 1080 screen with a 40-pixel taskbar has a work area of
-    // 1536 x 832 logical pixels, and the main window asked for 934: its status bar and PANIC
-    // opened under the taskbar. What a real small screen does cannot be seen from this desk;
-    // this is the arithmetic that decides it.
+    // At 125 % a 1920 x 1080 screen with a 40-pixel taskbar has a work area of 1536 x 832
+    // logical pixels, and the main window asked for 934: its status bar and PANIC opened under
+    // the taskbar. What a real small screen does cannot be seen from this desk; this is the
+    // arithmetic that decides it.
     using takt4::ui::fitWithin;
     using takt4::ui::LogicalExtent;
     const LogicalExtent main{takt4::ui::kMainWindowWidth, takt4::ui::kMainWindowHeight};
@@ -7072,11 +7067,11 @@ TEST_CASE("a window opens no taller than the screen has room for", "[ui]") {
 }
 
 TEST_CASE("ABOUT opens the licence and the notices that are built in", "[ui]") {
-    // an earlier review licensing finding, the user's answer to its Q8: takt4 ships with no notices
-    // for what is built into it, and GPLv3 §5(d) asks its interface to show them. takt4 is one
-    // file, so they are inside it; the About box opens them. Driven by clicks — ABOUT in the
-    // status line, then the About box's own buttons — with the file opener replaced, since a
-    // test must not launch a text viewer.
+    // A licensing gap, and the user's answer to it: takt4 shipped with no notices for what is
+    // built into it, and GPLv3 section 5(d) asks its interface to show them. takt4 is one file,
+    // so they are inside it; the About box opens them. Driven by clicks — ABOUT in the status
+    // line, then the About box's own buttons — with the file opener replaced, since a test must
+    // not launch a text viewer.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     std::vector<std::filesystem::path> opened;
@@ -7135,8 +7130,7 @@ TEST_CASE("ABOUT opens the licence and the notices that are built in", "[ui]") {
             }
             const std::string name = opened.front().filename().string();
             // Written into this test process's own folder, never the temp directory's "takt4",
-            // which the real takt4 uses — a test run wrote over the texts it had open there (the
-            // review of 2026-09-25, T4).
+            // which the real takt4 uses — a test run wrote over the texts it had open there.
             std::error_code code;
             CHECK(opened.front().parent_path().parent_path().parent_path() ==
                   std::filesystem::temp_directory_path(code) / "takt4-tests");
@@ -7154,8 +7148,8 @@ TEST_CASE("ABOUT opens the licence and the notices that are built in", "[ui]") {
     CHECK(licence.find("GNU GENERAL PUBLIC LICENSE") != std::string::npos);
     CHECK(licence.find("Version 3, 29 June 2007") != std::string::npos);
     CHECK(notices.rfind("takt4 — third-party notices", 0) == 0);
-    // Rust's standard library is in takt4.exe inside Slint, and was missing until an earlier review of
-    // 2026-09-25.
+    // Rust's standard library is in takt4.exe inside Slint, and was missing until it was found
+    // on 2026-09-25.
     for (const char* name : {"PortAudio", "Ableton Link", "Slint", "Skia", "Steinberg ASIO SDK",
                              "The Rust standard library"}) {
         INFO(name);
@@ -7319,8 +7313,7 @@ TEST_CASE("SAVE in a test process writes to a folder of its own, not over the ri
     // The folder this process was given: under the temp directory, in "takt4-tests". Nothing is
     // deleted here any more — the process removes its own folder on the way out
     // (tests/support/crt_dialogs.cpp) — because this used to `remove_all` whatever folder the
-    // file landed in, which with TAKT4_SETTINGS_DIR set outside the tests would have been that
-    //.
+    // file landed in, which with TAKT4_SETTINGS_DIR set outside the tests would have been that.
     const std::filesystem::path temp = std::filesystem::temp_directory_path(code);
     CHECK(written.parent_path().parent_path() == temp / "takt4-tests");
 }
@@ -7979,7 +7972,7 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
 }
 
 TEST_CASE("the main window opens 800 wide and 934 tall", "[ui]") {
-    // the design: the operator cut the width by a fifth, and kept the height with a scroll bar.
+    // The operator cut the width by a fifth, and kept the height with a scroll bar.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     auto* const adapter = takt4::ui::headlessAdapterFor(controller.window().window());
@@ -7993,11 +7986,11 @@ TEST_CASE("the main window opens 800 wide and 934 tall", "[ui]") {
 TEST_CASE("folding a section takes its height off the window, keeps its heading in sight, and "
           "gives the height back",
           "[ui]") {
-    // the design: a fold takes the section's height off the *window* — the trace keeps its
-    // height — but never so much that the folded heading, with the arrow that opens it again,
-    // scrolls out of sight; opening it gives the height back. Driven by clicks on the real arrows,
-    // with the window then made the size the controller asked for, as a window manager would; and
-    // every height checked against the sheets measured off a render, not the controller's figures.
+    // A fold takes the section's height off the *window* — the trace keeps its height — but
+    // never so much that the folded heading, with the arrow that opens it again, scrolls out of
+    // sight; opening it gives the height back. Driven by clicks on the real arrows, with the
+    // window then made the size the controller asked for, as a window manager would; and every
+    // height checked against the sheets measured off a render, not the controller's figures.
     LiveTracker tracker(kWeights, kStateSpace);
     // Both sections open to start with, which a fresh install no longer is: it folds Inputs
     // (the operator, 2026-10-08; see the test after this one).
@@ -8224,9 +8217,9 @@ TEST_CASE("a fresh window opens with the control inputs folded and the outputs o
 
 TEST_CASE("the rule editor opens folded as it was left, with its log as it was",
           "[ui][settings][trigger]") {
-    // the design: the rule editor's folds, A to D and the event log, and the log's height are
-    // the window's and remembered across launches, like the main window's. Saved by one window,
-    // read back as the next launch reads it.
+    // The rule editor's folds, A to D and the event log, and the log's height are the window's
+    // and remembered across launches, like the main window's. Saved by one window, read back as
+    // the next launch reads it.
     takt4::settings::Settings saved;
     {
         LiveTracker tracker(kWeights, kStateSpace);

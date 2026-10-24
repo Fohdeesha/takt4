@@ -166,8 +166,7 @@ def main(argv):
                     results[tag] = s
                     # What was run, whole: the build (a path names whatever is there now),
                     # the weights file's hash, where the tracks came from, and which they
-                    # were. The record used to be the CLI's path and the weights as typed (the
-                    # 2026-09-25 review's P16).
+                    # were. The record used to be the CLI's path and the weights as typed.
                     save_json(WORK / "valset" / f"{a.set}.{tag}.json",
                               {"weights": weights, "weights_sha256": weights_sha256(weights),
                                "bpm": bpm, "meters": meters, "cli": identity,

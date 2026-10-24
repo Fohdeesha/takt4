@@ -8,9 +8,9 @@
 
 namespace takt4::audio {
 
-/// Regroups a sample stream into fixed hops (the design: hop accumulator to 20 ms
-/// frames). Blocks of any length go in; whenever a hop's worth has arrived, the hop is
-/// handed out. The host block size is never assumed to divide the hop size.
+/// Regroups a sample stream into fixed hops (20 ms frames). Blocks of any length go in; whenever
+/// a hop's worth has arrived, the hop is handed out. The host block size is never assumed to
+/// divide the hop size.
 class HopAccumulator {
 public:
     explicit HopAccumulator(std::size_t hopSize = kHopSize) : hop_(hopSize) {}

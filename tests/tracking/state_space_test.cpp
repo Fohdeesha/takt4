@@ -38,7 +38,7 @@ void write(const std::filesystem::path& path, const std::vector<char>& bytes) {
 
 } // namespace
 
-// The numbers here were read out of madmom in the venv, not out of the design: at
+// The numbers here were read out of madmom in the venv, not copied from a description of it: at
 // 55-215 BPM and 50 fps the beat state space is 42 integer intervals of 14 to 55 frames
 // laid end to end into 1449 states. If a rebuilt blob disagrees, either madmom changed
 // or tools/dump_statespace.py was run with different arguments, and the tracker that

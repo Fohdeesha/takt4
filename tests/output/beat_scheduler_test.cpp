@@ -94,9 +94,9 @@ std::vector<Fire> run(double bpm, double lead, std::size_t count, double pipelin
 
 TEST_CASE("a locked beat is fired ahead of its moment by the lead, and only once",
           "[output][scheduler]") {
-    // an earlier review: a negative offset has to put a beat's cue *before* that beat, which a
-    // beat heard 60 ms after its moment cannot do. So while locked the next beat is fired on a
-    // prediction, 200 ms ahead here, and the beat heard afterwards is not fired again.
+    // A negative offset has to put a beat's cue *before* that beat, which a beat heard 60 ms
+    // after its moment cannot do. So while locked the next beat is fired on a prediction,
+    // 200 ms ahead here, and the beat heard afterwards is not fired again.
     const double bpm = 128.0;
     const std::vector<Fire> fires = run(bpm, -0.200, 64, 0.060, 0.004);
     // One fire for every beat, the first heard and the rest predicted. The last is predicted
@@ -162,8 +162,8 @@ TEST_CASE("a beat with no timeline fires as it arrives, however close to the las
 }
 
 TEST_CASE("a backlog of stale beats is not fired in a burst", "[output][scheduler]") {
-    // an earlier review: after the model worker stalls, the beats it owed arrive together, and
-    // firing them all as "now" was a burst of cues for music long gone.
+    // After the model worker stalls, the beats it owed arrive together, and firing them all as
+    // "now" was a burst of cues for music long gone.
     BeatScheduler scheduler;
     const double period = 60.0 / 128.0;
     const double now = 10.0;
@@ -298,10 +298,10 @@ double nearestFire(const std::vector<Fire>& fires, double moment) {
 
 TEST_CASE("a tempo change while locked is fired once a beat and followed from the next beat heard",
           "[output][scheduler]") {
-    // an earlier review, coverage gap 11. The predictions run on the spacing of the last
-    // beat heard, so the first beat at a new tempo arrives off where it was predicted — 40 ms early
-    // here, going from 128 to 140 — and is recognised as the beat already fired, not fired again.
-    // From it on the predictions are at the new tempo.
+    // The predictions run on the spacing of the last beat heard, so the first beat at a new tempo
+    // arrives off where it was predicted — 40 ms early here, going from 128 to 140 — and is
+    // recognised as the beat already fired, not fired again. From it on the predictions are at
+    // the new tempo.
     std::vector<double> moments;
     std::vector<double> bpms;
     double at = 1.0;
@@ -334,9 +334,9 @@ TEST_CASE("a tempo change while locked is fired once a beat and followed from th
 
 TEST_CASE("the grid moved by less than a third of a beat while locked is not a second beat",
           "[output][scheduler]") {
-    // Coverage gap 11. The tracker moves its phase by a fifth of a beat — a DOWNBEAT pressed a
-    // little late, the filter settling. The beat heard on the new grid is the one already
-    // predicted on the old one, and is not fired again; the predictions move with it.
+    // The tracker moves its phase by a fifth of a beat — a DOWNBEAT pressed a little late, the
+    // filter settling. The beat heard on the new grid is the one already predicted on the old
+    // one, and is not fired again; the predictions move with it.
     std::vector<double> moments;
     const double period = 60.0 / 128.0;
     for (std::size_t k = 0; k < 32; ++k) {
@@ -355,9 +355,9 @@ TEST_CASE("the grid moved by less than a third of a beat while locked is not a s
 
 TEST_CASE("the grid moved by half a beat while locked costs one beat, and the counts go on",
           "[output][scheduler]") {
-    // Coverage gap 11. Half a beat is further than a beat's stamp ever jitters, so the beat heard
-    // there is not the one predicted on the old grid — and a prediction already fired cannot be
-    // taken back. The jump costs one fire more than the music had, whichever way it lands:
+    // Half a beat is further than a beat's stamp ever jitters, so the beat heard there is not
+    // the one predicted on the old grid — and a prediction already fired cannot be taken back.
+    // The jump costs one fire more than the music had, whichever way it lands:
     //
     //   * 50 ms ahead, the beat on the new grid is heard before the old grid's next is due, and
     //     is fired as it is heard, half a beat after the old grid's.

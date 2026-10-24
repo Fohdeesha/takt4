@@ -322,9 +322,9 @@ void RuleSink::flushQueuedTo(std::uint64_t outputs) {
 
 bool RuleSink::sendOsc(const trigger::Message& message) {
     OscPublisher& osc = transports_.osc();
-    // the rule subset. A rule routed to a target that is switched off, or named one this
-    // rig does not have, reaches nothing — which is *undeliverable* rather than sent, and is
-    // the difference between "your routing is wrong" and "your rule never fired".
+    // The rule's subset of the targets. A rule routed to a target that is switched off, or
+    // named one this rig does not have, reaches nothing — which is *undeliverable* rather than
+    // sent, and is the difference between "your routing is wrong" and "your rule never fired".
     if (!osc.anyTargetIn(message.outputs)) {
         ++undeliverable_;
         return true;
@@ -359,13 +359,13 @@ bool RuleSink::sendOsc(const trigger::Message& message) {
 }
 
 bool RuleSink::sendMidi(const trigger::Message& message) {
-    // the design: "Also send configurable note or CC messages on beat and downbeat for MIDI-learn
-    // targets." Down whichever of the targets the rule named, which may be several cables
-    // — a rig with a lighting desk and a hardware sequencer on it is two — and which may be
-    // the same device the 24 PPQN clock uses. `Transports` opens each device once.
+    // Configurable note or CC messages on beat and downbeat, for MIDI-learn targets. Down
+    // whichever of the targets the rule named, which may be several cables — a rig with a
+    // lighting desk and a hardware sequencer on it is two — and which may be the same device
+    // the 24 PPQN clock uses. `Transports` opens each device once.
     //
     // **Not every message is three bytes**, which is why this builds a length rather than a
-    // fixed array. Program change is two. And the release half of the press-then-release
+    // fixed array. Program change is two. And the release half of a rule's press-then-release
     // is a real Note Off: this file used to claim "a note with velocity zero is a note-off on
     // every device made since 1983", and the operator's laser controller is the counter
     // example that cost a show — it holds the clip until `0x80` arrives. See
@@ -397,8 +397,8 @@ bool RuleSink::sendMidi(const trigger::Message& message) {
         }
         sent = true;
         // A MIDI target's own delay, which the window has always offered on its row and which
-        // nothing applied until an earlier review: the desk on the end of a MIDI cable has a lag of
-        // its own exactly as a media server on OSC does.
+        // nothing used to apply: the desk on the end of a MIDI cable has a lag of its own
+        // exactly as a media server on OSC does.
         const double delay =
             std::clamp(targets[i].delaySeconds, kMinOutputDelaySeconds, kMaxOutputDelaySeconds);
         const double due = message.moment + latency + delay;

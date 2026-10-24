@@ -124,19 +124,19 @@ bool ActivationEngine::step() noexcept {
     if (!hops_.tryPop(hop)) {
         return false;
     }
-    // **In the worker's floating-point mode**, whichever thread this is (an earlier review of
-    // 2026-09-25, T20). The worker reads denormals as zero; a hop stepped on the caller's thread
-    // did not, so what the tests compare the worker against, and what `takt4-cli` measures
-    // offline, was computed in a mode the app never runs in. The scope puts the caller's own
-    // mode back afterwards, so the tracker stepped beside this keeps its.
+    // **In the worker's floating-point mode**, whichever thread this is. The worker reads
+    // denormals as zero; a hop stepped on the caller's thread did not, so what the tests compare
+    // the worker against, and what `takt4-cli` measures offline, was computed in a mode the app
+    // never runs in. The scope puts the caller's own mode back afterwards, so the tracker stepped
+    // beside this keeps its.
     const rt::DenormalsAsZero denormals;
     process(hop);
     return true;
 }
 
 void ActivationEngine::run() noexcept {
-    // Ahead of the window's drawing, and no denormal slow path through the network (the
-    // review's M13). See rt/thread_priority.hpp for why one and not the other on the tracker.
+    // Ahead of the window's drawing, and no denormal slow path through the network. See
+    // rt/thread_priority.hpp for why one and not the other on the tracker.
     const rt::PriorityScope priority(rt::ThreadWork::Compute);
     const rt::DenormalsAsZero denormals;
     workerRaised_.store(priority.raised(), std::memory_order_release);
@@ -159,8 +159,8 @@ void ActivationEngine::process(const QueuedHop& hop) noexcept {
     const Clock::time_point hopStart = Clock::now();
     const std::span<const float, audio::kHopSize> samples(hop.samples);
     if (extractor_.pushHop(samples)) {
-        // Before the model, and out of the same frame: the flux is the difference half of
-        // it already summed, so this is 144 additions rather than any new DSP.
+        // Before the model, and out of the same frame: the intensity classifier's flux is the
+        // difference half of it already summed, so this is 144 additions rather than any new DSP.
         const bool onset = intensity_.push(extractor_.frame());
         const Clock::time_point modelStart = Clock::now();
         const BeatModel::Activation activation = model_.process(extractor_.frame());
@@ -175,8 +175,8 @@ void ActivationEngine::process(const QueuedHop& hop) noexcept {
         // frame index counts only the ones that reached the extractor. Their difference was the
         // framing delay until the first dropped hop and that delay plus every hop dropped since
         // for the rest of the run — so after one stall of the model, every later beat reached
-        // Link N × 20 ms early. The worker's own count of hops worked is the
-        // hop's position among those fed, and stays a constant distance from the frame index.
+        // Link N × 20 ms early. The worker's own count of hops worked is the hop's position
+        // among those fed, and stays a constant distance from the frame index.
         const std::uint64_t frameIndex = extractor_.frameIndex();
         const std::uint64_t fedIndex = hopsWorked_.load(std::memory_order_relaxed);
         const std::int64_t hostMicros =

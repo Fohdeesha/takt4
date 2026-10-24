@@ -154,7 +154,7 @@ takt4_enable_rt_guard(takt4_tests ALWAYS)
 include(Catch)
 # Tags as ctest labels, so the default test presets can leave out what touches the rig —
 # [network] (Link, real sockets on well-known ports) and [hardware] (the audio interface and MIDI
-# devices themselves). The `-all` presets run everything. See an earlier review.
+# devices themselves). The `-all` presets run everything.
 #
 # And a timeout, so a test that hangs fails instead of holding ctest until somebody notices.
 # The slowest test measured was 37 s under ASan with four running at once; 300 s is eight times
@@ -207,9 +207,9 @@ set_tests_properties("the console refuses nan as a number"
                      PROPERTIES PASS_REGULAR_EXPRESSION "--latency: not a number: \"nan\"")
 set_tests_properties("the console names an option it does not know"
                      PROPERTIES PASS_REGULAR_EXPRESSION "unknown option: --no-such-option")
-# And annotate's, which had a parser of its own that the fix above never reached (an earlier review of
-# 2026-09-25, L46): `--snap nan` turned snapping off, and a meter was made an int before it was
-# checked — 4.5 a bar of four, and 1e10 undefined.
+# And annotate's, which had a parser of its own that the fix above never reached: `--snap nan`
+# turned snapping off, and a meter was made an int before it was checked — 4.5 a bar of four, and
+# 1e10 undefined.
 # Each names a taps file that is not there, so a regression stops at reading it — before the
 # playback that tapping along would start on this machine's speakers.
 set(no_taps "${CMAKE_CURRENT_BINARY_DIR}/no-such.taps")
@@ -246,8 +246,7 @@ if(WIN32)
   target_link_libraries(takt4_tests PRIVATE version)
   # UTF-8 as the process code page, as takt4 and takt4-cli have it (src/utf8.manifest): tests
   # of the code that reads names through the ANSI API have to run as the app runs, and a test
-  # name with a character outside the old code page otherwise matches no filter at all (the
-  # review of 2026-09-25, B7).
+  # name with a character outside the old code page otherwise matches no filter at all.
   target_sources(takt4_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/utf8.manifest")
 endif()
 
@@ -258,7 +257,7 @@ catch_discover_tests(takt4_tests DISCOVERY_MODE PRE_TEST ADD_TAGS_AS_LABELS
 # takt4_ui_tests — the window, under Slint's testing backend.
 #
 # A second binary rather than more files in the first, so that takt4_tests keeps meaning
-# "the engine stands up with no Slint anywhere near it". This one drives
+# that the engine stands up with no Slint anywhere near it. This one drives
 # the real component: it presses the real button, steps the real redraw timer and reads
 # the real properties back. takt4's own headless platform (`ui::installHeadlessPlatform`,
 # the one takt4-shot renders through) gives it windows that never reach a screen, which is

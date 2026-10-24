@@ -113,9 +113,9 @@ struct BeatEvent {
     /// `TempoState::acquired` at this beat: whether it may fire the rig.
     bool acquired = false;
     double confidence = 0.0;
-    /// True on the first beat published under a snap's new bar phase. the design reserves Link's
-    /// `forceBeatAtTime` for exactly this beat — a `requestBeatAtTime` would be moved to
-    /// where the session's phase already matches, which is the phase being corrected.
+    /// True on the first beat published under a snap's new bar phase. Link's
+    /// `forceBeatAtTime` is reserved for exactly this beat — a `requestBeatAtTime` would be
+    /// moved to where the session's phase already matches, which is the phase being corrected.
     ///
     /// That is the beat the operator pointed at only when they pointed at one still to
     /// come. A snap naming the beat just gone (see `snapDownbeat`) cannot mark it, because
@@ -126,10 +126,10 @@ struct BeatEvent {
     bool snapped = false;
 };
 
-/// the design, the layer between the particle filter and the outputs.
+/// The tempo state machine, the layer between the particle filter and the outputs.
 ///
-/// "The tracker is perhaps 40% of perceived quality. This layer is most of the rest, and
-/// it is where the existing tools are weakest." It does five things, all of them
+/// The tracker is perhaps 40 % of how good the result seems; this layer is most of the rest,
+/// and it is where existing tools are weakest. It does five things, all of them
 /// user-configurable:
 ///
 ///   * **Octave fold.** The filter tracks 55-215 BPM; an operator knows their material
@@ -254,8 +254,8 @@ public:
         /// This only ever divides. A fold that puts the published tempo *above* the filter's
         /// grid — a ×2, or a window that folds a half-time estimate up — would have to
         /// invent beats between the filter's, which is a different thing needing its own
-        /// answer for where they fall and what confidence they carry; the ×2 still moves
-        /// the number alone, as it always has. Set this false to have every fold do that.
+        /// answer for where they fall and what confidence they carry; the operator's ×2 still
+        /// moves the number alone, as it always has. Set this false to have every fold do that.
         bool foldBeats = true;
         /// How the fold decides *which* of the filter's beats are the music's, and how hard
         /// it is to talk it out of that once decided.
@@ -578,11 +578,11 @@ public:
     /// Halves or doubles the published tempo — exactly what was showing, refinement and all —
     /// keeping the lock. A manual octave shift, applied after the fold, so it takes effect
     /// whatever the window says — the window itself does not move. Bounded at
-    /// `kMaxOctaveShift` either way. the manual octave shift.
+    /// `kMaxOctaveShift` either way.
     void halve() noexcept;
     void redouble() noexcept;
 
-    /// the tap tempo, as a *seed*: the operator has said which tempo they mean, so the
+    /// Tap tempo, as a *seed*: the operator has said which tempo they mean, so the
     /// octave-fold window moves to an octave centred on it and any manual ×2 / ÷2 is
     /// cleared. `tracking::TapTempo` turns the taps themselves into this number.
     ///
@@ -592,8 +592,8 @@ public:
     /// the octave it named through the manual shift instead, which is what ÷2 and ×2 do and
     /// is the only thing an octave instruction can mean when there is no window.
     ///
-    /// This is the half of the "seeds or overrides the tracker" that costs nothing and
-    /// is unambiguously right. It is what fixes the failure the design deviation 4 measured: a
+    /// Of seeding or overriding the tracker, this is the half that costs nothing and
+    /// is unambiguously right. It is what fixes a failure that was measured: a
     /// Quickstep at 204 BPM under a 70-140 window is folded to 102 and there is no way
     /// for the operator to say otherwise. Tapping it moves the window to 144-288. Under the
     /// particle filter the fold then publishes 204 from the very next frame; under the forward
@@ -603,20 +603,20 @@ public:
     ///
     /// Moving the window rather than adding an octave shift is deliberate: the window is
     /// a setting the UI shows, so afterwards the readout and the setting agree on why the
-    /// tempo is what it is. the Phase 5 asks for exactly that visibility.
+    /// tempo is what it is.
     ///
     /// **Overriding** — free-running from the tap and ignoring the audio — is the other
-    /// half of the sentence and is not here. It is a mode, not a setting: it needs its
-    /// own beat generator, its own answer for downbeats and confidence, and a UI that
-    /// says the tracker is not tracking. Nothing else can be built on top of a half of it.
+    /// half, and is not here. It is a mode, not a setting: it needs its own beat generator,
+    /// its own answer for downbeats and confidence, and a UI that says the tracker is not
+    /// tracking. Nothing else can be built on top of a half of it.
     ///
-    /// **What moves is decided by the octave, not by the number** (an earlier review,
-    /// H5): a tap that agrees with the octave being published moves nothing — a tap confirming
-    /// what is already tracked must not cost sync — and one that names another octave moves the
-    /// published tempo by exactly that, keeping the lock, as ÷2 and ×2 do.
+    /// **What moves is decided by the octave, not by the number**: a tap that agrees with
+    /// the octave being published moves nothing — a tap confirming what is already tracked
+    /// must not cost sync — and one that names another octave moves the published tempo by
+    /// exactly that, keeping the lock, as ÷2 and ×2 do.
     void seedTempo(double bpm) noexcept;
 
-    /// the manual downbeat: the beat the operator is pointing at starts the bar, and
+    /// The manual downbeat: the beat the operator is pointing at starts the bar, and
     /// every bar after it is counted from there.
     ///
     /// **Which beat that is, is the whole difficulty.** This used to be "the next beat
@@ -624,8 +624,8 @@ public:
     /// person presses the button *on* the downbeat they can hear, by which time the
     /// tracker has already called it, so the bar came out anchored to beat 2. The user's
     /// report, 2026-09-05: "if I press the downbeat, it should start at the very beginning
-    /// of the four dots, but it's always one too slow." the design wants a control that "snaps
-    /// bar phase immediately", and a beat late is not immediately.
+    /// of the four dots, but it's always one too slow." The control is meant to snap the bar
+    /// phase immediately, and a beat late is not immediately.
     ///
     /// So it takes the **nearest** beat: the one just called if it is less than half a beat
     /// period behind, and the one still to come otherwise. Nothing is assumed about which
@@ -645,17 +645,17 @@ public:
     /// the correction reaches the transports on the next beat, marked `BeatEvent::snapped`.
     ///
     /// The rotation this sets up is **kept** until the next snap or a reset, rather than
-    /// being given back on the filter's next downbeat call. the design asks for this because
-    /// "the best online downbeat tracker in the world scores 56% F1" — an operator taps
-    /// precisely because the filter has the bar wrong, and a correction the filter undoes
-    /// one bar later would not be a correction. What is handed back is the beat and tempo
-    /// tracking, which never stopped; only the bar anchor is now the operator's.
+    /// being given back on the filter's next downbeat call. Even the best online downbeat
+    /// tracker scores 56 % F1: an operator taps precisely because the filter has the bar
+    /// wrong, and a correction the filter undoes one bar later would not be a correction.
+    /// What is handed back is the beat and tempo tracking, which never stopped; only the bar
+    /// anchor is now the operator's.
     ///
     /// Beat times are untouched: this moves which beat is called number 1, never when a
     /// beat happens.
     void snapDownbeat() noexcept;
 
-    /// the `/ctl/lock <0|1>`, which **pins the lock rather than setting it**.
+    /// The OSC control `/ctl/lock <0|1>`, which **pins the lock rather than setting it**.
     ///
     /// A one-shot `setLocked(true)` would not be a lock at all: the hysteresis that owns
     /// the flag would unwind it `unlockAfter` frames later — 1.5 s by default — and the
@@ -680,9 +680,8 @@ public:
     ///
     /// Pinning locks to whatever is showing, because that is what the operator is looking
     /// at when they press it — once a lock has been earned. Before that there is nothing to
-    /// pin but the hunt's guess of the moment: the pin is
-    /// remembered and takes hold on the frame acquisition first locks — a pin cannot hold
-    /// up a flag that was never raised.
+    /// pin but the hunt's guess of the moment: the pin is remembered and takes hold on the
+    /// frame acquisition first locks — a pin cannot hold up a flag that was never raised.
     ///
     /// Releasing drops the lock with it and starts the hunt again from what is playing
     /// now. An operator letting go is saying "that tempo was wrong, look again", and a
@@ -713,8 +712,7 @@ public:
     /// Not the published tempo, which carries the shift — pinning under ÷2 held the filter at
     /// half its real tempo — and not the cloud's `rawBpm`, which is the right octave but
     /// wanders: caught at the moment a lock is earned it read 132.9 over a 128 BPM track, and a
-    /// hold there would have pushed the filter off the music it had just locked to. an earlier review
-    /// H3.
+    /// hold there would have pushed the filter off the music it had just locked to.
     double decoderBpm() const noexcept;
 
     /// The octave fold on its own, with no memory of what has been tracked: what a given
@@ -749,8 +747,7 @@ private:
     /// collected over two sub-grids says nothing about four.
     void resetFoldPhase(std::uint32_t divisor) noexcept;
     /// Moves everything published — the tempo, the lock, the candidate and the refinement — by
-    /// `moved` octaves. What ÷2, ×2 and a tap that names another octave do (an earlier review of
-    /// 2026-09-25, H5).
+    /// `moved` octaves. What ÷2, ×2 and a tap that names another octave do.
     void movePublishedOctave(std::int64_t moved) noexcept;
     /// Whether this filter beat falls on the sub-grid being published, having first counted
     /// the network's opinion of it towards that sub-grid's score. Advances the slot, so it
@@ -883,8 +880,7 @@ private:
     /// Whether each sub-grid has been scored since the divisor last changed. Its first beat
     /// *sets* its score rather than decaying towards it from zero — from zero, whichever sub-grid
     /// was scored first led the others by the margin for several beats on nothing but its head
-    /// start, and took the grid from the one the bar's downbeat had chosen (an earlier review of
-    /// 2026-09-25, M2).
+    /// start, and took the grid from the one the bar's downbeat had chosen.
     bool foldScored_[kMaxFoldDivisor] = {};
     /// The filter's own beats — how long since the last one and how many there have been.
     /// The slot above is advanced by how many beat *periods* have gone by rather than by

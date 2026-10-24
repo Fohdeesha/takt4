@@ -7,13 +7,13 @@ namespace takt4::tracking {
 
 /// xoshiro256++ over a splitmix64 seeding — the tracker's only source of randomness.
 ///
-/// the design asks for a deterministic seed because "reproducibility matters
-/// enormously for debugging a stochastic filter against recorded audio". A seed is not
-/// enough on its own: the reference implementation draws from numpy's legacy
-/// `RandomState`, whose stream nothing outside numpy reproduces, so a C++ port seeded
-/// the same way still diverges on the first draw. Specifying the generator instead —
-/// twenty lines, stated identically here and in tools/pf_reference.py — is what turns
-/// the Phase 4 gate from "close enough on average" into an exact comparison.
+/// The filter takes a deterministic seed, because reproducibility matters enormously for
+/// debugging a stochastic filter against recorded audio. A seed is not enough on its own: the
+/// reference implementation draws from numpy's legacy `RandomState`, whose stream nothing
+/// outside numpy reproduces, so a C++ port seeded the same way still diverges on the first
+/// draw. Specifying the generator instead — twenty lines, stated identically here and in
+/// tools/pf_reference.py — is what turns the parity gate from "close enough on average" into
+/// an exact comparison.
 ///
 /// Everything is 64-bit integer arithmetic and one exact scaling, so the two languages
 /// agree bit for bit. Nothing here allocates or locks.

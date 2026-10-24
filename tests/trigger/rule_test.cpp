@@ -59,8 +59,8 @@ std::vector<Message> followUps(const Rule& rule, const Message& fired) {
     return messages;
 }
 
-/// the own Resolume example: "/composition/layers/{L}/clips/{C}/connect — int 1 (press)
-/// then 0 (release)".
+/// Resolume's clip trigger: `/composition/layers/{L}/clips/{C}/connect`, an int 1 (press)
+/// then 0 (release).
 Rule::Config resolumeClip() {
     Rule::Config config;
     config.id = "clip";
@@ -74,8 +74,8 @@ Rule::Config resolumeClip() {
 } // namespace
 
 TEST_CASE("an address template is filled by position", "[trigger][rule]") {
-    // the design: the address is "an internal representation the user never types", assembled by
-    // clicking. the design writes the placeholders as {L} and {C}; what is inside the braces is
+    // The address is an internal representation the user never types, assembled by clicking.
+    // Resolume's is written with the placeholders {L} and {C}; what is inside the braces is
     // documentation, and the position is what binds.
     std::string out;
     const std::vector<Value> two{Value::ofInt(2), Value::ofInt(5)};
@@ -129,8 +129,7 @@ TEST_CASE("an address template is filled by position", "[trigger][rule]") {
 
 // The name stays ASCII: ctest passes a test's name back to the binary as a command-line
 // argument, and a non-ASCII character in one breaks that test on Windows and nowhere else.
-// See the design the design. Every "5.6" below is a section of the design.
-TEST_CASE("a rule sends what the Resolume example in 5.6 describes", "[trigger][rule]") {
+TEST_CASE("a rule sends a Resolume clip's press and then its release", "[trigger][rule]") {
     Rule rule(resolumeClip());
     REQUIRE(rule.valid());
     Context context;
@@ -186,8 +185,8 @@ TEST_CASE("a rule sends what the Resolume example in 5.6 describes", "[trigger][
 }
 
 TEST_CASE("a MIDI rule clamps to what MIDI can carry", "[trigger][rule]") {
-    // the design: "Also send configurable note or CC messages on beat and downbeat for MIDI-learn
-    // targets." A generator can produce anything; seven bits is what fits.
+    // Configurable note or CC messages on beat and downbeat, for MIDI-learn targets. A
+    // generator can produce anything; seven bits is what fits.
     Rule::Config config;
     config.id = "note";
     config.sendKind = Message::Kind::MidiNote;
@@ -242,7 +241,7 @@ TEST_CASE("a MIDI rule clamps to what MIDI can carry", "[trigger][rule]") {
     }
 
     SECTION("a rule can send several things, each timed from the fire") {
-        // the follow-up grown into a list: a note held for a beat, and a CC a beat after
+        // The follow-up grown into a list: a note held for a beat, and a CC a beat after
         // that. Every delay is measured from the fire, never from the entry above it.
         config.number = fixedAt(48);
         config.value = fixedAt(100);
@@ -312,8 +311,8 @@ TEST_CASE("an invalid rule says why and never fires", "[trigger][rule]") {
     }
 
     SECTION("an id that could not be addressed over OSC") {
-        // the design reaches a rule as `/<prefix>/ctl/rule/<id>/enable`, so the id has to survive
-        // being one segment of that.
+        // Control input reaches a rule as `/<prefix>/ctl/rule/<id>/enable`, so the id has to
+        // survive being one segment of that.
         config.address = "/a";
         config.segments.clear();
         for (const char* bad : {"", "two words", "with/slash", "star*"}) {
@@ -397,7 +396,7 @@ TEST_CASE("the ONLY IF stage excludes only what it was set to exclude", "[trigge
 }
 
 TEST_CASE("the ONLY IF stage applies only while it is switched on", "[trigger][rule]") {
-    // The tick on the editor's B heading (the design, locked 2026-09-30). Off — as a new rule
+    // The tick on the editor's B heading (decided 2026-09-30). Off — as a new rule
     // starts — the rule fires every time its trigger comes round, whatever the conditions hold;
     // they are kept, set for later, and switching B on is what makes them apply.
     Rule::Config config;
@@ -434,9 +433,9 @@ TEST_CASE("the ONLY IF stage applies only while it is switched on", "[trigger][r
 }
 
 TEST_CASE("a cooldown holds a trigger that comes in bursts, and no other", "[trigger][rule]") {
-    // The cooldown is A's since 2026-09-30, and the editor shows it switched off
-    // for beats, bars, the downbeat and a Euclidean pattern — so the engine has to ignore it
-    // there, or a control shown switched off would still be thinning a pattern.
+    // The cooldown is A's since 2026-09-30, and the editor shows it switched off for beats,
+    // bars, the downbeat and a Euclidean pattern — so the engine has to ignore it there, or a
+    // control shown switched off would still be thinning a pattern.
     Rule::Config config;
     config.id = "r";
     config.address = "/a";
@@ -617,7 +616,7 @@ TEST_CASE("every trigger has a name that reads back", "[trigger][rule]") {
         CHECK(takt4::trigger::triggerOf(takt4::trigger::nameOf(trigger)) == trigger);
     }
     CHECK_FALSE(takt4::trigger::triggerOf("every-third-tuesday").has_value());
-    // the design spells two of the ten WHEN entries with an N, and only those two.
+    // Two WHEN entries are spelled with an N, every N beats and every N bars, and only those two.
     CHECK(takt4::trigger::takesEvery(Trigger::Beat));
     CHECK(takt4::trigger::takesEvery(Trigger::Bar));
     CHECK_FALSE(takt4::trigger::takesEvery(Trigger::Downbeat));
@@ -706,9 +705,9 @@ TEST_CASE("what a fire records is what the kind actually sends", "[trigger][rule
 }
 
 TEST_CASE("a MIDI rule waits for a number somebody chose", "[trigger][rule]") {
-    // an earlier review: a rule switched to MIDI CC fired CC 1 to 8 at a value of one on every bar,
-    // to every MIDI output — CC 7 at one is a synth's volume gone. The operator's call: the rule
-    // stays armed, does nothing, and says what it is waiting for.
+    // A rule switched to MIDI CC fired CC 1 to 8 at a value of one on every bar, to every MIDI
+    // output — CC 7 at one is a synth's volume gone. The operator's call: the rule stays armed,
+    // does nothing, and says what it is waiting for.
     Rule::Config config;
     config.id = "stab";
     config.number = fixedAt(60);
@@ -764,11 +763,11 @@ TEST_CASE("a note is a note on or off, and nothing else is the same number", "[t
 
 TEST_CASE("the slot layout is the order a fire records its slots in, for every kind",
           "[trigger]") {
-    // an earlier review Low items. The editor walked the order of a rule's generators twice — once
-    // to build its chips, once to find the generator a chip edits — beside `Rule::fire`'s own,
-    // held together by comments saying the three must not drift apart. There is one walk now,
-    // `slotLayout`, and this holds it to what a fire records: every slot given its own number,
-    // fired, and each recorded value checked against the slot it came from.
+    // The editor walked the order of a rule's generators twice — once to build its chips, once
+    // to find the generator a chip edits — beside `Rule::fire`'s own, held together by comments
+    // saying the three must not drift apart. There is one walk now, `slotLayout`, and this holds
+    // it to what a fire records: every slot given its own number, fired, and each recorded value
+    // checked against the slot it came from.
     std::vector<Rule::Config> configs;
     Rule::Config osc;
     osc.address = "/a/{}/b/{}";

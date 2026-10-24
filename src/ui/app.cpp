@@ -76,9 +76,9 @@ int run() {
         return 0;
     }
     // Before anything else, so that anything after it which falls over leaves a minidump and a
-    // sentence rather than a window that vanished. Where the settings live,
-    // because that is the folder an operator already knows about. A log left behind by the last
-    // session is taken first, since installing starts a new one in its place.
+    // sentence rather than a window that vanished. Where the settings live, because that is the
+    // folder an operator already knows about. A log left behind by the last session is taken
+    // first, since installing starts a new one in its place.
     const std::filesystem::path leftover = CrashReport::takeLeftoverLog(home);
     // Ended before it had settled: perhaps from what the settings asked for. The copy of them
     // kept at the last good start is kept as it is, rather than replaced with what may be why.
@@ -103,8 +103,8 @@ int run() {
     // **Through `openAtStartup`, never `load` alone.** `load` gives the defaults for a file it
     // cannot parse exactly as it does for a missing one, and the save on the way out then wrote
     // those defaults over the damaged file — so one trailing comma, or half a file left by a
-    // crash, cost the whole rig. This moves a damaged file aside, falls back
-    // to the copy kept at the last good start, and says what it did.
+    // crash, cost the whole rig. This moves a damaged file aside, falls back to the copy kept
+    // at the last good start, and says what it did.
     const settings::Startup startup = settings::openAtStartup(settingsPath, readFrom, endedEarly);
     const settings::Settings& saved = startup.settings;
     // Whether anything may be written to `settingsPath` without the operator asking: not when
@@ -165,10 +165,10 @@ int run() {
 
     // Guarded like the tracker above. Nothing the saved settings name should be able to throw
     // out of here any more — outputs and ports are applied after the window exists, and a bad
-    // OSC prefix is refused on the way in — but if something still does, the
-    // operator gets a sentence rather than a process that vanished before its window appeared.
-    // Every window opens no larger than this screen has room for. Said here,
-    // by the application alone, so the tests' windows keep the sizes they are written against.
+    // OSC prefix is refused on the way in — but if something still does, the operator gets a
+    // sentence rather than a process that vanished before its window appeared.
+    // Every window opens no larger than this screen has room for. Said here, by the application
+    // alone, so the tests' windows keep the sizes they are written against.
     fitWindowsToScreen(true);
     std::unique_ptr<WindowController> controller;
     try {
@@ -265,11 +265,11 @@ int run() {
     // what "did not close normally" means.
     CrashReport::cleanExit();
     if (driverHeld) {
-        // A driver that stopped answering still holds the audio thread (an earlier review,
-        // L23), and an ordinary exit would go on to tell that driver's DLL it is being unloaded —
-        // which may wait on whatever the driver is holding, and so never finish. Everything worth
-        // keeping has been kept by now: the settings saved above, the lights blacked out by the
-        // controller on its way. So the process ends here rather than asking the driver.
+        // A driver that stopped answering still holds the audio thread, and an ordinary exit
+        // would go on to tell that driver's DLL it is being unloaded — which may wait on
+        // whatever the driver is holding, and so never finish. Everything worth keeping has been
+        // kept by now: the settings saved above, the lights blacked out by the controller on its
+        // way. So the process ends here rather than asking the driver.
 #if defined(_WIN32)
         ::TerminateProcess(::GetCurrentProcess(), 0);
 #else

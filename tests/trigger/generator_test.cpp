@@ -48,11 +48,10 @@ std::size_t longestRun(const std::vector<std::int32_t>& values) {
 } // namespace
 
 TEST_CASE("shuffle empties its bag before refilling it", "[trigger][generator]") {
-    // the design: "Draw from a bag without replacement, reshuffle when empty. **The default.**"
-    // And the design's reason, which is the one thing to keep in mind when touching this:
-    // "Plain random repeats constantly, and every repeat reads to an audience as a bug.
-    // Shuffle-without-replacement is the difference between 'random visuals' and 'visuals
-    // that look random'."
+    // Draw from a bag without replacement, reshuffle when empty. **The default.** And the
+    // reason, which is the one thing to keep in mind when touching this: plain random repeats
+    // constantly, and every repeat reads to an audience as a bug. Shuffle-without-replacement
+    // is the difference between "random visuals" and "visuals that look random".
     Generator::Config config;
     config.low = 1;
     config.high = 8;
@@ -88,10 +87,10 @@ TEST_CASE("shuffle empties its bag before refilling it", "[trigger][generator]")
 
 TEST_CASE("the seam between one shuffled bag and the next does not repeat",
           "[trigger][generator]") {
-    // The one hole a bag has, and the reason the design asks for a "no repeat within N guard"
-    // alongside it: within a bag nothing can repeat, but the last draw of one bag and the
-    // first of the next are independent, so a bag of four repeats at the seam a quarter of
-    // the time. That is precisely the repeat an audience reads as a bug.
+    // The one hole a bag has, and the reason for the `noRepeatWithin` guard alongside it:
+    // within a bag nothing can repeat, but the last draw of one bag and the first of the next
+    // are independent, so a bag of four repeats at the seam a quarter of the time. That is
+    // precisely the repeat an audience reads as a bug.
     Generator::Config config;
     config.low = 1;
     config.high = 4;
@@ -157,14 +156,14 @@ TEST_CASE("shuffle covers its range evenly", "[trigger][generator]") {
 
 TEST_CASE("random repeats where shuffle does not, which is why it is not the default",
           "[trigger][generator]") {
-    // the design: "Uniform random int in range. Will repeat; offered but not default." Both
-    // halves are behaviour worth holding: it has to cover the range, and it has to be
+    // A uniform random int in the range, which will repeat: offered, but not the default.
+    // Both halves are behaviour worth holding: it has to cover the range, and it has to be
     // visibly worse at not repeating than the default is.
     Generator::Config config;
     config.kind = GeneratorKind::Random;
     config.low = 1;
     config.high = 4;
-    config.noRepeatWithin = 0; // plain, as the design describes it
+    config.noRepeatWithin = 0; // plain, with no guard against repeats
     Generator generator(config);
 
     const std::vector<std::int32_t> drawn = draw(generator, 4000);
@@ -217,9 +216,9 @@ TEST_CASE("cycle goes round its range in order", "[trigger][generator]") {
 
 TEST_CASE("a list is a sequence the operator wrote, in the order they wrote it",
           "[trigger][generator]") {
-    // The thing a range could never say. the design describes Cycle as "round-robin through a
-    // range", which serves a clip grid and not the other thing an operator wants
-    // constantly: these four clips, in this order.
+    // The thing a range could never say. A Cycle through a range is a round-robin, which
+    // serves a clip grid and not the other thing an operator wants constantly: these four
+    // clips, in this order.
     Generator::Config config;
     config.kind = GeneratorKind::Cycle;
     config.pool = Pool::List;
@@ -269,8 +268,8 @@ TEST_CASE("a list can be shuffled as well as walked", "[trigger][generator]") {
 }
 
 TEST_CASE("a list of anything, not just clip numbers", "[trigger][generator]") {
-    // `Value`, not `int`, so a sequence can be the *text* segments of an address — which is
-    // the "the address is assembled by clicking" for a rule that names its sections.
+    // `Value`, not `int`, so a sequence can be the *text* segments of an address — an address
+    // assembled by clicking, for a rule that names its sections.
     Generator::Config config;
     config.kind = GeneratorKind::Cycle;
     config.pool = Pool::List;
@@ -287,7 +286,7 @@ TEST_CASE("a list of anything, not just clip numbers", "[trigger][generator]") {
 }
 
 TEST_CASE("a list with nothing in it sends something harmless", "[trigger][generator]") {
-    // the clamping policy, at the one place a list can be degenerate. An operator
+    // Clamped, never rejected, at the one place a list can be degenerate. An operator
     // half-way through building one has an empty list for a moment, and a rule that threw
     // or stalled there would be worse than one that sends a zero.
     for (const GeneratorKind kind :
@@ -357,7 +356,7 @@ TEST_CASE("weighted draws in proportion, and survives weights that say nothing",
 }
 
 TEST_CASE("fixed sends its literal, whatever type it is", "[trigger][generator]") {
-    // the design: "Literal int, float, string or bool".
+    // A literal int, float, string or bool.
     Generator::Config config;
     config.kind = GeneratorKind::Fixed;
     const Context context;
@@ -409,8 +408,8 @@ TEST_CASE("a live generator reads the tracker rather than drawing", "[trigger][g
     CHECK(live(LiveSource::Intensity).asInt() == 2); // the wire value for "intense"
 
     SECTION("BPM normalised to the host's range, which is the host's and not ours") {
-        // the design, verified against Resolume: "/composition/tempocontroller/tempo — float,
-        // normalised 0-1 across 20-500 BPM". The range is configurable because it belongs
+        // Verified against Resolume: `/composition/tempocontroller/tempo` is a float,
+        // normalised 0-1 across 20-500 BPM. The range is configurable because it belongs
         // to the host; hardcoding these two numbers would make the generator Resolume's.
         config.source = LiveSource::BpmNormalised;
         CHECK(Generator(config).next(context).asFloat() == Approx((128.0f - 20.0f) / 480.0f));
@@ -439,7 +438,7 @@ TEST_CASE("a live generator reads the tracker rather than drawing", "[trigger][g
     SECTION("nothing tracked yet is published as nothing, not as a guess") {
         const Context idle;
         config.source = LiveSource::Meter;
-        CHECK(Generator(config).next(idle).asInt() == 0); // never 4; the rule
+        CHECK(Generator(config).next(idle).asInt() == 0); // never 4: nothing assumes four
         config.source = LiveSource::Bpm;
         CHECK(Generator(config).next(idle).asFloat() == Approx(0.0f));
     }
@@ -544,7 +543,7 @@ TEST_CASE("a ramp breathes with the bar rather than jumping about", "[trigger][g
     CHECK(phaseAt(2, 2, 1) == Approx(1.0 / 3.0));
 
     SECTION("a meter the filter has not decided still advances, a bar at a time") {
-        // the design: a meter of zero means the downbeat stage has no opinion yet. A ramp that sat
+        // A meter of zero means the downbeat stage has no opinion yet. A ramp that sat
         // at zero until it did would look broken during exactly the passage it is for.
         context.meter = 0;
         context.beatInBar = 0;
@@ -703,7 +702,7 @@ TEST_CASE("the same seed gives the same sequence and different seeds do not",
 
 TEST_CASE("every generator kind and live source has a name that reads back",
           "[trigger][generator]") {
-    // The names go into a preset file and the labels into the dropdown, so both
+    // The names go into a preset file and the labels into the editor's dropdown, so both
     // have to be complete: a kind added without one would serialise as an empty string and
     // load as something else.
     for (const GeneratorKind kind : takt4::trigger::kGeneratorKinds) {
@@ -736,7 +735,7 @@ TEST_CASE("every generator kind and live source has a name that reads back",
     CHECK_FALSE(takt4::trigger::liveSourceOf("").has_value());
     CHECK_FALSE(takt4::trigger::poolOf("ranges").has_value());
 
-    // Only the three the design spells with a range have a pool to choose. A UI asking the
+    // Only the three that draw from a range have a pool to choose. A UI asking the
     // question of the other three would be offering a control that changes nothing.
     CHECK(takt4::trigger::takesPool(GeneratorKind::Shuffle));
     CHECK(takt4::trigger::takesPool(GeneratorKind::Random));

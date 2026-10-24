@@ -93,9 +93,9 @@ def assign_stems(files, out):
 
     The root used to be the common root of whatever this run was given, so a source from
     another folder or share moved it and renamed every track — and a track's stem is its id
-    in the manifest, its split, its flags and its teacher_cross row (an earlier review
-    P14). The root is now fixed the first time and kept in `naming_root.txt`; a map written
-    before then gives it, as the common root of the files it names."""
+    in the manifest, its split, its flags and its teacher_cross row. The root is now fixed the
+    first time and kept in `naming_root.txt`; a map written before then gives it, as the
+    common root of the files it names."""
     tsv, root_file = out / "sources.tsv", out / "naming_root.txt"
     known, order = {}, []
     if tsv.exists():

@@ -250,7 +250,7 @@ void writeBmp(const takt4::tests::Shot& shot, const fs::path& path) {
 } // namespace
 
 TEST_CASE("the import's sheets, rendered for a person to look at", "[.][import-shots]") {
-    // Not a check: pictures, for the review page, of the window as the real controller draws it
+    // Not a check: pictures of the window as the real controller draws it
     // from real files. TAKT4_SHOTS_DIR says where; the temp folder otherwise.
     fs::path folder = fs::temp_directory_path() / "takt4-import-shots";
 #if defined(_MSC_VER)
@@ -366,7 +366,7 @@ TEST_CASE("the import's sheets, rendered for a person to look at", "[.][import-s
 
 TEST_CASE("the heads of a fixture with several, rendered for a person to look at",
           "[.][heads-shots]") {
-    // Not a check: pictures, for the review page, of the patch editor's head column and the rule
+    // Not a check: pictures of the patch editor's head column and the rule
     // editor's heads and spread, from a real definition with three heads (a bar of three tilting
     // lamps) and from a twin-yoke made by hand. TAKT4_SHOTS_DIR says where.
     fs::path folder = fs::temp_directory_path() / "takt4-heads-shots";

@@ -18,7 +18,7 @@ namespace takt4::model {
 /// silence.
 ///
 /// Construction allocates; process() and reset() do not, and are safe to call from a
-/// real-time thread — though the decision is that they run on a worker thread and the
+/// real-time thread — though by design they run on a worker thread and the
 /// audio callback only hands hops across a ring.
 class BeatModel {
 public:

@@ -295,12 +295,11 @@ TEST_CASE("a name the name server does not answer for is said to be after a whil
 }
 
 TEST_CASE("a sending socket never waits", "[output][osc]") {
-    // an earlier review: "a single non-blocking sendto", said the senders, of sockets that were
-    // blocking — so a full send buffer would have held the output thread, and the MIDI clock
-    // and every rule with it. A full send buffer cannot be made on demand, so this asks the
-    // socket the question it answers the same way: with nothing to read and a two-second
-    // receive timeout, a blocking socket waits the two seconds and a non-blocking one says
-    // "would block" at once.
+    // "A single non-blocking sendto", said the senders, of sockets that were blocking — so a
+    // full send buffer would have held the output thread, and the MIDI clock and every rule
+    // with it. A full send buffer cannot be made on demand, so this asks the socket the
+    // question it answers the same way: with nothing to read and a two-second receive timeout,
+    // a blocking socket waits the two seconds and a non-blocking one says "would block" at once.
     namespace net = takt4::net;
     [[maybe_unused]] const net::WinsockGuard winsock; // an empty struct off Windows
     const net::Socket socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -335,8 +334,8 @@ TEST_CASE("a sending socket never waits", "[output][osc]") {
 }
 
 TEST_CASE("an OSC target at a broadcast address really sends", "[output][osc][network]") {
-    // The other half of M20: the OSC socket was never allowed to broadcast, so a rig that
-    // aims OSC at its subnet's broadcast address got WSAEACCES on every send while Art-Net,
+    // Another fault in the same sockets: the OSC socket was never allowed to broadcast, so a rig
+    // that aims OSC at its subnet's broadcast address got WSAEACCES on every send while Art-Net,
     // which did ask, worked. One datagram to the limited broadcast, on a port nothing uses —
     // [network], because it does leave the machine.
     OscSender sender("255.255.255.255", 57091);
@@ -355,7 +354,7 @@ TEST_CASE("an OSC target at a broadcast address really sends", "[output][osc][ne
     CHECK(sender.problem().empty());
 }
 
-TEST_CASE("the generic namespace is published as the design 5.6 specifies", "[output][osc]") {
+TEST_CASE("the generic namespace is published as documented", "[output][osc]") {
     LoopbackReceiver receiver;
     OscPublisher publisher;
     publisher.addTarget("127.0.0.1", receiver.port(), 0);
@@ -438,7 +437,7 @@ TEST_CASE("the namespace prefix is checked when the publisher is built", "[outpu
 }
 
 TEST_CASE("a target's delay holds its datagrams and nobody else's", "[output][osc]") {
-    // the per-target latency, on real sockets. The thing this exists for is a rig whose
+    // Per-target latency, on real sockets. The thing this exists for is a rig whose
     // destinations do not share a lag — a media server a frame behind and a winch that has
     // to physically move — so the claim under test is not "it is late" but "it is late *and
     // the other one is not*". See `OutputTarget::delaySeconds`.
@@ -495,9 +494,9 @@ TEST_CASE("a target's delay holds its datagrams and nobody else's", "[output][os
 
 TEST_CASE("a negative offset lands ahead of the beat it belongs to", "[output][osc]") {
     // The user's question of 2026-09-07: the whole-rig latency slider goes both ways, so why
-    // can a target's not? It can — and since an earlier review it means what it says. The output
-    // thread fires a locked beat ahead of time, and a message *about that beat* carries its
-    // moment: each target has it at the moment plus its offset. See `OutputTarget::delaySeconds`.
+    // can a target's not? It can — and now it means what it says. The output thread fires a
+    // locked beat ahead of time, and a message *about that beat* carries its moment: each target
+    // has it at the moment plus its offset. See `OutputTarget::delaySeconds`.
     LoopbackReceiver early;
     OscPublisher publisher;
     publisher.addTarget("127.0.0.1", early.port(), 0, -0.300);
@@ -570,9 +569,9 @@ TEST_CASE("a negative offset lands ahead of the beat it belongs to", "[output][o
 }
 
 TEST_CASE("the whole-rig offset and a target's own add up", "[output][osc]") {
-    // the slider and the per-target one are the same quantity measured from two places
-    // — "everything downstream of me is this late" and "this device is". They compose, and
-    // the window shows each row's total for that reason.
+    // The rig's latency slider and a target's own offset are the same quantity measured from
+    // two places — "everything downstream of me is this late" and "this device is". They compose,
+    // and the window shows each row's total for that reason.
     LoopbackReceiver target;
     OscPublisher publisher;
     publisher.addTarget("127.0.0.1", target.port(), 0, 0.100);
@@ -688,9 +687,9 @@ TEST_CASE("a delay round-trips through a target's written form", "[output][routi
 }
 
 TEST_CASE("an edit to the targets keeps what is queued for the ones that stay", "[output][osc]") {
-    // an earlier review. Every output edit cleared every sender and built them all again, which
-    // dropped whatever was queued for a delayed target — a release among it, so a Resolume clip
-    // was left latched by somebody adding an output on another row.
+    // Every output edit cleared every sender and built them all again, which dropped whatever
+    // was queued for a delayed target — a release among it, so a Resolume clip was left latched
+    // by somebody adding an output on another row.
     LoopbackReceiver media;
     LoopbackReceiver other;
     OscPublisher publisher;
@@ -815,8 +814,8 @@ TEST_CASE("a target that takes only its rules is sent nothing of the namespace",
 }
 
 TEST_CASE("the tracker finding the beat again sends a resync", "[output][osc]") {
-    // an earlier review: `/takt4/resync` was documented and never sent. It means "the tracker has
-    // just re-found itself", which is the published lock going from off back to on.
+    // `/takt4/resync` was documented and never sent. It means "the tracker has just re-found
+    // itself", which is the published lock going from off back to on.
     LoopbackReceiver receiver;
     OscPublisher publisher;
     publisher.addTarget("127.0.0.1", receiver.port(), 0);

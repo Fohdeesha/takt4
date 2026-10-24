@@ -17,8 +17,7 @@ namespace takt4::audio {
 /// clock carrying that tempo on, and nothing anywhere saying why the rules had gone quiet.
 /// And a clock moved by another client (Live switching the MOTU from 44.1 to 48 kHz) keeps
 /// the callbacks coming at the new rate while the resampler converts at the old ratio, so
-/// every tempo is wrong by that ratio: 128 reads as 117.6, and that goes to Link. an earlier review
-/// C4.
+/// every tempo is wrong by that ratio: 128 reads as 117.6, and that goes to Link.
 ///
 /// Pure arithmetic over `InputStream::counters()`, so a test can drive it with any story it
 /// likes. The window calls `observe` on its redraw timer and decides what to do about the

@@ -167,8 +167,8 @@ TEST_CASE("every example definition imports, and every mode is as long as its na
     CHECK(stated > 0);
 }
 
-// What the import makes of the examples, in numbers — for checking the design's measurements
-// against the code that implements them. Hidden: run it by name.
+// What the import makes of the examples, in numbers, for a person to check against the code
+// that makes them. Hidden: run it by name.
 TEST_CASE("fixture corpus report", "[.][corpus-report]") {
     struct Tally {
         std::size_t files = 0;

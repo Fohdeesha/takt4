@@ -86,15 +86,15 @@ bool IntensityClassifier::push(std::span<const float, kFeatureDim> frame) noexce
     flux_ = sum;
     ++frames_;
 
-    // **Warmed up on the music, not on the first frame**. Both
-    // followers are the plain mean of every frame so far until there are as many frames as
-    // their own time constant, and a one-pole follower from there: a follower that starts from
-    // one value climbs for its whole time constant, and everything measured against the long
-    // one while it climbs reads as intense. They used to start *at* the first frame — whose
-    // difference half is all zero by construction, since there is no frame before it to
-    // differ from — so every Start read INTENSE from three seconds to forty-three, whatever was
-    // playing, and fired every intensity-change rule twice on the way. The first frame is not
-    // counted at all, for the same reason.
+    // **Warmed up on the music, not on the first frame.** Both followers are the plain mean of
+    // every frame so far until there are as many frames as their own time constant, and a
+    // one-pole follower from there: a follower that starts from one value climbs for its whole
+    // time constant, and everything measured against the long one while it climbs reads as
+    // intense. They used to start *at* the first frame — whose difference half is all zero by
+    // construction, since there is no frame before it to differ from — so every Start read
+    // INTENSE from three seconds to forty-three, whatever was playing, and fired every
+    // intensity-change rule twice on the way. The first frame is not counted at all, for the
+    // same reason.
     if (frames_ == 1) {
         fast_ = 0.0;
         slow_ = 0.0;
@@ -104,7 +104,7 @@ bool IntensityClassifier::push(std::span<const float, kFeatureDim> frame) noexce
         slow_ = onePole(slow_, flux_, std::min(options_.slowFrames, seen));
     }
 
-    // --- the state, with the hysteresis and a floor on how long one lasts -------------
+    // --- the state, with hysteresis and a floor on how long one lasts --------------------
     if (held_ < options_.holdFrames) {
         ++held_;
     }

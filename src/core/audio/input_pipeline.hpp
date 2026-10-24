@@ -60,7 +60,7 @@ public:
     std::size_t inputDelayFrames() const noexcept { return resampler_.inputDelayFrames(); }
 
     // Progress counters, readable from any thread. framesIn is the monotonic sample
-    // clock of the design: device frames consumed since construction.
+    // clock: device frames consumed since construction.
     std::uint64_t framesIn() const noexcept { return framesIn_.load(std::memory_order_relaxed); }
     std::uint64_t samplesOut() const noexcept { return samplesOut_.load(std::memory_order_relaxed); }
     std::uint64_t hopsOut() const noexcept { return hopsOut_.load(std::memory_order_relaxed); }

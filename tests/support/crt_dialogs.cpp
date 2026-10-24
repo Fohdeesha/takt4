@@ -52,8 +52,8 @@ struct TestProcess {
         // **No ASIO unless the run is for the rig.** Every window test builds a real tracker,
         // and a tracker enumerates every ASIO driver — which loads each driver into the test
         // process and initialises it, sixty times over, on the machine a show may be running
-        // from. The tests that need the interface itself are tagged
-        // [hardware] and run with TAKT4_TEST_HARDWARE set; see the `-all` test presets.
+        // from. The tests that need the interface itself are tagged [hardware] and run with
+        // TAKT4_TEST_HARDWARE set; see the `-all` test presets.
         if (!isSet("TAKT4_TEST_HARDWARE")) {
             set("TAKT4_NO_ASIO", "1");
         }
@@ -102,10 +102,9 @@ struct TestProcess {
 #endif
     }
 
-    // **And that folder goes with the process**: one was left in the
-    // temp directory by every run of every test binary. Only the one made above — a folder named
-    // by this process's id, under "takt4-tests" — and never one handed in from outside, which
-    // could be anybody's.
+    // **And that folder goes with the process**: one was left in the temp directory by every run of
+    // every test binary. Only the one made above — a folder named by this process's id, under
+    // "takt4-tests" — and never one handed in from outside, which could be anybody's.
     ~TestProcess() {
         if (folder_.empty()) {
             return;

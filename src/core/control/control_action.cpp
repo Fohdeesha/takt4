@@ -116,7 +116,7 @@ std::optional<ControlTarget> targetOf(std::string_view verb) {
 
 bool takesArgument(ControlAction action) noexcept {
     // The four that are a *state* somebody can hold: the lock, a rule's arming, its mute, and
-    // its rate. The rest are buttons, and the reasoning applies to all of them — a toggle
+    // its rate. The rest are buttons, and the same reasoning applies to all of them — a toggle
     // depends on a state the sender cannot see, so a control surface that missed one message
     // would be inverted from then on.
     return action == ControlAction::Lock || action == ControlAction::RuleEnable ||
@@ -178,8 +178,8 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
     // **A value that is not a number is not a message anybody meant**, and is refused rather
     // than read. Every state below is "anything but zero is on", which a NaN satisfies — so
     // `/ctl/lock nan` pinned the lock, and `/ctl/rule/x/rate nan` gave a rule an interval
-    // that was a NaN cast to an integer. An OSC float can carry either; a
-    // MIDI message cannot, so this only ever turns away a broken sender.
+    // that was a NaN cast to an integer. An OSC float can carry either; a MIDI message cannot,
+    // so this only ever turns away a broken sender.
     if (argument && !std::isfinite(*argument)) {
         return false;
     }
@@ -187,10 +187,10 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
     // **A button's release is not a second press.** A pad in CC mode sends 127 on the press
     // and 0 on the release, and a TouchOSC push button sends 1 and then 0; every one of these
     // used to act on both, so a tap button tapped twice 120 ms apart, a ÷2 halved twice, and a
-    // DOWNBEAT snapped late on the release. An explicit zero to a button is
-    // its release, and it is accepted — the message was understood — and does nothing. The
-    // four actions that hold a state read zero as "off" below, as they always did. PANIC is the
-    // exception: every message to it engages, a 0 included (L15, Q1) — a 0 read as a release
+    // DOWNBEAT snapped late on the release. An explicit zero to a button is its release, and it
+    // is accepted — the message was understood — and does nothing. The four actions that hold a
+    // state read zero as "off" below, as they always did. PANIC is the exception: every message
+    // to it engages, a 0 included (the operator's call of 2026-09-26) — a 0 read as a release
     // is what let a push button's own release undo the halt.
     if (!takesArgument(target.action) && target.action != ControlAction::Panic && argument &&
         *argument == 0.0) {
@@ -206,8 +206,8 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
         }
         const std::optional<double> tapped = taps_.tap(nowSeconds);
         if (tapped) {
-            // A seed, not an override — the locked decision, and the same thing the
-            // window's TAP and the console's space bar do.
+            // A seed, not an override — the operator's call of 2026-09-04, and the same thing
+            // the window's TAP and the console's space bar do.
             return beats_.post(Command::seedTempo(*tapped));
         }
         // The taps before the third say nothing, which is not the same as failing.
@@ -225,8 +225,8 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
     case ControlAction::Lock:
         // Anything a surface spells "true" with: OSC booleans arrive as 1 and 0, a fader
         // sends 1.0, and a MIDI pad sends 1 while held and 0 on its release (`argumentOf`),
-        // so a pad pins while it is down — it used to send 1 and nothing, and pinned for good
-        //. Refused, as a tap is, by a grid followed from elsewhere.
+        // so a pad pins while it is down — it used to send 1 and nothing, and pinned for good.
+        // Refused, as a tap is, by a grid followed from elsewhere.
         return beats_.post(Command::setLockPinned(*argument != 0.0));
 
     // The two that are not the tracker's. Refused outright where nothing is wired to the

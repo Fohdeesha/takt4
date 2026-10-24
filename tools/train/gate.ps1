@@ -17,9 +17,8 @@
 #
 # Every step's exit status is checked. A conversion that fails, or leaves a .bin that was not
 # made from -Checkpoint, stops the script before anything is measured: it used to carry on, and
-# the three gates scored whatever .bin of that name an earlier conversion had left (the
-# 2026-09-25 review's P5). A gate that fails to run is reported, the others still run, and the
-# script ends with exit status 1.
+# the three gates scored whatever .bin of that name an earlier conversion had left. A gate that
+# fails to run is reported, the others still run, and the script ends with exit status 1.
 param(
     [Parameter(Mandatory)][string]$Checkpoint,
     [Parameter(Mandatory)][string]$Name,

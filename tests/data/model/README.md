@@ -1,8 +1,8 @@
 # PyTorch reference activations
 
-The reference data for the Phase 3 gate: the C++ model (`src/core/model/`) must
-reproduce what the real BeatNet+ network computes, on the same test set Phase 2 used,
-before anything downstream is trusted.
+The reference data for the model's gate: the C++ model (`src/core/model/`) must
+reproduce what the real BeatNet+ network computes, on the same golden excerpts the feature
+front end is held to (`tests/data/features/`), before anything downstream is trusted.
 
 One directory per weight set — `generic`, `generic-main`, `af-non-percussive`, the
 three published sets converted into `assets/weights/` by `tools/convert_weights.py`, and
@@ -16,7 +16,8 @@ excerpt, named after it:
 
 The input is **not** anything C++ produced: it is `tests/data/features/<name>.npy`,
 madmom's own features for that excerpt. So a regression in the feature front end fails
-the Phase 2 test rather than muddying this one, and this is a test of the model alone.
+the feature test (`tests/features/feature_extractor_test.cpp`) rather than muddying this
+one, and this is a test of the model alone.
 
 `tests/model/beat_model_test.cpp` runs all 72 excerpt-and-weight-set pairs through
 `BeatModel`, one frame at a time as the live path does, and asserts the largest

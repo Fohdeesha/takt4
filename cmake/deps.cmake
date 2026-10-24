@@ -54,7 +54,7 @@ endfunction()
 
 # ---------------------------------------------------------------------------------------
 # PortAudio (submodule). Static. On Windows the host APIs are ASIO (through the vendored
-# SDK) and WASAPI, the two the design picks channels on; MME, DirectSound and WDM-KS
+# SDK) and WASAPI, the two takt4 picks channels on; MME, DirectSound and WDM-KS
 # would only list every interface three more times, and WDM-KS enumeration is what makes
 # Pa_Initialize slow.
 # On Linux the host APIs are ALSA and JACK, and nothing else: left to itself, PortAudio
@@ -286,7 +286,7 @@ add_library(r8brain INTERFACE)
 target_include_directories(r8brain SYSTEM INTERFACE "${r8brain_SOURCE_DIR}")
 
 # ---------------------------------------------------------------------------------------
-# KissFFT 131.2.0 (the design: the STFT). Static, double precision.
+# KissFFT 131.2.0 (the feature front end's STFT). Static, double precision.
 #
 # The 1764-point frame factors as 2²·3²·7², and for the 7s KissFFT's generic butterfly
 # takes a scratch buffer per call, from malloc unless KISS_FFT_USE_ALLOCA puts it on the
@@ -369,12 +369,12 @@ endif()
 # ahead of time.
 # ---------------------------------------------------------------------------------------
 if(TAKT4_BUILD_UI)
-  # **The pinned toolchain, in a build tree configured before there was a pin too** (an earlier review
-  # of 2026-09-25, B2). Corrosion chooses a toolchain only when none is cached, and a tree
-  # configured before rust-toolchain.toml existed has `stable` cached for good — so the next
-  # `rustup update` would change the compiler behind the Release exe with nothing said. A
-  # cached one that is not the pinned channel is forgotten here, and Corrosion chooses again,
-  # through rustup, which reads the pin; a fresh tree, CI's, never had one to forget.
+  # **The pinned toolchain, in a build tree configured before there was a pin too.** Corrosion
+  # chooses a toolchain only when none is cached, and a tree configured before
+  # rust-toolchain.toml existed has `stable` cached for good — so the next `rustup update`
+  # would change the compiler behind the Release exe with nothing said. A cached one that is
+  # not the pinned channel is forgotten here, and Corrosion chooses again, through rustup,
+  # which reads the pin; a fresh tree, CI's, never had one to forget.
   file(STRINGS "${PROJECT_SOURCE_DIR}/rust-toolchain.toml" takt4_rust_channel
        REGEX "^channel *= *\"[^\"]+\"")
   string(REGEX REPLACE "^channel *= *\"([^\"]+)\".*" "\\1" takt4_rust_channel
@@ -418,10 +418,9 @@ if(TAKT4_BUILD_UI)
   set(TAKT4_SLINT_VERSION "1.18.1")
 
   # **Slint is the commit v1.18.1 names today, or nothing is built.** It is fetched by tag, and
-  # a tag can be moved. A full clone to
-  # pin the commit itself would be hundreds of megabytes on every clean build, so the shallow
-  # checkout of the tag is kept and what it checked out is compared with the commit recorded
-  # here, on every configure.
+  # a tag can be moved. A full clone to pin the commit itself would be hundreds of megabytes on
+  # every clean build, so the shallow checkout of the tag is kept and what it checked out is
+  # compared with the commit recorded here, on every configure.
   set(TAKT4_SLINT_COMMIT "372cf0ee5577c3dfec309a45e7b778ba4e81b734")
   FetchContent_GetProperties(Slint SOURCE_DIR takt4_slint_source)
   find_package(Git REQUIRED)
@@ -444,8 +443,8 @@ if(TAKT4_BUILD_UI)
   # Line tables for Slint's own Rust, so a crash inside it names a file and a line. Cargo's
   # release profile has no debug info at all, and a minidump of a panic in Slint read as an
   # offset into `takt4.exe` and nothing more — which is where takt4's UI crashes so far have
-  # been. `line-tables-only` adds the line tables and no variable
-  # information, so the symbols grow by that and the code does not change at all.
+  # been. `line-tables-only` adds the line tables and no variable information, so the symbols
+  # grow by that and the code does not change at all.
   corrosion_set_env_vars(slint_cpp CARGO_PROFILE_RELEASE_DEBUG=line-tables-only)
 
   # slint_cpp is a Rust staticlib. Corrosion attaches the system libraries the Rust

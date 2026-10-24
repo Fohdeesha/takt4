@@ -99,8 +99,8 @@ std::string_view labelOf(Trigger trigger) noexcept {
     case Trigger::Onset:
         return "onset";
     case Trigger::Manual:
-        // Which key, said where the trigger is picked: the M key was taught nowhere on screen
-        //, and "hotkey" alone asks which one.
+        // Which key, said where the trigger is picked: the M key was taught nowhere on screen,
+        // and "hotkey" alone asks which one.
         return "manual (M key)";
     case Trigger::Euclid:
         return "euclidean pattern";
@@ -355,9 +355,9 @@ double musicalSeconds(const Context& context, DelayUnit unit, double clockSecond
     }
     double counted = std::max(0.0, beats);
     if (unit == DelayUnit::Bars) {
-        // The meter the tracker is reporting, never four. Before it has an opinion a
-        // bar is one beat, which is short rather than wrong — the alternative is assuming a
-        // meter and holding a clip for four beats of a waltz.
+        // The meter the tracker is reporting, never four. Before it has an opinion a bar is
+        // one beat, which is short rather than wrong — the alternative is assuming a meter and
+        // holding a clip for four beats of a waltz.
         counted *= static_cast<double>(std::max<std::uint32_t>(1, context.meter));
     }
     return counted * beat;
@@ -485,8 +485,8 @@ void Rule::validate() {
         problem_ = "a rule needs an id";
         return;
     }
-    // the design addresses a rule as `/<prefix>/ctl/rule/<id>/enable`, so the id has to survive
-    // being a segment of that: legal OSC characters, and no '/' of its own to split it.
+    // OSC control addresses a rule as `/<prefix>/ctl/rule/<id>/enable`, so the id has to
+    // survive being a segment of that: legal OSC characters, and no '/' of its own to split it.
     if (config_.id.find('/') != std::string::npos || !output::addressIsLegal("/" + config_.id)) {
         problem_ = "a rule id must be usable in an OSC address: " + config_.id;
         return;
@@ -659,9 +659,9 @@ void Rule::reset() noexcept {
 void Rule::setRate(double rate) noexcept {
     // Not a number is not a rate, and is refused outright: `std::clamp` hands a NaN straight
     // back, and a NaN interval cast to an integer is undefined — it came out as zero, a rule on
-    // every beat. One OSC message, `/ctl/rule/x/rate nan`, was enough. An
-    // infinity is refused with it rather than clamped: it is a broken sender, not a request
-    // for the slowest rate there is.
+    // every beat. One OSC message, `/ctl/rule/x/rate nan`, was enough. An infinity is refused
+    // with it rather than clamped: it is a broken sender, not a request for the slowest rate
+    // there is.
     if (!std::isfinite(rate)) {
         return;
     }
@@ -748,7 +748,7 @@ bool Rule::conditionsHold(const Context& context) noexcept {
 std::optional<Message> Rule::fire(const Context& context) {
     Message message;
     message.kind = config_.sendKind;
-    // the rule subset, carried on the message rather than looked up later: a follow-up
+    // The rule's routing, carried on the message rather than looked up later: a follow-up
     // is sent after the rule set may have been replaced, and it has to go where the press
     // went. `outputMask_` is set by whoever knows what the outputs are — see `outputMask`.
     message.outputs = outputMask_;
@@ -780,7 +780,7 @@ std::optional<Message> Rule::fire(const Context& context) {
     } else {
         message.channel = std::clamp(config_.channel, 1, kMidiChannels);
         // **Only the fields the kind actually puts on the wire**, and in the order
-        // `lastSlots` documents — `slotLayout`, which the editor draws its chips from and
+        // `lastSlots` documents — `slotLayout`, which the rule editor draws its chips from and
         // finds each chip's generator by, and which a test holds to this. A pitch bend has no
         // number and a program change no value, so neither has a chip; recording one anyway
         // paired every chip with the wrong generator. Measured: a bend of 12000 read as 9 on
@@ -833,7 +833,7 @@ dmx::Payload Rule::buildPayload(const Context& context) {
             : 0.0f;
 
     // **Only the generators this effect actually uses are drawn**, and in the order
-    // `lastSlots` documents — `slotLayout`, which the editor draws its chips from and a
+    // `lastSlots` documents — `slotLayout`, which the rule editor draws its chips from and a
     // test holds to this. The reasoning is the one the MIDI branch
     // already gives: a generator whose value never leaves should not be spending a shuffle's
     // bag on it, and recording one anyway pairs every chip after it with the wrong generator.
@@ -844,7 +844,7 @@ dmx::Payload Rule::buildPayload(const Context& context) {
     }
     if (dmx::takesColor(send.effect)) {
         if (send.colorMode == ColorMode::Mix) {
-            // Three numbers, one per component — the generators doing color work. The
+            // Three numbers, one per component — the value generators doing color work. The
             // *drawn* values go into `lastSlots`, clamped, so each chip's readout is the byte
             // that went on the wire and the three of them add up to the swatch beside them.
             const auto component = [&context](Generator& generator) {
@@ -903,7 +903,7 @@ void Rule::followUpsFor(const Context& context, const Message& fired,
         if (owed.kind && !followUpFits(*owed.kind, fired.kind)) {
             continue;
         }
-        // The same address and the same MIDI target: the release is the press again with a
+        // The same address and the same MIDI target: a release is the press again with a
         // different value, which is what makes it a release rather than a second event. An
         // entry that names a kind changes that one field and keeps the rest, so "note on then
         // CC" still goes to the channel and the outputs the note went to.

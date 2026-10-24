@@ -1,6 +1,6 @@
 # Writes the header that says which commit a build came from — `git describe --tags --dirty
-# --always`, an earlier review ask, so a binary names its commit and whether the tree it was built
-# from had changes nobody committed.
+# --always`, so a binary names its commit and whether the tree it was built from had changes
+# nobody committed.
 #
 # Run as a script on every build (src/core/CMakeLists.txt) rather than once at configure
 # time, since a configured value would go on naming the commit the tree was configured at.

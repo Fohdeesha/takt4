@@ -1,4 +1,4 @@
-// The lighting half of the editing.
+// The lighting half of the interface's editing.
 //
 // The engine tests say what a fade does; these say that a fade can be *built* — that patching
 // a moving head and aiming a rule at it is a sequence of window callbacks, and that what they
@@ -8,8 +8,8 @@
 // **A callback is not a click.** The two long tests below invoke the window's own callbacks,
 // which proves the wiring from the markup's callback to the controller and nothing about the
 // markup itself — they used to be called "by clicking" and called the controller's methods
-// directly. What is proved by real pointer and key events is at the bottom
-// of the file: the list's buttons, the name box, a channel's dropdown.
+// directly. What is proved by real pointer and key events is at the bottom of the file: the
+// list's buttons, the name box, a channel's dropdown.
 
 #include "core/dmx/dmx_engine.hpp"
 #include "core/dmx/fixture.hpp"
@@ -144,10 +144,9 @@ void enterTestLevel(FixturesWindow& window, int level) {
 } // namespace
 
 TEST_CASE("picking custom as a fixture's mode says how a custom map is made", "[ui][dmx]") {
-    // "custom" is what an edited channel map shows as, and
-    // picking it did nothing — the dropdown went on saying "custom" over a fixture that was
-    // still an RGB par. Picked as the dropdown picks it: its index written through the
-    // two-way binding, then the callback.
+    // "custom" is what an edited channel map shows as, and picking it did nothing — the dropdown
+    // went on saying "custom" over a fixture that was still an RGB par. Picked as the dropdown
+    // picks it: its index written through the two-way binding, then the callback.
     Rig rig;
     FixturesController patch(rig.runner, {});
     auto& window = patch.window();
@@ -267,7 +266,7 @@ TEST_CASE("a rig is patched through the window's callbacks", "[ui][dmx]") {
     }
 
     SECTION("renaming a fixture leaves the rules aimed at it reaching it") {
-        // an earlier review, and the operator's report of 2026-09-23 about outputs: a rule aimed
+        // The operator's report of 2026-09-23 about outputs held for fixtures too: a rule aimed
         // at a fixture by name stopped reaching it the moment it was renamed.
         const std::string id = patch.fixtures()[0].id;
         REQUIRE_FALSE(id.empty());
@@ -433,11 +432,11 @@ TEST_CASE("mute and rate are live, and are not saved with the rule", "[ui][dmx]"
 TEST_CASE("TEST drives one channel and puts it back", "[ui][dmx]") {
     // The patch editor's per-channel TEST, all the way through: the button's callback, the
     // controller, the command queue, the engine, the universe buffer. (It said "the button" and
-    // called the controller, which skips the wiring a click goes through — an earlier review of
-    // 2026-09-25, T13.) Asked for on 2026-09-16 — "next to the
-    // channel assignments, there should also be a test button that will temporarily send a test
-    // value of your choice" — and it is the question IDENTIFY cannot answer: IDENTIFY flashes
-    // the whole fixture and says which lamp this is, not whether channel 72 is really its blue.
+    // called the controller, which skips the wiring a click goes through.) Asked for on
+    // 2026-09-16 — "next to the channel assignments, there should also be a test button that
+    // will temporarily send a test value of your choice" — and it is the question IDENTIFY
+    // cannot answer: IDENTIFY flashes the whole fixture and says which lamp this is, not whether
+    // channel 72 is really its blue.
     Rig rig;
     FixturesController patch(rig.runner, {});
     patch.add();
@@ -635,8 +634,8 @@ TEST_CASE("IDENTIFY flashes an amber or a UV fixture with no dimmer, and leaves 
 
 TEST_CASE("TEST and IDENTIFY say PANIC is engaged instead of lighting anything",
           "[ui][dmx]") {
-    // an earlier review: both went to the lights past the rules, and so past a panic. The runner
-    // drops them now; this is the window saying why, rather than a button that did nothing.
+    // Both went to the lights past the rules, and so past a panic. The runner drops them now;
+    // this is the window saying why, rather than a button that did nothing.
     Rig rig;
     FixturesController patch(rig.runner, {});
     patch.add();
@@ -659,9 +658,9 @@ TEST_CASE("TEST and IDENTIFY say PANIC is engaged instead of lighting anything",
 }
 
 TEST_CASE("IDENTIFY puts a lit fixture back as it found it", "[ui][dmx]") {
-    // an earlier review: IDENTIFY flashed every emitter from full down to 0, which is where it
-    // found a dark fixture only. A lit one went out; an RGB par, whose colour is kept apart from
-    // its brightness, lost its colour, so the next dimmer flash came up white.
+    // IDENTIFY flashed every emitter from full down to 0, which is where it found a dark fixture
+    // only. A lit one went out; an RGB par, whose colour is kept apart from its brightness, lost
+    // its colour, so the next dimmer flash came up white.
     using takt4::dmx::EffectKind;
     using takt4::dmx::Payload;
     Rig rig;
@@ -775,8 +774,8 @@ void typeText(slint::Window& window, const std::string& text) {
 
 TEST_CASE("the patch says when two fixtures share channels, and what no rule can reach",
           "[ui][dmx]") {
-    // an earlier review: overlapping fixtures were never reported, and fixtures past the 64th
-    // were offered to rules that could not reach them.
+    // Overlapping fixtures were never reported, and fixtures past the 64th were offered to rules
+    // that could not reach them.
     Rig rig;
     FixturesController patch(rig.runner, {});
     patch.add();
@@ -905,11 +904,10 @@ TEST_CASE("a channel's role follows a new mode after it was picked by hand", "[u
 
 TEST_CASE("a channel's dropdown survives the redraws while it is open, and its pick lands",
           "[ui][dmx]") {
-    // an earlier review: popups inside repeaters were tested only for the two color pickers. The
-    // channel rows are a repeater the controller rebuilds when a fixture's shape changes, and
-    // a row rebuilt with its dropdown open takes the popup away under the pointer. Opened with
-    // the pointer, left open through ten redraws, then an entry clicked — which only lands if
-    // the popup is still there.
+    // Popups inside repeaters were tested only for the two color pickers. The channel rows are a
+    // repeater the controller rebuilds when a fixture's shape changes, and a row rebuilt with its
+    // dropdown open takes the popup away under the pointer. Opened with the pointer, left open
+    // through ten redraws, then an entry clicked — which only lands if the popup is still there.
     Rig rig;
     FixturesController patch(rig.runner, {takt4::dmx::fixtureFromMode("par", 2, 0, 1)}); // RGBW
     patch.show();
@@ -973,9 +971,9 @@ TEST_CASE("a channel's dropdown survives the redraws while it is open, and its p
     // **With the channel's level moving through them**, as it does whenever the rig is playing:
     // the row whose list is open carries what takt4 is sending on that channel, and the runner
     // mirrors it sixty times a second. Ten redraws with nothing moving could not have seen a
-    // rebuild; a live level taken for a change that needs a new
-    // element would take the list away on the first frame, and pass that test. The runner is
-    // running for this, as it is in the app, and each level is a channel test from elsewhere.
+    // rebuild; a live level taken for a change that needs a new element would take the list away
+    // on the first frame, and pass that test. The runner is running for this, as it is in the
+    // app, and each level is a channel test from elsewhere.
     reset();
     rig.runner.start();
     const auto channels = patch.window().get_channels();
@@ -1053,10 +1051,10 @@ std::pair<float, float> sweepFor(float x0, float x1, float dx, float y0, float y
 } // namespace
 
 TEST_CASE("a fixture's address is patched once, when it is entered", "[ui][dmx]") {
-    // The address was a `SpinBox`, which sent every keystroke:
-    // typing 101 patched the fixture at 1, then 10, then 101 — and a re-patch parks every channel
-    // the fixture lands on and drops every one it leaves, so a strobe parked at full, passing
-    // over a par's channel on the way, flashed it.
+    // The address was a `SpinBox`, which sent every keystroke: typing 101 patched the fixture at
+    // 1, then 10, then 101 — and a re-patch parks every channel the fixture lands on and drops
+    // every one it leaves, so a strobe parked at full, passing over a par's channel on the way,
+    // flashed it.
     Rig rig;
     FixturesController patch(rig.runner, {takt4::dmx::fixtureFromMode("par", 1, 0, 1)});
     const Patching shown(patch);
@@ -1096,13 +1094,13 @@ TEST_CASE("a fixture's address is patched once, when it is entered", "[ui][dmx]"
 
 TEST_CASE("a channel's dropdown shows the next fixture's role after a delete or an import",
           "[ui][dmx]") {
-    // Deleting the selected fixture puts the next one at the same
-    // index, and in a rig of identical pars at the same channel count too — and a std dropdown
-    // whose role was picked by hand was bound to nothing any more, so it went on showing the
-    // deleted fixture's pick over the next one's map. The same for an IMPORT of a patch of the
-    // same shape. The rows are written in place since the redesign of 2026-09-30, and the
-    // dropdown never sets itself, so it shows the model's role. Judged the way the operator would
-    // meet it: one arrow step from what the dropdown shows.
+    // Deleting the selected fixture puts the next one at the same index, and in a rig of
+    // identical pars at the same channel count too — and a std dropdown whose role was picked by
+    // hand was bound to nothing any more, so it went on showing the deleted fixture's pick over
+    // the next one's map. The same for an IMPORT of a patch of the same shape. The rows are
+    // written in place since the redesign of 2026-09-30, and the dropdown never sets itself, so
+    // it shows the model's role. Judged the way the operator would meet it: one arrow step from
+    // what the dropdown shows.
     const bool importing = GENERATE(false, true);
     INFO((importing ? "after an import" : "after deleting the selected fixture"));
     Rig rig;
@@ -1160,12 +1158,12 @@ TEST_CASE("a channel's dropdown shows the next fixture's role after a delete or 
 //
 // The operator asked for the rebuilt patch editor to be tested "adversarially to find whats broken
 // and hidden". Each of these drives real pointer and key events into the window, on the rig the
-// approved mockup holds, and judges by what reached the patch.
+// approved design was drawn with, and judges by what reached the patch.
 
 namespace {
 
-/// The approved mockup's rig: two washes, two heads — the second left out of the show — and a
-/// blinder that runs off the end of its universe.
+/// The rig the approved design was drawn with: two washes, two heads — the second left out of
+/// the show — and a blinder that runs off the end of its universe.
 std::vector<Fixture> rigOfFive() {
     std::vector<Fixture> rig = {
         takt4::dmx::fixtureFromMode("wash L", 3, 0, 1),     // dimmer + RGB, 1-4
@@ -1461,12 +1459,11 @@ std::vector<TypedBox> typedBoxes() {
 TEST_CASE("what is typed in the patch editor goes to the fixture it was typed for, whatever is "
           "clicked next",
           "[ui][dmx]") {
-    // an earlier review and M18 for every box against every kind of next click: a
-    // box commits a turn of the event loop after the click that takes its keyboard, by when that
-    // click may have put another fixture in the editor, deleted one, added a channel or folded the
-    // box's sheet away. Typed and not entered; then the click; then the patch is read. The typed
-    // value is on the fixture it was typed for and on no other — a copy of it aside, which is
-    // made from it after the edit.
+    // Every box against every kind of next click: a box commits a turn of the event loop after
+    // the click that takes its keyboard, by when that click may have put another fixture in the
+    // editor, deleted one, added a channel or folded the box's sheet away. Typed and not entered;
+    // then the click; then the patch is read. The typed value is on the fixture it was typed for
+    // and on no other — a copy of it aside, which is made from it after the edit.
     Rig rig;
     const std::vector<Fixture> original = rigOfFive();
     const std::string head = original[2].id;
@@ -1688,9 +1685,9 @@ TEST_CASE("deleting the fixture being typed for, or the last one, keeps the next
 
 TEST_CASE("the wheel over every box and dropdown in the patch editor changes nothing",
           "[ui][dmx]") {
-    // an earlier review and M19: a std SpinBox and ComboBox changed under the wheel as a pane scrolled
-    // past them, which is how a parked level moved on the rig. Wheeled over every box and dropdown
-    // in both directions, focused and not.
+    // A std SpinBox and ComboBox changed under the wheel as a pane scrolled past them, which is
+    // how a parked level moved on the rig. Wheeled over every box and dropdown in both
+    // directions, focused and not.
     Rig rig;
     const std::vector<Fixture> original = rigOfFive();
     FixturesController patch(rig.runner, original);
@@ -1766,8 +1763,8 @@ TEST_CASE("Escape in a patch editor box puts a number back and finishes a name, 
 }
 
 TEST_CASE("pan and tilt follow the hand, and are patched once, when let go", "[ui][dmx]") {
-    // H8: each pixel of a movement-limit drag re-patched the rig. The window follows the hand, and
-    // the patch hears of it once — on the release, or on each arrow key's step.
+    // Each pixel of a movement-limit drag re-patched the rig. The window follows the hand, and the
+    // patch hears of it once — on the release, or on each arrow key's step.
     Rig rig;
     FixturesController patch(rig.runner, rigOfFive());
     int patched = 0;

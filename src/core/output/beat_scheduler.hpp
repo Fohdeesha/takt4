@@ -8,7 +8,7 @@
 
 namespace takt4::output {
 
-/// One beat for the rules and the namespace to act on, and when it is in the music.
+/// One beat for the rules and the OSC namespace to act on, and when it is in the music.
 struct ScheduledBeat {
     /// The beat as the namespace sends it: its tempo, its place in the bar, whether it is a
     /// downbeat, whether the tracker is locked.
@@ -23,8 +23,8 @@ struct ScheduledBeat {
     bool predicted = false;
 };
 
-/// **When a beat's messages are sent** — an earlier review, and the operator's call of 2026-09-23
-/// to schedule by prediction.
+/// **When a beat's messages are sent** — scheduled by prediction, the operator's call of
+/// 2026-09-23.
 ///
 /// A beat reaches the output thread a pipeline's worth after it was in the music — tens of
 /// milliseconds, the network and the decoder between them — and a message cannot be sent

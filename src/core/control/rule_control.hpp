@@ -4,7 +4,7 @@
 
 namespace takt4::control {
 
-/// What a control surface can ask of the rules.
+/// What a control surface can ask of the trigger engine's rules.
 ///
 /// Five of the control addresses are questions for the tracker and reach it through
 /// `engine::BeatSource::post`; the rest — PANIC and its release, the manual rules and the six
@@ -27,12 +27,12 @@ public:
     RuleControl(const RuleControl&) = delete;
     RuleControl& operator=(const RuleControl&) = delete;
 
-    /// the `/ctl/panic` (`true`), and letting go of it — `/ctl/panic/release`, or the
-    /// window's RELEASE (`false`). the design calls panic *"a global halt that stops every rule
-    /// instantly ... non-negotiable for live use"*, and it is a latch.
+    /// `/ctl/panic` (`true`), and letting go of it — `/ctl/panic/release`, or the
+    /// window's RELEASE (`false`). Panic is a global halt that stops every rule instantly,
+    /// non-negotiable for live use, and it is a latch.
     virtual void panic(bool engaged) = 0;
 
-    /// the `/ctl/rule/<id>/enable <0|1>`.
+    /// `/ctl/rule/<id>/enable <0|1>`.
     ///
     /// A rule that is not there is **not an error here.** The implementation is the only
     /// thing that knows what rules exist, and a Stream Deck holding a button for a rule the
@@ -42,7 +42,7 @@ public:
     /// `id` may be `output::kAllRules` — "all" — meaning every rule at once.
     virtual void setRuleEnabled(std::string_view id, bool enabled) = 0;
 
-    /// the `/ctl/rule/<id>/mute <0|1>`, added on the operator's ask of 2026-09-16 for live
+    /// `/ctl/rule/<id>/mute <0|1>`, added on the operator's ask of 2026-09-16 for live
     /// per-rule control from a control surface.
     ///
     /// **Not the same as disabling, and both are wanted.** A disabled rule stops running: its
@@ -52,7 +52,7 @@ public:
     /// `trigger::Rule::muted`.
     virtual void setRuleMuted(std::string_view id, bool muted) = 0;
 
-    /// the `/ctl/rule/<id>/double`, `halve`, `rate <f>` and `reset` — how often the rule
+    /// `/ctl/rule/<id>/double`, `halve`, `rate <f>` and `reset` — how often the rule
     /// fires, as a multiplier on the interval it was written with.
     ///
     /// `relative` is what separates the four spellings from each other. `double` is `2.0`

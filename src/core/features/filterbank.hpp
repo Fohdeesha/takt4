@@ -23,7 +23,7 @@ struct FilterBand {
 std::span<const FilterBand, kNumBands> filterbankBands() noexcept;
 std::span<const float> filterbankWeights() noexcept;
 
-/// bands = magnitudes · filterbank, the matrix product of the design. Allocation-free.
+/// bands = magnitudes · filterbank, as one matrix product. Allocation-free.
 void applyFilterbank(std::span<const double, kNumBins> magnitudes, std::span<double, kNumBands> bands) noexcept;
 
 } // namespace takt4::features

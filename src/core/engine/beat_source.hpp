@@ -30,21 +30,21 @@ struct EngineBeat {
     std::uint64_t run = 0;
 };
 
-/// the intensity, as the *output* thread can read it.
+/// The intensity, as the *output* thread can read it.
 ///
 /// It is computed per frame (`features::IntensityClassifier`, on the model worker) and rides
 /// each `model::FrameActivation` — but the frame ring has exactly one consumer and that is
-/// the trace, so the output thread cannot have it that way. This is published instead,
-/// like the tempo state beside it.
+/// the activation trace, so the output thread cannot have it that way. This is published
+/// instead, like the tempo state beside it.
 ///
 /// It is **not** part of `tracking::TempoState`, deliberately. That is what the tempo state
 /// machine is saying, and intensity is not a tracking quantity; folding it in would make
-/// `core/tracking` depend on the features and would put a number in the Phase 4 gate's
-/// neighbourhood that has no business there.
+/// `core/tracking` depend on the features and would put a number with no business there in
+/// the neighbourhood of the particle filter's parity gate.
 struct EngineIntensity {
     features::Intensity level = features::Intensity::Normal;
     /// Onsets seen since the engine was reset. The output thread has no frames, so a count
-    /// that moved is how it learns one happened — the *"on onset"*.
+    /// that moved is how it learns one happened — for the rules that fire *on onset*.
     std::uint64_t onsets = 0;
     /// The raw flux, for a diagnostic readout. See `FrameActivation::flux`.
     float flux = 0.0f;
@@ -72,7 +72,7 @@ public:
     /// The latest tempo, lock and bar, consistently, without draining anything — for a status
     /// line, a window that redraws on its own clock, or the rules between beats.
     virtual tracking::TempoState state() const noexcept = 0;
-    /// The intensity and the onset count, for the rules that watch them and the design's
+    /// The intensity and the onset count, for the rules that watch them and the OSC address
     /// `/takt4/intensity`.
     virtual EngineIntensity intensity() const noexcept = 0;
     /// Which run this is: one more at every start, and what each beat it calls is stamped with.

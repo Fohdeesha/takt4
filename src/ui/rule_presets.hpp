@@ -2,7 +2,7 @@
 
 // What the rule editor offers ready-made: the host presets an address is built from, and
 // the rig presets that add a set of rules at once. Out of `rules_controller.cpp` since
-// 2026-09-28, as an earlier review suggested.
+// 2026-09-28.
 
 #include "core/dmx/fixture.hpp"
 #include "core/trigger/rule.hpp"
@@ -18,9 +18,8 @@ namespace takt4::ui::rule_presets {
 
 using trigger::Rule;
 
-/// the host presets: *"Ship presets for Resolume 7, TouchDesigner, MadMapper, QLC+ and a
-/// blank custom option. The preset is a starting point the user can edit — never a hardcoded
-/// code path."*
+/// The host presets — Resolume 7, TouchDesigner, MadMapper and a blank custom option — each a
+/// starting point the user can edit, never a hardcoded code path.
 ///
 /// So each one is nothing but an address template and the generators that fill it — the same
 /// data an operator could have typed, arrived at by clicking. Applying one leaves every part
@@ -28,17 +27,17 @@ using trigger::Rule;
 struct HostPreset {
     const char* label;
     /// The address, with a `{}` wherever the host expects a number that varies. Each one
-    /// becomes a chip on the editor, starting on the default generator — Shuffle over
+    /// becomes a chip on the rule editor, starting on the default generator — Shuffle over
     /// 1-8 — which the operator then says what they actually meant.
     const char* address;
 };
 
-/// Only Resolume's addresses are *verified* — the design checked them against Resolume's
-/// own documentation, and the design quotes them. The rest are the shapes those hosts use, and are
-/// starting points in the strongest sense: a TouchDesigner address is whatever the operator
-/// named their CHOP, so a preset can only offer the convention.
+/// Only Resolume's addresses are *verified*: they were checked against Resolume's own
+/// documentation. The rest are the shapes those hosts use, and are starting points in the
+/// strongest sense: a TouchDesigner address is whatever the operator named their CHOP, so a
+/// preset can only offer the convention.
 ///
-/// The first entry is the *"blank custom option"*, and it means what it says: picking it
+/// The first entry is the blank custom option, and it means what it says: picking it
 /// empties the address and takes the host's press-then-release off with it. It used to change
 /// nothing, on the reasoning that an operator who had typed an address and then brushed the
 /// picker had not asked to lose it — but the picker did not show which preset the rule *was*
@@ -62,7 +61,7 @@ inline const std::array<HostPreset, 5> kHostPresets{{
 int presetOf(std::string_view address);
 
 /// A release — the fired message again with a different value — after a delay in
-/// milliseconds. What the press-then-release is, and what every preset here wants.
+/// milliseconds. What a press-then-release is, and what every preset here wants.
 trigger::FollowUp releaseAfterMs(std::int32_t value, double milliseconds);
 
 /// One clip-launching rule for one Resolume layer.

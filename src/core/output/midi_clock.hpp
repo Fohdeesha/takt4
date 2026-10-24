@@ -46,9 +46,9 @@ protected:
 ///
 /// A USB MIDI interface pulled out mid-show used to stay dead for the rest of the show: every
 /// send failed and was counted, nothing ever reopened the port, and re-picking the same port
-/// in the window did nothing because it was "already open". Now a run of
-/// failures marks it `lost()`, and whoever owns it calls `reconnect()` now and then — the
-/// output thread does, once a second — until the device is back.
+/// in the window did nothing because it was "already open". Now a run of failures marks it
+/// `lost()`, and whoever owns it calls `reconnect()` now and then — the output thread does,
+/// once a second — until the device is back.
 class MidiOutput final : public MidiSink {
 public:
     /// Sends in a row that fail before the port counts as lost. One failure can be a driver
@@ -91,18 +91,16 @@ private:
     std::uint64_t failed_ = 0;
     std::uint32_t failedInARow_ = 0;
     /// Whether the port is open, as far as this object has opened and closed it. **A send on a
-    /// port that is not open is a failure, whatever the port says** (an earlier review,
-    /// C1): RtMidi's WinMM port swallows a send once it is closed, so after one reopen that
-    /// failed every send "worked", `lost()` went false, the window said the device was back, and
-    /// nothing looked for it again.
+    /// port that is not open is a failure, whatever the port says**: RtMidi's WinMM port
+    /// swallows a send once it is closed, so after one reopen that failed every send "worked",
+    /// `lost()` went false, the window said the device was back, and nothing looked for it again.
     bool open_ = false;
 };
 
 /// MIDI beat clock: 24 pulses per quarter note, plus Start, Stop and Continue.
 ///
-/// the design: "This is the transport nobody in this niche ships and it is cheap.
-/// Lighting desks, hardware sequencers and older software speak MIDI clock and do not
-/// speak Link."
+/// The transport nobody else in this niche ships, and a cheap one: lighting desks, hardware
+/// sequencers and older software speak MIDI clock and do not speak Link.
 ///
 /// The clock keeps no timer of its own. `advance(now)` is given a time in seconds and
 /// emits every tick that has come due, so the scheduling is a pure function of the times
@@ -114,17 +112,17 @@ private:
 /// receiver counting ticks — a drum machine, a sequencer, a lighting desk — counts 24 to a
 /// beat and nothing else, so a clock that re-anchored pulse 0 on every beat the tracker called
 /// sent it 25 to 28 ticks a beat whenever a beat was drained late or the latency offset was
-/// negative, and it walked off the music (an earlier review, measured: 128 BPM gained 1.8 %, and
-/// −40 ms sent 26 to 28 on every beat in zero-gap bursts). `syncToBeat` now *steers*: it
-/// spreads the ticks up to the next pulse 0 a little wider or a little closer so that pulse 0
-/// lands half-way nearer the beat, and every quarter note is still exactly 24 ticks.
+/// negative, and it walked off the music (measured: 128 BPM gained 1.8 %, and −40 ms sent 26
+/// to 28 on every beat in zero-gap bursts). `syncToBeat` now *steers*: it spreads the ticks up
+/// to the next pulse 0 a little wider or a little closer so that pulse 0 lands half-way nearer
+/// the beat, and every quarter note is still exactly 24 ticks.
 ///
-/// **Start goes out on a downbeat, not on a press**. A receiver starts its
-/// song on the first tick after Start, and counts its bars from there, so a Start sent when
-/// the operator pressed START put every drum machine's and sequencer's bar 1 wherever the
-/// press happened to fall. `startTicking` begins the ticks — a receiver can read the tempo off
-/// them while it waits — and `startOnDownbeat` sends Song Position 0 and Start just ahead of
-/// the tick that lands on a downbeat.
+/// **Start goes out on a downbeat, not on a press.** A receiver starts its song on the first
+/// tick after Start, and counts its bars from there, so a Start sent when the operator pressed
+/// START put every drum machine's and sequencer's bar 1 wherever the press happened to fall.
+/// `startTicking` begins the ticks — a receiver can read the tempo off them while it waits —
+/// and `startOnDownbeat` sends Song Position 0 and Start just ahead of the tick that lands on a
+/// downbeat.
 class MidiClock {
 public:
     static constexpr std::size_t kPulsesPerQuarterNote = 24;
@@ -176,7 +174,7 @@ public:
     /// not been started.
     void startOnDownbeat(double downbeat, double barSeconds) noexcept;
     /// Keeps a receiver's bars on the tracker's once it has been started — what a DOWNBEAT press
-    /// is for.
+    /// is for, and what `startOnDownbeat` cannot do.
     ///
     /// A receiver counts its bars from the first tick after Start, and Song Position only moves
     /// it while it is stopped, so a DOWNBEAT pressed after Start — or a bar the tracker has found

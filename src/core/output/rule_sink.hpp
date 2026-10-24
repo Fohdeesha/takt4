@@ -28,7 +28,7 @@ std::size_t midiLengthFor(trigger::Message::Kind kind) noexcept;
 /// one OSC datagram or one MIDI message.
 ///
 /// **It exists so that neither side has to know the other.** `trigger` builds messages and
-/// has no business owning a socket; `Transports` sends the namespace and has no business
+/// has no business owning a socket; `Transports` sends takt4's namespace and has no business
 /// knowing what a rule is. This is the one file that includes both, which is what keeps
 /// `core/output` out of `core/trigger`'s headers and lets a test drive the whole rule engine
 /// against a recording sink instead.

@@ -16,8 +16,8 @@ using takt4::audio::PortAudioError;
 namespace detail = takt4::audio::detail;
 
 // What every input stream is opened with: the parameters PortAudio is handed, the rate, and the
-// error it throws. Built from a device description alone, so none of it opens anything (an earlier review
-// of 2026-09-25, coverage gap 16 — stream_setup.cpp had no test of its own).
+// error it throws. Built from a device description alone, so none of it opens anything
+// (stream_setup.cpp had no test of its own).
 
 namespace {
 

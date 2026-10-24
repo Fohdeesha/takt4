@@ -87,8 +87,7 @@ double parseDouble(std::string_view text, std::string_view what) {
         throw std::invalid_argument(std::string(what) + ": expected a number, got '" + s + "'");
     }
     // `stod` reads "nan" and "inf" as numbers, which no option here can mean: `--snap nan`
-    // turned snapping off. The console's own parser refused them and annotate's did not (the
-    // review of 2026-09-25, L46).
+    // turned snapping off. The console's own parser refused them and annotate's did not.
     if (consumed != s.size() || !std::isfinite(value)) {
         throw std::invalid_argument(std::string(what) + ": expected a number, got '" + s + "'");
     }
@@ -423,8 +422,7 @@ int runAnnotate(const std::vector<std::string_view>& args) {
 
     std::vector<tracking::Tap> taps;
     // Made here rather than in `tapAlong`, so Ctrl+C is still caught while the taps are written
-    // below: made there, it was gone by then, and a second press lost them (an earlier review of
-    // 2026-09-25, L47).
+    // below: made there, it was gone by then, and a second press lost them.
     std::optional<Interrupts> interrupts;
     if (a.tapsIn) {
         taps = tracking::readTaps(*a.tapsIn);

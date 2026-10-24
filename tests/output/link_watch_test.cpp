@@ -135,7 +135,7 @@ TEST_CASE("a Link announcement is read as Link writes it", "[output][link]") {
         }
     }
 
-    // an earlier review, coverage gap 12: the three edges nothing tried.
+    // The three edges nothing tried.
     const auto header = [](Id node) {
         Bytes out{'_', 'a', 's', 'd', 'p', '_', 'v', 1, 1, 5, 0, 0};
         out.insert(out.end(), node.begin(), node.end());
@@ -199,10 +199,10 @@ TEST_CASE("a Link announcement is read as Link writes it", "[output][link]") {
 
 TEST_CASE("a peer is this process only when it sends from this machine as well as this port",
           "[output][link]") {
-    // an earlier review: this process's own Link was told apart by the port its announcements
-    // left from alone, so a peer on another machine that happened to send from a port number
-    // one of takt4's sockets has here was hidden from the list. Asked of the operating system,
-    // with a port this process really holds.
+    // This process's own Link used to be told apart by the port its announcements left from
+    // alone, so a peer on another machine that happened to send from a port number one of
+    // takt4's sockets has here was hidden from the list. Asked of the operating system, with a
+    // port this process really holds.
     takt4::testing::LoopbackReceiver socket;
     const std::uint16_t ours = socket.port();
     REQUIRE(takt4::output::portOwnedHere(ours));

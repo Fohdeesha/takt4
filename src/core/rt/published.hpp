@@ -35,9 +35,9 @@ namespace takt4::rt {
 /// **The value is kept as atomic words, not as a `T`.** A reader's copy races with the
 /// writer's by design — that is what the retry is for — and a plain copy racing with a plain
 /// write is a data race under the C++ memory model, whatever the hardware does with it:
-/// harmless on x64, reported by ThreadSanitizer every time. The words
-/// are Boehm's answer ("Can seqlocks get along with programming language memory models?",
-/// 2012): every access is atomic, so there is no race to report.
+/// harmless on x64, reported by ThreadSanitizer every time. The words are Boehm's answer
+/// ("Can seqlocks get along with programming language memory models?", 2012): every access
+/// is atomic, so there is no race to report.
 ///
 /// **Ordered by the words themselves, with no fences** — Boehm's other form: the writer
 /// stores each word with release, so its odd counter cannot be seen after any of them; the

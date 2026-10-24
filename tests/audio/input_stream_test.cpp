@@ -34,7 +34,7 @@ namespace {
 // The most interesting input this machine has: a host API with native channel selection
 // first (ASIO, CoreAudio), then the most inputs, then the platform's default input. On
 // the macOS CI runner that is the "Apple Virtual Sound Device"; here it is the MOTU over
-// ASIO. Loopback captures are not inputs in the the design sense.
+// ASIO. Loopback captures do not count as inputs.
 std::optional<InputDevice> bestInputDevice(const takt4::audio::PortAudioSession& session) {
     std::optional<InputDevice> best;
     const auto rank = [](const InputDevice& d) {
@@ -99,7 +99,7 @@ TEST_CASE("a device is opened only where the list it was picked from still has i
 }
 
 TEST_CASE("the input device streams hops end to end", "[audio][hardware]") {
-    // Phase 1's live path on whatever this machine has: open a real device, pick its
+    // The live audio path on whatever this machine has: open a real device, pick its
     // last input, and check that a second of audio reaches the meter as hops, in order,
     // with nothing dropped. Native selection is used where the host API has it, so on
     // macOS this is the CoreAudio channel map at work; the second run forces the
@@ -216,12 +216,12 @@ TEST_CASE("a WASAPI input asked for a rate Windows is not mixing it at is opened
 
 TEST_CASE("an ASIO interface is opened at the rate it is running at, and never moved",
           "[audio][hardware]") {
-    // an earlier review, and coverage gap 16 of 2026-09-25: the reopen at the interface's own rate
-    // had no test on an interface. The device list is read by a scan at startup; another program
-    // re-clocking the interface afterwards leaves the list's rate stale, and opening at that rate
-    // used to re-clock the interface under Live and the front-of-house mix. The patched ASIO host
-    // refuses instead, and the stream opens again at the rate the interface is running at. A rate
-    // asked for outright is refused, naming the rate it runs at, and never forced.
+    // The reopen at the interface's own rate had no test on an interface. The device list is read
+    // by a scan at startup; another program re-clocking the interface afterwards leaves the list's
+    // rate stale, and opening at that rate used to re-clock the interface under Live and the
+    // front-of-house mix. The patched ASIO host refuses instead, and the stream opens again at the
+    // rate the interface is running at. A rate asked for outright is refused, naming the rate it
+    // runs at, and never forced.
     const takt4::audio::PortAudioSession session;
     const std::optional<InputDevice> device = bestInputDevice(session);
     if (!device || device->hostApi != takt4::audio::HostApiKind::Asio) {

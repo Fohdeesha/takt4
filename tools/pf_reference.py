@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """BeatNet+'s particle filter cascade, restated, and the reference the C++ is gated on.
 
-the design Phase 4 wants "a parity harness like Phase 3's". Phase 3 could hold the C++
-against PyTorch directly because the network is deterministic. This one cannot: the
+The particle filter needs a parity harness like the network's. The network's could hold the
+C++ against PyTorch directly because the network is deterministic. This one cannot: the
 tracker is a particle filter, and upstream's own output moves when only the RNG seed
 changes. Measured over the 18 committed excerpts, eight seeds of
 `particle_filtering_cascade` agree with each other on **57%** of beat frames exactly,
 0.83 F1 within one 20 ms frame and 0.91 F1 at MIR's 70 ms tolerance. There is no
 tolerance at which "the C++ reproduces upstream's beat times" is a meaningful statement.
 
-So the gate is split, the way Phase 3 split `tools/beatnet_model.py` from the real
+So the gate is split, the way the network's split `tools/beatnet_model.py` from the real
 `.pt` files:
 
   * This module restates the filter with an RNG that is specified rather than inherited
@@ -87,9 +87,9 @@ MASK64 = (1 << 64) - 1
 class Xoshiro256pp:
     """xoshiro256++ seeded by splitmix64, as src/core/tracking/random.hpp implements it.
 
-    A particle filter that cannot be replayed cannot be debugged, and a
-    filter whose randomness comes from whatever numpy happens to do this release cannot
-    be reproduced in C++ at all. This is the whole source of randomness on both sides:
+    A particle filter that cannot be replayed cannot be debugged, and a filter whose
+    randomness comes from whatever numpy happens to do this release cannot be reproduced in
+    C++ at all. This is the whole source of randomness on both sides:
     same seed, same draws, in the same order.
     """
 

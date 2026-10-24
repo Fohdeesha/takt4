@@ -444,8 +444,7 @@ TEST_CASE("an estimate wandering across the window's edge does not take the octa
 
     SECTION("but an estimate genuinely out of range is still folded") {
         // Well outside the window and its hysteresis, so there is nothing ambiguous about
-        // it: interval 14 is 214.3 BPM, which is what a Quickstep does under a 70-140
-        // window (the design deviation 4).
+        // it: interval 14 is 214.3 BPM, which is what a Quickstep does under a 70-140 window.
         settle(tracker, index, 14, 0.9, 300);
         CHECK(tracker.state().bpm == Approx(bpmOf(14) / 2.0).margin(2.0));
     }
@@ -625,9 +624,9 @@ TEST_CASE("a pinned lock is held up rather than set", "[tracking][tempo]") {
     }
 
     SECTION("pinning while hunting holds up nothing until a lock is earned") {
-        // This used to lock at once to whatever was showing — which
-        // before the first lock is the hunt's guess of the moment — and the engine then held the
-        // decoder to that guess and Link was fed it as locked: pinning noise.
+        // This used to lock at once to whatever was showing — which before the first lock is the
+        // hunt's guess of the moment — and the engine then held the decoder to that guess and Link
+        // was fed it as locked: pinning noise.
         TempoTracker mid(kFramePeriod, options);
         std::uint64_t at = 0;
         settle(mid, at, 31, 0.8, 5); // nowhere near lockAfter
@@ -718,8 +717,7 @@ TEST_CASE("a pinned lock goes on refining the tempo from the beats", "[tracking]
 
     // **And it goes on moving with the beats**, which the two checks above cannot tell from a
     // refinement frozen at the moment of the pin: the record drifts a BPM slower while pinned,
-    // and the number follows it. Thirty beats, so the window of
-    // gaps is all the new tempo's.
+    // and the number follows it. Thirty beats, so the window of gaps is all the new tempo's.
     const double before = tracker.state().bpm;
     constexpr double kDrifted = 127.0;
     const double drifted = 60.0 / (kDrifted * kFramePeriod);
@@ -753,7 +751,7 @@ TEST_CASE("below the confidence gate the last good tempo is held", "[tracking][t
     CHECK(tracker.state().confidence > 0.4);
 
     // The cloud falls apart and the filter starts reporting nonsense. Nothing new may be
-    // published: the design, "silence beats wrong".
+    // published: silence beats wrong.
     settle(tracker, index, 42, 0.02, 40);
     CHECK(tracker.state().holding);
     CHECK(tracker.state().bpm == Approx(bpmOf(23)));
@@ -840,8 +838,8 @@ TEST_CASE("beats are numbered from the meter the filter reports", "[tracking][te
 // report a tempo between 130.43 BPM (23 frames) and 125.00 (24). The beats it calls are
 // spaced 23, 24, 23, 23 frames apart, and their mean is not so limited.
 TEST_CASE("a manual downbeat re-anchors the bar and keeps it there", "[tracking][tempo]") {
-    // the manual downbeat, the one it calls non-negotiable: "the best online downbeat
-    // tracker in the world scores 56% F1, and being two beats out is worse than one tap".
+    // The manual downbeat, which is non-negotiable: the best online downbeat tracker in the world
+    // scores 56% F1, and being two beats out is worse than one tap.
     //
     // The beats are 23 frames apart here rather than one per frame, because *where inside
     // that gap* the press lands is now the whole question — see TempoTracker::snapDownbeat.
@@ -1116,11 +1114,10 @@ TEST_CASE("the published tempo comes from the beat spacing once locked", "[track
 
     SECTION("a missed beat is thrown out rather than halving the tempo") {
         // Skip one beat: the gap doubles, and a mean over the gaps would drag the tempo
-        // down to 125. **Twenty-eight beats, and it is the count that makes this a test**
-        //: the window holds `refineOverBeats` gaps, 24, so it
-        // takes 25 beats to push out the older run's gaps and the 200-frame one, and past 30
-        // the doubled gap — the sixth — has left it too. It was forty, so the tempo came out
-        // the same with the rejection taken away.
+        // down to 125. **Twenty-eight beats, and it is the count that makes this a test**: the
+        // window holds `refineOverBeats` gaps, 24, so it takes 25 beats to push out the older run's
+        // gaps and the 200-frame one, and past 30 the doubled gap — the sixth — has left it too. It
+        // was forty, so the tempo came out the same with the rejection taken away.
         std::uint64_t at = next + 200;
         for (int beat = 0; beat < 28; ++beat) {
             TrackedFrame frame = frameAt(at, 23, 0.9);
@@ -1194,8 +1191,8 @@ namespace {
 
 /// Locks `tracker` on beats laid at 128 BPM while the cloud reports 23 frames, 130.43 — so what
 /// is published is the refinement, 2.4 BPM from the filter's own estimate. On real music the two
-/// differ by more than the lock's tolerance on most locked frames (an earlier review, H5:
-/// 81 %, 85 %, 37 % and 72 % on four excerpts).
+/// differ by more than the lock's tolerance on most locked frames (81 %, 85 %, 37 % and 72 % on
+/// four excerpts).
 void lockRefinedAt128(TempoTracker& tracker, std::uint64_t& next) {
     const double period = 60.0 / (128.0 * kFramePeriod);
     const std::uint64_t first = next;
@@ -1214,11 +1211,11 @@ void lockRefinedAt128(TempoTracker& tracker, std::uint64_t& next) {
 
 TEST_CASE("a tap that agrees, halve and double move what is showing, not the filter's estimate",
           "[tracking][tempo]") {
-    // A tap, ÷2 and ×2 all rebuilt the published tempo from the
-    // filter's continuous estimate. ÷2 published half of *that*; and a tap whose rebuilt number
-    // was more than the lock's half-BPM tolerance from the refined one — most taps, on real
-    // music — dropped the lock: LOCKED out for the whole of the tapping, Link sent nothing, then
-    // a forced snap at the rough tempo, and the MIDI clock on the rough tempo for nine beats.
+    // A tap, ÷2 and ×2 all rebuilt the published tempo from the filter's continuous estimate. ÷2
+    // published half of *that*; and a tap whose rebuilt number was more than the lock's half-BPM
+    // tolerance from the refined one — most taps, on real music — dropped the lock: LOCKED out for
+    // the whole of the tapping, Link sent nothing, then a forced snap at the rough tempo, and the
+    // MIDI clock on the rough tempo for nine beats.
     const bool fold = GENERATE(false, true);
     INFO((fold ? "fold on" : "fold off"));
     TempoTracker::Options options = testOptions();
@@ -1260,7 +1257,7 @@ TEST_CASE("a tap that agrees, halve and double move what is showing, not the fil
 
 TEST_CASE("a halving is dropped at the next track even when a pin was let go in between",
           "[tracking][tempo]") {
-    // an earlier review, M3: H2's fix, through the pin. Releasing a pin drops the lock and
+    // The halving dropped at the next track, through the pin. Releasing a pin drops the lock and
     // everything learned under it, so the next lock was never "replacing" anything — and only a
     // replacing lock dropped the ÷2. So: ÷2 on a drum-and-bass record, pinned through the mix,
     // released on the house record, and the house record came out at half its tempo with its
@@ -1309,11 +1306,11 @@ TEST_CASE("a halving is dropped at the next track even when a pin was let go in 
 
 TEST_CASE("a manual halving publishes the bar's downbeat, not whichever beat came next",
           "[tracking][tempo]") {
-    // After a divide, the first beat the filter called took the
-    // published grid, whichever beat of the bar it was — and the evidence never moved it, because
-    // the two halves of a bar score within a few per cent of each other. About half the time the
-    // published beats were 2 and 4: the lights on the backbeat, bar rules on beat 2. Pressed here
-    // with the second beat of a bar the next one due, which is the unlucky half.
+    // After a divide, the first beat the filter called took the published grid, whichever beat of
+    // the bar it was — and the evidence never moved it, because the two halves of a bar score
+    // within a few per cent of each other. About half the time the published beats were 2 and 4:
+    // the lights on the backbeat, bar rules on beat 2. Pressed here with the second beat of a bar
+    // the next one due, which is the unlucky half.
     TempoTracker::Options options = testOptions();
     options.octaveFold = false;
     options.lockAfter = 5;
@@ -1374,9 +1371,9 @@ TEST_CASE("a manual halving publishes the bar's downbeat, not whichever beat cam
 }
 
 TEST_CASE("the manual octave shift stops at two octaves either way", "[tracking][tempo]") {
-    // an earlier review: ÷2 and ×2 were unbounded, and so was the shift a tap turned into with the
-    // fold off, so a few presses sent Link and the MIDI clock a tempo of eight BPM or a
-    // thousand. Past two octaves it is not an octave preference but a tempo nothing plays.
+    // ÷2 and ×2 were unbounded, and so was the shift a tap turned into with the fold off, so a few
+    // presses sent Link and the MIDI clock a tempo of eight BPM or a thousand. Past two octaves it
+    // is not an octave preference but a tempo nothing plays.
     TempoTracker::Options options = testOptions();
     options.lockAfter = 5;
     options.confidenceSmoothing = 2.0;
@@ -1412,10 +1409,10 @@ TEST_CASE("the manual octave shift stops at two octaves either way", "[tracking]
 
 TEST_CASE("a halving is dropped at the next track unless the operator asked to keep it",
           "[tracking][tempo]") {
-    // an earlier review, and the operator's call of 2026-09-23: a set is one record after another,
-    // and a ÷2 that suited a drum-and-bass record turned the house record after it into half
-    // time with the beats divided, until somebody noticed. Dropped at the next track by
-    // default; kept when the operator ticks "keep for the next track".
+    // The operator's call of 2026-09-23: a set is one record after another, and a ÷2 that suited a
+    // drum-and-bass record turned the house record after it into half time with the beats divided,
+    // until somebody noticed. Dropped at the next track by default; kept when the operator ticks
+    // "keep for the next track".
     TempoTracker::Options options = testOptions();
     options.octaveFold = false; // as a fresh install ships
     options.lockAfter = 5;
@@ -1482,7 +1479,7 @@ TEST_CASE("a halving is dropped at the next track unless the operator asked to k
 
 TEST_CASE("a tapped tempo moves the fold window onto the octave the operator meant",
           "[tracking][tempo]") {
-    // The failure the design deviation 4 measured: under a 70-140 window a Quickstep at 204 BPM
+    // The octave fold's measured failure: under a 70-140 window a Quickstep at 204 BPM
     // is folded to 102 and the operator has no way to say otherwise. Quickstep's
     // octave-tolerant tempo accuracy on Ballroom is 1.000 and its exact accuracy 0.000
     // for exactly this reason. Tapping it is the way out.
@@ -1506,8 +1503,8 @@ TEST_CASE("a tapped tempo moves the fold window onto the octave the operator mea
     CHECK(tracker.options().maxBpm == Approx(bpmOf(14) * std::sqrt(2.0)));
     CHECK(tracker.options().octaveFold);
     // The tap named another octave, and the published tempo moved onto it — **keeping the
-    // lock**, as ÷2 and ×2 do. It used to be given up and hunted
-    // again, which cost Link every beat of the hunt and then a forced snap.
+    // lock**, as ÷2 and ×2 do. It used to be given up and hunted again, which cost Link every beat
+    // of the hunt and then a forced snap.
     CHECK(tracker.state().locked);
     settle(tracker, index, 14, 0.9, 10);
     CHECK(tracker.state().locked);
@@ -1598,7 +1595,7 @@ TEST_CASE("changing the fold window only drops the lock when it has to", "[track
     // fence sets `foldHysteresis` to 0, and the section below is what that does.
     CHECK(tracker.state().bpm == Approx(bpmOf(23)));
     // And so the lock stays. This used to drop it while publishing the same tempo — a
-    // re-lock for nothing, which is an earlier review.
+    // re-lock for nothing.
     CHECK(tracker.state().locked);
 
     options.maxBpm = 100.0; // and now it is out of reach of the hysteresis too
@@ -1622,10 +1619,10 @@ TEST_CASE("changing the fold window only drops the lock when it has to", "[track
 
 TEST_CASE("a settings change that leaves the window alone never costs the lock",
           "[tracking][tempo]") {
-    // an earlier review. Every `setOptions` tested the locked tempo against the window, so with
-    // ÷2 pressed — 65 BPM under a 70-140 window, exactly where the operator put it — moving
-    // the latency slider dropped the lock and the hunt started again. The same for a tempo
-    // the hysteresis holds just past the window's edge.
+    // Every `setOptions` tested the locked tempo against the window, so with ÷2 pressed — 65 BPM
+    // under a 70-140 window, exactly where the operator put it — moving the latency slider dropped
+    // the lock and the hunt started again. The same for a tempo the hysteresis holds just past the
+    // window's edge.
     TempoTracker::Options options = testOptions();
     options.minBpm = 70.0;
     options.maxBpm = 140.0;
@@ -1668,8 +1665,8 @@ TEST_CASE("a settings change that leaves the window alone never costs the lock",
 
 TEST_CASE("a tempo the hysteresis holds past the window's edge survives a settings change",
           "[tracking][tempo]") {
-    // The other half of M3. A track folded down an octave that then drifts to just past the
-    // window's top — 150 under 70-140 — stays in the folded octave, because the hysteresis
+    // The other half of the test above. A track folded down an octave that then drifts to just past
+    // the window's top — 150 under 70-140 — stays in the folded octave, because the hysteresis
     // remembers the octave in force. A settings change that forgot that octave would flip the
     // published tempo up to 150 and drop the lock, on a nudge of the latency slider.
     TempoTracker::Options options = testOptions();
@@ -1697,10 +1694,10 @@ TEST_CASE("a tempo the hysteresis holds past the window's edge survives a settin
 
 TEST_CASE("with the fold in the decoder a tempo outside the window keeps its lock through an edit",
           "[tracking][tempo]") {
-    // an earlier review, L40: M3 on the default decoder. With the fold in the decoder
-    // nothing chooses an octave here, so the octave "before" an edit read as 0, and a tempo the
-    // beats or a hold kept outside the window was unlocked by any edit of the window at all —
-    // while the tempo published, which the tracker does not fold, did not change.
+    // The lock lost to a settings change, as in the tests above, on the default decoder. With the
+    // fold in the decoder nothing chooses an octave here, so the octave "before" an edit read as 0,
+    // and a tempo the beats or a hold kept outside the window was unlocked by any edit of the
+    // window at all — while the tempo published, which the tracker does not fold, did not change.
     TempoTracker::Options options = testOptions();
     options.minBpm = 70.0;
     options.maxBpm = 140.0;

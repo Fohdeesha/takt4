@@ -20,19 +20,19 @@
 
 namespace takt4::control {
 
-/// the inbound OSC: "so the app is operable from a Stream Deck or Bitfocus
-/// Companion without touching the laptop".
+/// Inbound OSC, so the app is operable from a Stream Deck or Bitfocus Companion without
+/// touching the laptop.
 ///
 /// A thread with a listening socket, an address table, and `engine::BeatSource::post` at the
 /// end of it. It reaches the beats exactly the way the window's buttons and the console's
 /// keys do, and for the same reason: many producers, one consumer, applied between frames.
 ///
 /// **What it does not carry yet**, and why: `/ctl/preset <name|index>` waits for presets to
-/// be files. the portable layer has a shape (`settings::Preset`) but nothing names or
+/// be files. The portable preset layer has a shape (`settings::Preset`) but nothing names or
 /// stores one yet, so a stub would be inventing a meaning for it.
 ///
 /// `/ctl/panic` and `/ctl/rule/<id>/enable` reach the *rules* rather than the tracker, which
-/// live behind `output::OutputRunner` on the own thread — so they need a `RuleControl` as
+/// live behind `output::OutputRunner` on the output thread — so they need a `RuleControl` as
 /// well as a beat source, and are refused where nothing supplies one.
 ///
 /// `/ctl/lock <0|1>` **pins** the lock rather than setting it, because a `setLocked(true)`
@@ -45,7 +45,7 @@ public:
         /// open on somebody's behalf.
         bool enabled = false;
         std::uint16_t port = 7001;
-        /// The namespace the design addresses hang off: `<prefix>/ctl/tap` and the rest.
+        /// The namespace the control addresses hang off: `<prefix>/ctl/tap` and the rest.
         std::string prefix = "/takt4";
         /// Loopback only unless asked otherwise. OSC has no authentication and this does
         /// not invent any, so opening the socket to the network is the operator's call —
@@ -55,7 +55,7 @@ public:
 
     /// The beat source must outlive this. Nothing listens until `start()`.
     ///
-    /// `rules` is where the `panic` and `rule/<id>/enable` go — `output::OutputRunner` in
+    /// `rules` is where `panic` and `rule/<id>/enable` go — `output::OutputRunner` in
     /// an app, null where there is none, in which case those two addresses are answered
     /// "not understood" rather than accepted and dropped. It must outlive this where it is
     /// not null; `setRuleControl` exists because an owner usually builds the runner second.
@@ -94,7 +94,7 @@ public:
 
     /// Messages that matched an address and were acted on.
     std::uint64_t handled() const noexcept { return handled_.load(std::memory_order_relaxed); }
-    /// Datagrams that were not the design messages, or were addressed to nothing this knows.
+    /// Datagrams that were not control messages, or were addressed to nothing this knows.
     /// Worth showing: a control surface pointed at the wrong prefix looks exactly like a
     /// broken one until somebody can see that the packets are arriving.
     std::uint64_t ignored() const noexcept { return ignored_.load(std::memory_order_relaxed); }

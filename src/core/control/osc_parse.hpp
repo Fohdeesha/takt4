@@ -9,7 +9,7 @@
 
 namespace takt4::control {
 
-/// the half of OSC: reading it.
+/// The control input's half of OSC: reading it.
 ///
 /// `output::OscMessage` builds messages and this reads them, and they deliberately share
 /// no code — building is "append and pad", reading is "check everything the sender might

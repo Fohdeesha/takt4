@@ -3,8 +3,8 @@
 
 takt4 is GPLv3 (LICENSE). What is compiled into takt4.exe and takt4-cli.exe beside it keeps
 its own terms, and most of those — BSD, MIT, Apache, MPL, the Unicode licence, zlib's — ask
-for their notice to go wherever the binary goes. So this
-collects every one of them, from where each already is:
+for their notice to go wherever the binary goes. So this collects every one of them, from
+where each already is:
 
 - the C and C++ libraries takt4 builds: their licence files in third_party/ and in the build
   tree's FetchContent checkouts;
@@ -118,7 +118,7 @@ def components(build):
                   [skia / "wuffs-LICENSE.txt"]),
         component("zlib, in Skia", "https://zlib.net", "Zlib", "", [skia / "zlib-LICENSE.txt"]),
         # Every Rust static library carries the parts of std it uses, and Slint is one. It was
-        # missing from this list until an earlier review.
+        # missing from this list until 2026-09-26.
         component(f"The Rust standard library {rust_version()}", "https://www.rust-lang.org",
                   "MIT OR Apache-2.0", "compiled into Slint",
                   [LICENSES / "rust/LICENSE-MIT.txt", LICENSES / "rust/LICENSE-APACHE.txt"]),

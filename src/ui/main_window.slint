@@ -1,12 +1,10 @@
-// The main window — the design, in the Weltformat-dark look of the design (2026-09-29).
+// The main window, in the Weltformat-dark look (2026-09-29).
 //
 // Top to bottom, each section a flat sheet on the page: what is being listened to; the tempo,
 // with its confidence, lock and bar; the activation trace and the input meter; the controls an
 // operator corrects the tracker with; the inputs that drive takt4 from outside, and the outputs
 // it drives — both of which fold away — and, pinned below everything that scrolls, the triggers
-// row with PANIC and the status bar. Every size and colour is the approved mockup's
-// (`the approved design`), measured off its renders; the controls themselves are
-// weltformat.slint's.
+// row with PANIC and the status bar. The controls themselves are weltformat.slint's.
 //
 // Every control here *sends* through engine::BeatEngine::post(), and none of them talks
 // to the tracker directly. The controller behind this window is the only thing that
@@ -15,14 +13,13 @@
 // and shows what the controller then holds (see weltformat.slint).
 //
 // Nothing in this file assumes a meter of four. `beats-per-bar` comes from the decoder's
-// bar position — the forward filter's, by default — and the bar indicator is drawn from it,
-// as the design requires.
+// bar position — the forward filter's, by default — and the bar indicator is drawn from it.
 
 import { Palette } from "std-widgets.slint";
 import { FocusSink } from "theme.slint";
 import { Btn, Count, Entry, Keycap, Meter, Pick, Reading, Scroller, SectionHead, SpanTrack, Tick, Track, Wf } from "weltformat.slint";
 
-// the rule editor is a window of its own (rules_window.slint), re-exported through here
+// The rule editor is a window of its own (rules_window.slint), re-exported through here
 // so the Slint compiler produces one generated header for both. See src/ui/CMakeLists.txt.
 export { RulesWindow, RuleRow, SlotRow } from "rules_window.slint";
 export { LaserRow } from "liberation_sheet.slint";
@@ -46,7 +43,7 @@ export struct TracePoint {
   coasted: bool,
 }
 
-/// One of the simultaneous targets, as the row that edits it holds it.
+/// One of the simultaneous output targets, as the row that edits it holds it.
 ///
 /// **A row each, and the destination asked for as the destination is shaped.** A target is one of
 /// several kinds and each kind has its own question: a host and a port for OSC and Art-Net, a list
@@ -74,7 +71,7 @@ export struct OutputRow {
   /// more; kept because it is still the one string that says the whole destination, which is
   /// what a settings file holds and what a pasted rig arrives as.
   address: string,
-  /// the per-target enabled state. Off sends nothing and keeps the address.
+  /// The per-target enabled state. Off sends nothing and keeps the address.
   enabled: bool,
   /// OSC: whether takt4's own messages go here too — `output::OutputTarget::sendsNamespace`, off
   /// until asked for. Ticked in the outputs heading's "/takt4 global messages to" list, not on the
@@ -340,8 +337,8 @@ export component MainWindow inherits Window {
   // times the title bar's 16 and twice the taskbar's 32, which the system scales it down to.
   icon: @image-url("../../assets/icon/takt4-64.png");
   title: root.version == "" ? "takt4" : "takt4 " + root.version;
-  // 800 wide, and no narrower: every row in the outputs table is laid out for it,
-  // and every box and dropdown in it reads whole at it. `kMainWindowWidth` opens it there.
+  // 800 wide, and no narrower: every row in the outputs table is laid out for it, and every box
+  // and dropdown in it reads whole at it. `kMainWindowWidth` opens it there.
   preferred-width: 800px;
   preferred-height: 934px;
   min-width: 800px;
@@ -375,9 +372,9 @@ export component MainWindow inherits Window {
   in-out property <bool> running;
   /// A RESCAN is going on: the button greyed until the drivers have answered.
   in property <bool> rescanning;
-  /// The input has stopped delivering audio, or is being reopened after it did — an earlier review
-  /// C4. While this is true the readouts are the last ones before the audio stopped, and the
-  /// lock readout says "no audio" rather than "locked" at a tempo nothing is producing any more.
+  /// The input has stopped delivering audio, or is being reopened after it did. While this is
+  /// true the readouts are the last ones before the audio stopped, and the lock readout says
+  /// "no audio" rather than "locked" at a tempo nothing is producing any more.
   in-out property <bool> input-lost;
   /// The input is delivering audio, and the audio has been silent for a few seconds — a deck
   /// that stopped, not a breakdown (`TempoState::noSignal`). The lock readout says "no signal",
@@ -509,7 +506,7 @@ export component MainWindow inherits Window {
   /// beatsBpm`. Zero until there are eight gaps to measure.
   in-out property <float> beats-bpm;
 
-  // --- the octave fold, made visible (the design deviation 4) and settable -------------
+  // --- the octave fold, made visible and settable --------------------------------
   in-out property <bool> fold-on;
   in-out property <float> fold-min;
   in-out property <float> fold-max;
@@ -521,8 +518,8 @@ export component MainWindow inherits Window {
   /// from 214 — beats still at 214" of it would be wrong twice.
   in-out property <float> called-bpm;
 
-  // the latency offset: "one slider in milliseconds, applied to beat event
-  // timestamps so events fire early enough". Negative is the useful direction.
+  // The latency offset: one slider in milliseconds, applied to beat event timestamps so
+  // events fire early enough. Negative is the useful direction.
   in-out property <float> latency-ms;
 
   /// Whether a ÷2 or ×2 carries on into the next track — `TempoTracker::Options::
@@ -559,7 +556,7 @@ export component MainWindow inherits Window {
   in-out property <float> input-peak;
   in-out property <string> input-reading;
 
-  // --- the outputs --------------------------------------------------------------
+  // --- the outputs ---------------------------------------------------------------
   // What is being sent, and what it is being sent to. Each row's tick box is what the
   // operator asked for; `link-peers` and `beats-sent` are what actually happened, which is
   // the difference between a tick box and a working rig.
@@ -569,7 +566,7 @@ export component MainWindow inherits Window {
   in-out property <[LinkPeer]> link-peer-list;
   callback link-peers-toggled();
 
-  /// the targets, one row each, Link's first.
+  /// The output targets, one row each, Link's first.
   in-out property <[OutputRow]> outputs-list;
   /// The prefix takt4's own OSC messages are sent under — the running one, which is what the
   /// outputs heading's "/takt4 global messages to" names.
@@ -593,11 +590,11 @@ export component MainWindow inherits Window {
   in-out property <[string]> output-devices;
   in-out property <int> beats-sent;
   /// What has gone wrong on the way out that nothing else on screen says — "3 rule messages
-  /// reached no output", "12 MIDI clock ticks skipped" — or empty. Shown
-  /// under the outputs heading, for the reason `input-trouble` is under the meter.
+  /// reached no output", "12 MIDI clock ticks skipped" — or empty. Shown under the outputs
+  /// heading, for the reason `input-trouble` is under the meter.
   in-out property <string> output-trouble;
 
-  // --- the control input --------------------------------------------------------
+  // --- the control input ---------------------------------------------------------
   // What drives the app from outside it. The port is a fact about this desk and lives in
   // machine settings; the bindings are *learned* rather than typed, because nobody knows
   // what their controller's pad 3 sends and a box asking for a note number is a worse
@@ -629,8 +626,8 @@ export component MainWindow inherits Window {
   callback learn-clicked();
   callback forget-clicked();
 
-  /// the other surface: a listening UDP socket, so a Stream Deck or Bitfocus Companion
-  /// can drive this without touching the laptop. Off until asked — OSC carries no
+  /// The control input's other surface: a listening UDP socket, so a Stream Deck or Bitfocus
+  /// Companion can drive this without touching the laptop. Off until asked — OSC carries no
   /// authentication and takt4 invents none, so opening the socket, and opening it past
   /// loopback, are two separate decisions and both are the operator's.
   in-out property <bool> osc-control-on;
@@ -683,7 +680,7 @@ export component MainWindow inherits Window {
   // Each keystroke, held by the window until something finishes the edit, as the port's are.
   callback osc-remote-from-typed(string);
 
-  /// the TRIGGERS row. The editor is a window of its own (rules_window.slint), so what
+  /// The TRIGGERS row. The editor is a window of its own (rules_window.slint), so what
   /// belongs here is only what an operator needs while watching the tracker: how many rules
   /// are armed, what just fired, and PANIC — which has to be reachable without opening
   /// anything, because it is pressed in a hurry.
@@ -728,14 +725,14 @@ export component MainWindow inherits Window {
   callback input-mono-toggled(bool);
   callback toggle-run();
   /// START or STOP has been pressed and is being carried out, or has only just been — an ASIO
-  /// driver can take seconds to open, and the window cannot draw while it does (an earlier review
-  /// M23). The button takes no press until it is over.
+  /// driver can take seconds to open, and the window cannot draw while it does. The button
+  /// takes no press until it is over.
   in-out property <bool> run-busy;
   /// What the button says while the press is being carried out — "OPENING…", "STOPPING…" —
   /// or empty once it has been.
   in-out property <string> run-busy-text;
 
-  // the manual half. Each one is a `post` on the engine's control queue; none of
+  // The manual controls. Each one is a `post` on the engine's control queue; none of
   // them touches the tracker from this thread.
   callback halve();
   callback redouble();
@@ -798,7 +795,7 @@ export component MainWindow inherits Window {
   /// `panic-clicked`, which only ever engages.
   callback panic-released();
 
-  // --- folding --------------------------------------------------------
+  // --- folding -------------------------------------------------------------------
   /// Inputs and Outputs fold down to their heading, as the settings left them (a fresh install
   /// folds Inputs: `MachineSettings::inputsFolded`). A fold takes the section's
   /// height off the *window* and the trace keeps its height, so the C++ side resizes the window
@@ -827,8 +824,7 @@ export component MainWindow inherits Window {
   // The keyboard's resting place, so a shortcut works the moment the window opens.
   forward-focus: keys;
 
-  // **The keyboard shortcuts** — an earlier review. the design calls PANIC by keyboard
-  // "non-negotiable for live use".
+  // **The keyboard shortcuts** — PANIC by keyboard is non-negotiable for live use.
   //
   // A key reaches this by bubbling up from whatever holds the focus, which is why everything
   // in the window is inside it and why nothing here ever leaves the focus nowhere (see
@@ -867,8 +863,8 @@ export component MainWindow inherits Window {
         }
         return accept;
       }
-      // The "manual hotkey" trigger's hotkey. Whether or not the tracker is
-      // running: the outputs are, and a manual cue is the operator's own.
+      // The "manual hotkey" trigger's hotkey. Whether or not the tracker is running: the
+      // outputs are, and a manual cue is the operator's own.
       if (event.text == "m" || event.text == "M") {
         if (!event.repeat) {
           root.manual-fired();
@@ -894,8 +890,8 @@ export component MainWindow inherits Window {
       spacing: 0;
 
       // Everything above the triggers row scrolls. The window opens at 934 px with a scroll bar
-      // rather than sized to its content; when it is taller than the content, the
-      // trace takes what is spare.
+      // rather than sized to its content; when it is taller than the content, the trace takes
+      // what is spare.
       body := Scroller {
         vertical-stretch: 1;
 
@@ -1041,8 +1037,8 @@ export component MainWindow inherits Window {
               }
 
               // RESCAN could only ever be pressed while stopped; while running, the note in its
-              // place says why everything to its left is locked. One width for
-              // both, so STOP does not move when it is pressed.
+              // place says why everything to its left is locked. One width for both, so STOP
+              // does not move when it is pressed.
               Rectangle {
                 horizontal-stretch: 0;
                 min-width: max(note-width.preferred-width + 8px, rescan-width.preferred-width + 36px);
@@ -1247,9 +1243,9 @@ export component MainWindow inherits Window {
             }
 
             // **Unless the fold moved it**, which is then the thing to know about the number, and
-            // takes that line (the banner has no room for a second one): the design deviation 4 — the fold
-            // window is measured to help inside it and to fail hard outside it, so an operator has
-            // to be able to see it act. Only when it actually moved the number, and the test is the
+            // takes that line (the banner has no room for a second one): the fold window is
+            // measured to help inside it and to fail hard outside it, so an operator has to be
+            // able to see it act. Only when it actually moved the number, and the test is the
             // ratio, not the difference: a fold is a halving or a doubling, and the tenth of a BPM
             // between the filter's interval and the refined tempo is not one.
             //
@@ -1343,7 +1339,7 @@ export component MainWindow inherits Window {
               height: 9px;
               value: root.confidence;
               track: Wf.tempo-meter-track;
-              // the confidence gate: below it the tempo is the last good one being held,
+              // The confidence gate: below it the tempo is the last good one being held,
               // not a fresh reading, and the colour says so.
               fill: root.holding ? Wf.holding : Wf.tempo-ink;
             }
@@ -1359,8 +1355,8 @@ export component MainWindow inherits Window {
             }
 
             // The bar indicator: however many beats the tracker reports — three, four, five,
-            // seven. the design: nothing here hardcodes four. The current beat a red disc, the
-            // downbeat's circle off-white.
+            // seven. Nothing here hardcodes four. The current beat a red disc, the downbeat's
+            // circle off-white.
             for beat in root.beats-per-bar: Rectangle {
               x: tempo-sheet.right-x + beat * tempo-sheet.bar-pitch;
               y: 62px + (24px - tempo-sheet.bar-disc) / 2;
@@ -1461,7 +1457,7 @@ export component MainWindow inherits Window {
               // One column per 50 Hz frame, oldest at the left: P(beat) from the bottom, lit
               // off-white on the frames the filter called a beat — the difference between the
               // network seeing something and the filter agreeing — and P(downbeat) as a red mark
-              // at its own height, the weakest signal in the chain (56.51 F1, the design).
+              // at its own height, the weakest signal in the chain (56.51 F1 on GTZAN).
               plot := Rectangle {
                 min-height: 72px;
                 vertical-stretch: 1;
@@ -1675,7 +1671,7 @@ export component MainWindow inherits Window {
                     root.tap();
                   }
                 }
-                // the lock, pinned rather than set: the tracker goes on tracking and simply
+                // The lock, pinned rather than set: the tracker goes on tracking and simply
                 // is not allowed to let go of the tempo. Lit while held.
                 Btn {
                   text: "lock";
@@ -1685,9 +1681,9 @@ export component MainWindow inherits Window {
                     root.pin-changed(!root.pinned);
                   }
                 }
-                // the design: "Big keyboard / MIDI / OSC downbeat now ... Non-negotiable". The one to
-                // reach for, so filled; lit green from the press until the next beat, which is
-                // when the correction reaches the outputs.
+                // Snapping the downbeat — here, by keyboard, MIDI and OSC — is non-negotiable. The
+                // one to reach for, so filled; lit green from the press until the next beat, which
+                // is when the correction reaches the outputs.
                 Btn {
                   text: "downbeat";
                   hint: "D";
@@ -1702,8 +1698,8 @@ export component MainWindow inherits Window {
               }
 
               // What ÷2 and ×2 do when the record changes. A setting, so it is live while
-              // stopped; an earlier review, and the operator's call of 2026-09-23 that the default
-              // is to drop a shift at the next track.
+              // stopped; the default, the operator's call of 2026-09-23, is to drop a shift at
+              // the next track.
               //
               // **Following, there is no next track to keep them for**, and TAP and LOCK are off:
               // the tempo is the source's. The cell says so, as the reason the two are grey.
@@ -2109,9 +2105,9 @@ export component MainWindow inherits Window {
                   }
                 }
 
-                // MIDI: each control with its word beside it: once
-                // a port is picked the first dropdown shows a device's name and the second an
-                // action's, and nothing said which was which.
+                // MIDI: each control with its word beside it: once a port is picked the first
+                // dropdown shows a device's name and the second an action's, and nothing said
+                // which was which.
                 HorizontalLayout {
                   height: 34px;
                   spacing: 10px;
@@ -2499,7 +2495,7 @@ export component MainWindow inherits Window {
                     height: target.kind-index == 4 ? 28px : 34px;
                     spacing: 6px;
 
-                    // the per-target switch: off keeps the row and its address, because an
+                    // The per-target switch: off keeps the row and its address, because an
                     // operator killing one feed mid-set wants it back afterwards.
                     HorizontalLayout {
                       width: 30px;
@@ -2654,7 +2650,7 @@ export component MainWindow inherits Window {
                     }
                     if target.kind-index == 4: Rectangle { width: 58px; }
 
-                    // the latency offset, per target: the thing on the end of each cable has its
+                    // The latency offset, per target: the thing on the end of each cable has its
                     // own lag. The slider, and what it is set to beside it — clicked, it takes a
                     // typed number, because a slider is how an offset is found by ear and a number
                     // is how one is copied from a spec sheet.
@@ -2736,9 +2732,9 @@ export component MainWindow inherits Window {
                   // an address, a tempo, whether it is in this session, and whether it is playing
                   // (only a peer that shares start and stop says so). From the table's left edge,
                   // each column only as wide as what is in it and 28 px apart, so the list ends
-                  // before the delay sliders begin — a grid, which sizes a column to
-                  // its widest cell, beside a spacer that takes the rest of the row. A peer with
-                  // several addresses has them elided at 180 px rather than pushing the list on.
+                  // before the delay sliders begin — a grid, which sizes a column to its widest
+                  // cell, beside a spacer that takes the rest of the row. A peer with several
+                  // addresses has them elided at 180 px rather than pushing the list on.
                   if target.kind-index == 4 && root.link-peers-shown: HorizontalLayout {
                     padding-top: 10px;
                     padding-bottom: 8px;
@@ -2819,7 +2815,7 @@ export component MainWindow inherits Window {
       }
 
       // --- pinned: the triggers row and the status bar --------------------------------
-      // PANIC is pressed in a hurry — the design keeps it out of the editor for that reason, and
+      // PANIC is pressed in a hurry — it is kept out of the editor for that reason, and
       // having to find it by scrolling would give the reason back — and the status line is
       // where an error and the build number are said.
       pinned := VerticalLayout {
@@ -2930,7 +2926,7 @@ export component MainWindow inherits Window {
               }
 
               // What just went out, so the main window says whether the rig is being driven
-              // without the editor being open. the last-fired line, one rig-wide copy — named,
+              // without the editor being open. The last-fired line, one rig-wide copy — named,
               // and shown only where it can be read: squeezed it was "/co…", and with PANIC
               // engaged a bare "…".
               HorizontalLayout {
@@ -2960,9 +2956,9 @@ export component MainWindow inherits Window {
                 }
               }
 
-              // **PANIC only ever engages; RELEASE is its own button** — an earlier review. It
-              // appears to the *left*, so PANIC does not move when it does: the second click of
-              // a double-click lands on PANIC again, which is already engaged, and does nothing.
+              // **PANIC only ever engages; RELEASE is its own button.** It appears to the *left*,
+              // so PANIC does not move when it does: the second click of a double-click lands on
+              // PANIC again, which is already engaged, and does nothing.
               //
               // **Both keep their words**, whatever else on the row has to give way for them — the
               // counts and the last message elide first. Engaged, PANIC says "panicked" and grows to

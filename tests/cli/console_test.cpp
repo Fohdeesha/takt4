@@ -15,7 +15,7 @@ void previousHandler(int) {
 } // namespace
 
 TEST_CASE("a Ctrl+C while the console is tapping along is a flag, not the end", "[cli]") {
-    // an earlier review Low items: `annotate` had no handler, so a Ctrl+C in the middle of tapping
+    // `annotate` had no handler, so a Ctrl+C in the middle of tapping
     // killed it and every tap with it. Raised here as the console raises it, with a handler of
     // the caller's own already in place: the process goes on, the flag is up, and the caller's
     // handler is back once the session is over.

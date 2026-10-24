@@ -66,7 +66,7 @@ std::unique_ptr<BeatEngine> makeEngine(BeatEngine::Options options = {}) {
     return std::make_unique<BeatEngine>(weights(), stateSpace(), options);
 }
 
-/// An engine on the particle filter, for the tests that are about it: the Phase 4 parity
+/// An engine on the particle filter, for the tests that are about it: the parity
 /// with `tools/pf_reference.py`, its meter, its frame count. The default engine is the
 /// forward filter since 2026-09-08 (`tracking::Decoder`), and the rest run on that.
 std::unique_ptr<BeatEngine> makeParticleEngine(BeatEngine::Options options = {}) {
@@ -138,10 +138,9 @@ TEST_CASE("a tempo hold is held when posted after START, and let go of by one it
 }
 
 TEST_CASE("an engine takes its first command without touching the heap", "[engine][rt]") {
-    // an earlier review stale-comment list. The engine says it allocates on
-    // construction and on reset and nothing after, and the first drain of its command queue
-    // did: `ControlQueue::drain` swaps the engine's buffer in and sizes what it gets back, and a
-    // buffer that had never held anything had no room.
+    // The engine says it allocates on construction and on reset and nothing after, and the first
+    // drain of its command queue did: `ControlQueue::drain` swaps the engine's buffer in and sizes
+    // what it gets back, and a buffer that had never held anything had no room.
     const std::unique_ptr<BeatEngine> engine = makeEngine();
     REQUIRE(engine->post(Command::halve()));
     const bool abortWas = takt4::rt::abortOnViolation();
@@ -222,8 +221,8 @@ TEST_CASE("the meter is steady enough to read", "[engine][meter]") {
 }
 
 TEST_CASE("a manual downbeat moves the bar under the real filter", "[engine]") {
-    // the non-negotiable control, through the whole chain rather than through synthetic
-    // frames: real activations, the real particle filter, the real meter it reports.
+    // The manual downbeat, a non-negotiable control, through the whole chain rather than through
+    // synthetic frames: real activations, the real particle filter, the real meter it reports.
     //
     // tests/tracking covers the bar arithmetic by handing `TempoTracker` frames that emit a
     // beat every time at a fixed 4/4. That is the right way to test the arithmetic and the
@@ -464,7 +463,7 @@ TEST_CASE("the threads give what stepping by hand gives", "[engine]") {
     }
     CHECK(beats.size() == beatFrames);
 
-    // the reason for the thread: one frame is 20 ms of audio and the filter has to be
+    // The reason for the inference thread: one frame is 20 ms of audio and the filter has to be
     // well inside that. The mean is the claim, as in the model worker's own test — a
     // shared runner will preempt one frame no matter how fast the code is.
     INFO("mean frame " << threaded->meanFrameMicros() << " us, worst "
@@ -539,10 +538,10 @@ TEST_CASE("a consumer that never drains loses frames instead of blocking", "[eng
 }
 
 TEST_CASE("an output thread that never drains loses beats instead of blocking", "[engine]") {
-    // The beat ring's own overflow, which nothing drove: the
-    // frame ring above fills long before this one, so a test of that one says nothing here.
-    // Frames are drained as they come — only the beats are left — and the excerpt is played
-    // over until more beats have been called than the ring holds.
+    // The beat ring's own overflow, which nothing drove: the frame ring above fills long before
+    // this one, so a test of that one says nothing here. Frames are drained as they come — only the
+    // beats are left — and the excerpt is played over until more beats have been called than the
+    // ring holds.
     const std::vector<float> signal = excerpt("winter-now.wav");
     const std::size_t hops = signal.size() / kHopSize;
     const std::unique_ptr<BeatEngine> engine = makeParticleEngine();
@@ -602,7 +601,7 @@ TEST_CASE("a command posted while stopped applies to the run that follows", "[en
 // argument, and a non-ASCII name comes through the console codepage mangled, so nothing
 // matches and the test fails without ever running. "÷2" cost exactly that.
 TEST_CASE("halving and doubling reach a tracking engine without dropping the lock", "[engine]") {
-    // the octave buttons. The point of the queue is that this costs nothing: the
+    // The octave buttons. The point of the queue is that this costs nothing: the
     // filter is not reseeded, the lock is not given up, and no audio is missed.
     const std::vector<float> signal = excerpt("synthetic.wav");
     const std::size_t hops = signal.size() / kHopSize;
@@ -623,7 +622,7 @@ TEST_CASE("halving and doubling reach a tracking engine without dropping the loc
     // command, which is how a button pressed during a silence still does something.
     //
     // **Half of what was showing**, not half of the filter's continuous estimate, which is
-    // what this asserted until an earlier review: 61.2 on this excerpt against 64.15.
+    // what this used to assert: 61.2 on this excerpt against 64.15.
     REQUIRE(engine->post(Command::halve()));
     CHECK(engine->step() == 0);
     CHECK(engine->state().bpm == Approx(shown / 2.0).epsilon(1e-12));
@@ -877,8 +876,8 @@ TEST_CASE("a manual downbeat reaches the tracker and moves the bar", "[engine]")
 
 TEST_CASE("a command crosses from another thread into the inference thread", "[engine]") {
     // The same ÷2, posted from the thread feeding audio while the engine's own threads
-    // are running — which is what a UI button, an inbound OSC message or a
-    // keyboard shortcut actually is.
+    // are running — which is what a UI button, an inbound OSC message or a keyboard
+    // shortcut actually is.
     const std::vector<float> signal = excerpt("synthetic.wav");
     const std::size_t hops = signal.size() / kHopSize;
     const std::unique_ptr<BeatEngine> engine = makeEngine();
@@ -1013,8 +1012,8 @@ TEST_CASE("the forward decoder runs at twice the network's rate and tracks the e
     }
 
     SECTION("pinned while halved holds the filter at its real tempo, not half of it") {
-        // an earlier review: the hold was given the published tempo, so a pin under ÷2 held the
-        // decoder at 64 against a 128 BPM track and the tracker was penalised off the music.
+        // The hold was given the published tempo, so a pin under ÷2 held the decoder at 64 against
+        // a 128 BPM track and the tracker was penalised off the music.
         const auto* forward = dynamic_cast<const takt4::tracking::ForwardFilter*>(&engine->decoder());
         REQUIRE(forward != nullptr);
         REQUIRE(engine->post(Command::halve()));
@@ -1026,8 +1025,8 @@ TEST_CASE("the forward decoder runs at twice the network's rate and tracks the e
     }
 
     SECTION("a stop and a start let go of the hold with the pin") {
-        // The other half of H3. The tracker's reset drops the pin; the decoder's reset keeps a
-        // hold by design. So after a stop and a start the window showed no pin while the
+        // The other way the hold went wrong. The tracker's reset drops the pin; the decoder's reset
+        // keeps a hold by design. So after a stop and a start the window showed no pin while the
         // decoder went on holding the old tempo, and a new track could not be acquired.
         const auto* forward = dynamic_cast<const takt4::tracking::ForwardFilter*>(&engine->decoder());
         REQUIRE(forward != nullptr);
@@ -1044,8 +1043,8 @@ TEST_CASE("the forward decoder runs at twice the network's rate and tracks the e
 TEST_CASE("a pin pressed before the lock holds nothing until the lock arrives",
           "[engine][forward]") {
     // Holding a hunting decoder to whatever it was trying at the moment of the press would be
-    // pinning noise. The pin is kept, and the hold is taken on the frame the
-    // lock is earned — at the tempo that earned it.
+    // pinning noise. The pin is kept, and the hold is taken on the frame the lock is earned — at
+    // the tempo that earned it.
     const std::vector<float> signal = excerpt("synthetic.wav");
     const std::size_t hops = signal.size() / kHopSize;
     const std::unique_ptr<BeatEngine> engine = makeEngine();
@@ -1087,10 +1086,10 @@ TEST_CASE("a pin pressed before the lock holds nothing until the lock arrives",
 
 TEST_CASE("a window moved out from under a pinned lock lets the decoder's hold go",
           "[engine][forward]") {
-    // A fold window moved until it excludes the pinned tempo drops
-    // the lock, as it should — and left the decoder held to the old tempo, so the tracker
-    // re-locked onto it within half a second and the window move did nothing at all. The pin
-    // stays the operator's; the hold goes, and is taken again when a lock is earned.
+    // A fold window moved until it excludes the pinned tempo drops the lock, as it should — and
+    // left the decoder held to the old tempo, so the tracker re-locked onto it within half a second
+    // and the window move did nothing at all. The pin stays the operator's; the hold goes, and is
+    // taken again when a lock is earned.
     const std::vector<float> signal = excerpt("synthetic.wav");
     const std::size_t hops = signal.size() / kHopSize;
     const std::unique_ptr<BeatEngine> engine = makeEngine();
@@ -1164,11 +1163,11 @@ TEST_CASE("the options reach the filter and the tempo machine", "[engine]") {
 
 TEST_CASE("a beat's host time is the beat's own, not the frame it was called on",
           "[engine][forward]") {
-    // an earlier review. The decoder puts a beat a fraction of a frame either side of the frame
-    // that calls it (`TrackedFrame::beatOffsetFrames`) — a frame or more back under the default
-    // emission — and the tracker adds that to the beat's time. The stamp Link and the output
-    // scheduler are given took the frame's instead, so every beat reached them late by an
-    // amount that changed from beat to beat.
+    // The decoder puts a beat a fraction of a frame either side of the frame that calls it
+    // (`TrackedFrame::beatOffsetFrames`) — a frame or more back under the default emission — and
+    // the tracker adds that to the beat's time. The stamp Link and the output scheduler are given
+    // took the frame's instead, so every beat reached them late by an amount that changed from beat
+    // to beat.
     constexpr std::int64_t kOrigin = 3'000'000'000;
     struct RulerClock final : takt4::audio::HostTimeSource {
         std::int64_t hostMicrosForSample(double sampleTime) noexcept override {
@@ -1247,10 +1246,10 @@ std::vector<EngineBeat> trackShipped(BeatEngine& engine, const std::vector<float
 
 TEST_CASE("the configuration that ships tracks real music at the tempo it is played",
           "[engine][shipped]") {
-    // an earlier review, T18: every tracking, engine, output and UI test loaded the generic
-    // weights, and nothing in ctest ran the electronic weights, the forward filter and a fresh
-    // install's settings together — the one configuration anybody uses. A change that moved
-    // beats on real music passed ctest and was left to the manual gates.
+    // Every tracking, engine, output and UI test loaded the generic weights, and nothing in ctest
+    // ran the electronic weights, the forward filter and a fresh install's settings together — the
+    // one configuration anybody uses. A change that moved beats on real music passed ctest and was
+    // left to the manual gates.
     //
     // The reference is Beat This!'s median beat gap over each excerpt's last five seconds
     // (tests/data/tracking/refeval/ref_beatthis, the excerpt's offset from its sidecar); madmom's
@@ -1295,12 +1294,12 @@ TEST_CASE("the configuration that ships tracks real music at the tempo it is pla
 
 TEST_CASE("the configuration that ships calls the beats it called when this was written",
           "[engine][shipped]") {
-    // **A change detector, and labelled as one**. The forward
-    // filter has no independent reference the way the particle filter has pf_reference.py:
-    // tools/refeval/decoders.py would have to learn peak emission, coasting and the meter margin
-    // first. Until then this holds the shipped chain to its own output of 2026-09-26, so a change
-    // that moves beats on real music is at least *seen* in ctest. A deliberate change regenerates
-    // the file: run this with TAKT4_WRITE_GOLDENS=1 and commit what it writes, saying why.
+    // **A change detector, and labelled as one**. The forward filter has no independent reference
+    // the way the particle filter has pf_reference.py: tools/refeval/decoders.py would have to
+    // learn peak emission, coasting and the meter margin first. Until then this holds the shipped
+    // chain to its own output of 2026-09-26, so a change that moves beats on real music is at least
+    // *seen* in ctest. A deliberate change regenerates the file: run this with
+    // TAKT4_WRITE_GOLDENS=1 and commit what it writes, saying why.
     //
     // Loose on purpose, for the compilers CI builds with: each beat within two decoder frames
     // (20 ms) of where it was, the same downbeats, and one beat more or fewer at most.

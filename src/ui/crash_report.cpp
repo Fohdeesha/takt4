@@ -208,8 +208,7 @@ void onTerminate() {
 void onAbort(int) {
     // **First, before anything that could take time.** The runtime puts SIGABRT back to its
     // default before it calls this, so a second `abort()` on another thread while this one is
-    // being reported ended the process there and then — exit code 3, no dump and no message
-    //.
+    // being reported ended the process there and then — exit code 3, no dump and no message.
     (void)std::signal(SIGABRT, onAbort);
     reportHere(CrashReport::kAbortCode);
 }

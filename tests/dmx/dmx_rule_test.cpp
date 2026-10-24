@@ -221,10 +221,9 @@ TEST_CASE("a fade's duration is measured in the tempo that was playing", "[dmx][
 
 TEST_CASE("a rule's numbers past what an effect holds are clamped, not converted blind",
           "[dmx][trigger]") {
-    // an earlier review. The editor refuses nan and inf now, but a settings file edited by hand can
-    // hold anything, and converting a double past a float's range is undefined behaviour: a
-    // fade of 1e300 beats became an infinite one that never moved, and a hue of nan went into
-    // `fromHsv`.
+    // The editor refuses nan and inf now, but a settings file edited by hand can hold anything, and
+    // converting a double past a float's range is undefined behaviour: a fade of 1e300 beats became
+    // an infinite one that never moved, and a hue of nan went into `fromHsv`.
     Transports::Config config;
     config.patch = {rgb("par", 1)};
     Transports transports(config);
@@ -512,9 +511,9 @@ TEST_CASE("a rule's rate multiplies how often it fires", "[trigger]") {
     }
 
     SECTION("a rate that is not a number is refused, and the rule keeps the one it had") {
-        // an earlier review. `/ctl/rule/x/rate nan` is one OSC message, and `std::clamp` hands a
-        // NaN straight back — so the rule's interval became a NaN cast to an integer, which is
-        // undefined, and came out as zero here: a rule counting its beats against nothing.
+        // `/ctl/rule/x/rate nan` is one OSC message, and `std::clamp` hands a NaN straight back —
+        // so the rule's interval became a NaN cast to an integer, which is undefined, and came out
+        // as zero here: a rule counting its beats against nothing.
         CHECK(barsThatFire(4, std::numeric_limits<double>::quiet_NaN()) ==
               std::vector<int>{1, 5, 9});
         Rule::Config config4 = fadeRule("bars", {"par"}, 255, 0.0);
@@ -697,7 +696,7 @@ TEST_CASE("an effect aimed at fixtures that cannot do it is undeliverable, not a
 
 TEST_CASE("a rule mixes a random color within the limits set per component",
           "[dmx][trigger]") {
-    // the generators doing color work — `trigger::ColorMode::Mix`. Asked for on
+    // Generators doing color work — `trigger::ColorMode::Mix`. Asked for on
     // 2026-09-16: "any random combination of rgb, within limits I set for r g and b channels
     // specifically on that trigger". Three generators rather than a "random color" tick box,
     // because a limit is a `Random` over a range and that already exists.

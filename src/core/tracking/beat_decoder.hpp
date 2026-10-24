@@ -9,7 +9,7 @@ namespace takt4::tracking {
 /// Which decoder turns the network's activations into beats. See `BeatDecoder`.
 enum class Decoder : std::uint8_t {
     /// BeatNet+'s two-stage particle filter cascade, ported (`ParticleFilter`). What
-    /// shipped until 2026-09-08, and what the Phase 4 parity gate still holds to upstream.
+    /// shipped until 2026-09-08, and what the parity gate still holds to upstream.
     ParticleFilter,
     /// An exact forward filter over madmom's joint bar-pointer state space
     /// (`ForwardFilter`). **The default** since 2026-09-08, when it met every criterion set

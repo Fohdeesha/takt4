@@ -14,7 +14,8 @@ if(NOT tracked EQUAL 0)
   message(FATAL_ERROR "takt4-cli track exited with ${tracked}")
 endif()
 
-# From inside it, not from this tree — an earlier review, which is why this test exists at all.
+# From inside it, not from this tree — reading them from the tree made the released console
+# fail on every other machine, which is why this test exists at all.
 if(NOT out MATCHES "weights electronic \\(built in\\)")
   message(FATAL_ERROR "not tracked with the weights built into the console")
 endif()

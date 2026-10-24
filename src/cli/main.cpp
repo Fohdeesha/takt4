@@ -1,7 +1,7 @@
-// takt4-cli — the development console (the design Phase 1: list devices, open one
-// channel, print RMS; Phase 2: run the feature front end over a file; since then the
-// tracker, the evaluations and `annotate`). Links takt4_core, and the built-in weights where
-// the build has them; attached to every release beside the app.
+// takt4-cli — the development console (built first to list devices, open one channel and
+// print RMS, then to run the feature front end over a file; since then the tracker, the
+// evaluations and `annotate`). Links takt4_core, and the built-in weights where the build has
+// them; attached to every release beside the app (the operator's call of 2026-09-23).
 
 #include "cli/annotate.hpp"
 #include "cli/args.hpp"
@@ -112,7 +112,7 @@ void printUsage(std::ostream& out) {
         << ") float32 matrix as numpy's .npy.\n"
         << "      --compare G.npy  also print the largest difference to a matrix that\n"
         << "                       tools/make_golden.py computed with madmom; exit 1 if it\n"
-        << "                       exceeds the Phase 2 tolerance\n"
+        << "                       exceeds the feature tests' tolerance\n"
         << "\n"
         << "  takt4-cli beats (IN.wav | --device N (--channel C | --channels A,B))\n"
         << "                  [--weights SET|PATH] [--software] [--rate HZ] [--seconds S]\n"
@@ -456,7 +456,7 @@ int runMeter(const std::vector<std::string_view>& args) {
     return runMeterPicked(session, device, parsed);
 }
 
-// The Phase 2 gate, by hand: the same hop-by-hop path the tests take (pad to whole
+// The feature parity gate, by hand: the same hop-by-hop path the tests take (pad to whole
 // hops, push, flush), written out for numpy, and optionally held against madmom's.
 int runFeatures(const std::vector<std::string_view>& args) {
     std::vector<std::string_view> positional;
@@ -549,7 +549,7 @@ int runFeatures(const std::vector<std::string_view>& args) {
     return worst <= kTolerance ? 0 : 1;
 }
 
-// the design Phase 3: the console prints the three class probabilities live.
+// `beats`: the console prints the three class probabilities live.
 struct BeatsArgs {
     std::optional<std::filesystem::path> file; // offline instead of a device
     MeterArgs stream;
@@ -671,8 +671,8 @@ int runBeatsDevice(const BeatsArgs& parsed, const takt4::model::ModelWeights& we
                               : takt4::audio::ChannelSelection::pair(parsed.stream.pair->first,
                                                                      parsed.stream.pair->second);
 
-    // `beats` is the Phase 3 command and stops at the network's output, so it drives the
-    // activation engine directly rather than through the tracker.
+    // `beats` stops at the network's output, so it drives the activation engine directly
+    // rather than through the tracker.
     auto engine = std::make_unique<takt4::model::ActivationEngine>(weights);
     takt4::audio::InputStreamOptions options;
     options.sampleRate = parsed.stream.rate;
@@ -727,8 +727,7 @@ int runBeatsDevice(const BeatsArgs& parsed, const takt4::model::ModelWeights& we
     return 0;
 }
 
-// the design Phase 4: the console binary tracks tempo, downbeat and meter, and drives
-// Link and OSC.
+// `track`: the console binary tracks tempo, downbeat and meter, and drives Link and OSC.
 struct TrackArgs {
     BeatsArgs beats;
     takt4::tracking::TempoTracker::Options tempo;
@@ -933,7 +932,7 @@ public:
     /// Writes every beat as "<seconds>\t<beat in bar>\t<BPM>". The first two columns are
     /// the format the beat-tracking datasets annotate in, so an estimate and a reference
     /// are the same kind of file and the same reader handles both; the third is what the
-    /// tempo state machine was publishing at that beat, which is the only thing the design's
+    /// tempo state machine was publishing at that beat, which is the only thing the
     /// octave fold can move. A fold cannot change a beat time, so it cannot show up in
     /// beat F-measure — the tempo column is where its effect is visible at all.
     void writeTo(const std::filesystem::path& path) {
@@ -1151,9 +1150,8 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
                    const takt4::tracking::StateSpaceModel& model) {
     // **The application's own chain**: `LiveTracker` for the input and the engine, and
     // `OutputRunner` for what is sent. This used to wire the stream, the engine and the host
-    // clock by hand, and the copy had drifted — it never reset the host-time filter before a
-    // run, which `LiveTracker::start` does — so `track` was not exercising what the window
-    // runs.
+    // clock by hand, and the copy had drifted — it never reset the host-time filter before a run,
+    // which `LiveTracker::start` does — so `track` was not exercising what the window runs.
     takt4::engine::LiveTracker::Options options;
     options.engine = engineOptions(args);
     options.stream.sampleRate = args.beats.stream.rate;
@@ -1182,16 +1180,16 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     takt4::output::OutputRunner runner(*engine, transportConfig(args));
     const takt4::output::Transports& transports = runner.transports();
     // And the input is stopped before the runner goes, however this scope is left. The audio
-    // thread stamps every hop through Link's regression, and Link belongs to the
-    // runner, so a runner destroyed with the stream still open would leave the audio callback
-    // reading a session that has gone. The window does the same in its destructor.
+    // thread stamps every hop through Link's regression, and Link belongs to the runner, so a
+    // runner destroyed with the stream still open would leave the audio callback reading a
+    // session that has gone. The window does the same in its destructor.
     struct StopFirst {
         takt4::engine::LiveTracker& tracker;
         ~StopFirst() { tracker.stop(); }
     } stopFirst{tracker};
-    // the design: the audio thread stamps each hop through Link's regression, so a beat
-    // carries the host time of the audio it was found in rather than of the moment this loop
-    // noticed it. `LiveTracker::start` installs it, and resets its filter, before the stream.
+    // The audio thread stamps each hop through Link's regression, so a beat carries the host
+    // time of the audio it was found in rather than of the moment this loop noticed it.
+    // `LiveTracker::start` installs it, and resets its filter, before the stream.
     tracker.setHostTimeSource(&runner.hostTimeClock());
     tracker.start(device, selection);
     // The tempo hold once the run has started: posted before, it was applied to the run START
@@ -1241,7 +1239,7 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     }
     std::cout << '\n';
 
-    // the manual controls. Settings are changed by reading what the engine has,
+    // The manual controls. Settings are changed by reading what the engine has,
     // editing that, and posting it back — never by editing a copy kept since startup,
     // because a tap moves the octave-fold window and a stale copy would undo it on the
     // next key. A UI does the same thing on its redraw timer.
@@ -1314,7 +1312,7 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
             break;
         }
         case 'p': {
-            // the design: "reachable from the UI, a keyboard shortcut, OSC and MIDI". This is the
+            // PANIC is reachable from the UI, a keyboard shortcut, OSC and MIDI. This is the
             // keyboard shortcut, and it is a toggle here for the same reason `l` is — a
             // console operator can see on the line below which way it went, where a control
             // surface cannot and so says which state it means.
@@ -1343,7 +1341,7 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
     // land as jitter on the clock it is trying to keep. `publishedMutex` and `published` are
     // declared above the runner for that reason; see the note there.
     //
-    // the output thread. It is the single consumer of the engine's beat ring, so this
+    // The output thread. It is the single consumer of the engine's beat ring, so this
     // loop must not drain it: it polls keys, prints, and drains the *frame* ring, which
     // nothing else wants. The tracking waits on neither — the inference thread runs at the
     // audio's pace — and now neither does a MIDI tick.
@@ -1432,9 +1430,9 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
                   << transports.link().numPeers() << " peers at the end\n";
     }
     if (tracker.stuck()) {
-        // The driver has not returned from being stopped: the
-        // stream was let go of, and an ordinary exit would go on to unload a driver still inside
-        // a call. Everything has been said; the process ends here.
+        // The driver has not returned from being stopped: the stream was let go of, and an
+        // ordinary exit would go on to unload a driver still inside a call. Everything has been
+        // said; the process ends here.
         std::cout << "the audio driver did not return from being asked to " << tracker.stuckOn()
                   << "; ending here rather than waiting on it\n"
                   << std::flush;

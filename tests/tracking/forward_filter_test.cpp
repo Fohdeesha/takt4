@@ -355,10 +355,10 @@ TEST_CASE("a held tempo is tracked in phase only", "[tracking][forward]") {
     SECTION("released, the tempo is the network's to argue for again") {
         filter.holdTempo(0.0);
         CHECK(filter.heldBpm() == 0.0);
-        // **The released filter itself**, run on over the same music (an earlier review,
-        // T9): this section used to measure two fresh filters instead, so a release that left
-        // the hold in place passed. Held at 100 over a drum machine at 128, let go, it has to
-        // find its own way back to 128 — 47 frames at 100 fps.
+        // **The released filter itself**, run on over the same music: this section used to
+        // measure two fresh filters instead, so a release that left the hold in place passed.
+        // Held at 100 over a drum machine at 128, let go, it has to find its own way back to
+        // 128 — 47 frames at 100 fps.
         TrackedFrame after;
         for (int pass = 0; pass < 2; ++pass) {
             for (const auto& [beat, down] : activations) {
@@ -420,7 +420,7 @@ TEST_CASE("the operator's window is evidence inside the filter", "[tracking][for
 
 TEST_CASE("the forward filter coasts through silence at the tempo the music left",
           "[tracking][forward]") {
-    // an earlier review. Silence used to be evidence — "no beat here", every frame — and the
+    // Silence used to be evidence — "no beat here", every frame — and the
     // posterior walked off the tempo while reporting a confidence of 0.85: on a 122 BPM kick
     // pattern the published tempo was 119.4 fifteen seconds into a break. Now, a beat period
     // of the slowest tempo after the last beat heard, the filter stops listening and carries

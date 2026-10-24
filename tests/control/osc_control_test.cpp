@@ -92,8 +92,8 @@ OscControl::Config localConfig(std::uint16_t port) {
 } // namespace
 
 TEST_CASE("the control addresses reach the tracker", "[control]") {
-    // the table, dispatched without a socket: the address table on its own, held to what the
-    // engine ends up saying rather than to the fact that a handler was called.
+    // The control addresses, dispatched without a socket: the address table on its own, held to
+    // what the engine ends up saying rather than to the fact that a handler was called.
     auto engine = makeEngine();
     OscControl control(*engine, localConfig(kAnyPort));
     trackUntilLocked(*engine);
@@ -115,9 +115,9 @@ TEST_CASE("the control addresses reach the tracker", "[control]") {
     (void)engine->step();
 
     // Three taps at machine speed are one tap and two bounces, which is no tempo at all —
-    // where they used to be thousands of BPM. The address was understood
-    // each time, which is not the same as acting on it. "taps over OSC make the tempo they
-    // were tapped at" is the rhythm a hand gives.
+    // where they used to be thousands of BPM. The address was understood each time, which is
+    // not the same as acting on it. "taps over OSC make the tempo they were tapped at" is the
+    // rhythm a hand gives.
     const auto before = engine->tempoOptions();
     CHECK(control.dispatch("/takt4/ctl/tap", std::nullopt));
     CHECK(control.dispatch("/takt4/ctl/tap", std::nullopt));
@@ -131,12 +131,12 @@ TEST_CASE("the control addresses reach the tracker", "[control]") {
 
 TEST_CASE("taps over OSC make the tempo they were tapped at", "[control]") {
     // The tap tests above used to stop at "the address was understood", which is how a tap
-    // button that tapped twice per press went unseen. So: a rhythm
-    // played in real time, from a TouchOSC button that chatters — every press followed 5 ms
-    // later by a second — and where the tracker's tempo window ends up. A tap is a seed, not
-    // an override: it centres the window on the tempo tapped, an octave wide, and the
-    // decoder weighs that as evidence. Without the bounce guard the chatter halves the median
-    // gap, and the window is centred on twice the tempo tapped, or not moved at all.
+    // button that tapped twice per press went unseen. So: a rhythm played in real time, from a
+    // TouchOSC button that chatters — every press followed 5 ms later by a second — and where
+    // the tracker's tempo window ends up. A tap is a seed, not an override: it centres the window
+    // on the tempo tapped, an octave wide, and the decoder weighs that as evidence. Without the
+    // bounce guard the chatter halves the median gap, and the window is centred on twice the
+    // tempo tapped, or not moved at all.
     auto engine = makeEngine();
     OscControl control(*engine, localConfig(kAnyPort));
 
@@ -176,7 +176,7 @@ TEST_CASE("an address for another app is not ours to act on", "[control]") {
     CHECK_FALSE(control.dispatch("/takt4/ctl/tempo/halveXX", std::nullopt));
     CHECK_FALSE(control.dispatch("", std::nullopt));
 
-    // the, still refused rather than half-done: nothing names or stores a preset yet.
+    // Still refused rather than half-done: nothing names or stores a preset yet.
     CHECK_FALSE(control.dispatch("/takt4/ctl/preset", 1.0));
 
     // And the two that are understood but have nowhere to go, because this control was
@@ -187,16 +187,16 @@ TEST_CASE("an address for another app is not ours to act on", "[control]") {
 }
 
 TEST_CASE("the two addresses that reach the rules rather than the tracker", "[control]") {
-    // the `panic` and `rule/<id>/enable`. The rule engine has carried both since Phase
-    // 6's first half; this is the *route*, and the route is the whole of what is checked
+    // The addresses `panic` and `rule/<id>/enable`. The rule engine has carried both since it
+    // was first built; this is the *route*, and the route is the whole of what is checked
     // here — what the rules then do with it is tests/output/output_runner_test.cpp's.
     auto engine = makeEngine();
     takt4::testing::RecordingRules rules;
     OscControl control(*engine, localConfig(kAnyPort), &rules);
 
     SECTION("manual fires the manual rules, as a button") {
-        // an earlier review: a trigger called "manual hotkey" that nothing could fire. A press
-        // fires; a pad's release, sent as a zero, is understood and does nothing.
+        // A trigger called "manual hotkey" that nothing could fire. A press fires; a pad's
+        // release, sent as a zero, is understood and does nothing.
         CHECK(control.dispatch("/takt4/ctl/manual", std::nullopt));
         CHECK(rules.manuals() == 1);
         CHECK(control.dispatch("/takt4/ctl/manual", 1.0));
@@ -205,18 +205,17 @@ TEST_CASE("the two addresses that reach the rules rather than the tracker", "[co
     }
 
     SECTION("a bare panic engages, because a panic button panics") {
-        // the design writes `lock <0|1>` and `rule/<id>/enable <0|1>` with an argument and writes
-        // `panic` bare. A message with no argument is the whole gesture.
+        // The address table writes `lock <0|1>` and `rule/<id>/enable <0|1>` with an argument
+        // and writes `panic` bare. A message with no argument is the whole gesture.
         CHECK(control.dispatch("/takt4/ctl/panic", std::nullopt));
         CHECK(rules.panics() == std::vector<bool>{true});
     }
 
     SECTION("every panic engages, and panic/release lets go of it") {
-        // an earlier review, L15, and the operator's answer to its Q1. `panic 0` used to
-        // let go, so a TouchOSC push button — 1 on the press, 0 on the release — held the halt
-        // only while the finger was down. Every panic message engages now, and the same
-        // surface lets go with an address of its own: the design makes panic a latch, and the design
-        // exists so the laptop need not be touched.
+        // `panic 0` used to let go, so a TouchOSC push button — 1 on the press, 0 on the
+        // release — held the halt only while the finger was down. Every panic message engages
+        // now, the operator's call, and the same surface lets go with an address of its own: a
+        // panic is a latch, and remote control exists so the laptop need not be touched.
         CHECK(control.dispatch("/takt4/ctl/panic", 1.0));
         CHECK(control.dispatch("/takt4/ctl/panic", 0.0));
         CHECK(rules.panics() == std::vector<bool>{true, true});
@@ -243,10 +242,10 @@ TEST_CASE("the two addresses that reach the rules rather than the tracker", "[co
     }
 
     SECTION("a value that is not a number is refused, not read as on") {
-        // an earlier review. Every state here is "anything but zero is on", and a NaN is not zero:
-        // `lock nan` pinned the lock, `enable nan` armed a rule, and `rate nan` gave a rule an
-        // interval that was undefined. An OSC float can carry a NaN or an infinity; no control
-        // surface means one.
+        // Every state here is "anything but zero is on", and a NaN is not zero: `lock nan`
+        // pinned the lock, `enable nan` armed a rule, and `rate nan` gave a rule an interval
+        // that was undefined. An OSC float can carry a NaN or an infinity; no control surface
+        // means one.
         for (const double junk : {std::numeric_limits<double>::quiet_NaN(),
                                   std::numeric_limits<double>::infinity()}) {
             CHECK_FALSE(control.dispatch("/takt4/ctl/rule/intro/enable", junk));
@@ -332,7 +331,7 @@ TEST_CASE("the two addresses that reach the rules rather than the tracker", "[co
     }
 
     SECTION("one surface, two destinations, in one sequence") {
-        // The point of the whole change: a Stream Deck sends the addresses down one
+        // The point of the whole change: a Stream Deck sends the control addresses down one
         // socket and does not know that five of them are the tracker's and two are the
         // rules'. Interleaved here so that a route which only worked from a cold surface —
         // or only before a tracker command — would show up.
@@ -359,7 +358,7 @@ TEST_CASE("the lock address pins and releases, and insists on being told which",
     REQUIRE(engine->state().locked);
     REQUIRE_FALSE(engine->state().pinned);
 
-    // the design spells it `<0|1>`, and without one there is nothing to do. Read as a toggle it
+    // The address is `lock <0|1>`, and without one there is nothing to do. Read as a toggle it
     // would depend on a state the sender cannot see, so a control surface that missed one
     // datagram would be inverted for the rest of the set.
     CHECK_FALSE(control.dispatch("/takt4/ctl/lock", std::nullopt));
@@ -474,10 +473,10 @@ TEST_CASE("the control thread acts on what arrives and counts what it cannot", "
 
 TEST_CASE("a new config while listening closes the old socket, and the next start is the new one",
           "[control]") {
-    // an earlier review, coverage gap 14: `setConfig` on a control that is running — which
-    // is what the window does when the operator changes the port, the prefix or "allow other
-    // machines" with the listener on. It has to stop the thread that reads the old config before
-    // the config changes under it, give the old port back, and start as it now says.
+    // `setConfig` on a control that is running — which is what the window does when the operator
+    // changes the port, the prefix or "allow other machines" with the listener on. It has to stop
+    // the thread that reads the old config before the config changes under it, give the old port
+    // back, and start as it now says.
     auto engine = makeEngine();
     OscControl control(*engine, localConfig(kAnyPort));
     control.start();

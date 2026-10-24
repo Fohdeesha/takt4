@@ -12,12 +12,12 @@ namespace takt4::audio {
 /// Hands every hop to several processors in turn.
 ///
 /// `InputStream` drives one `HopProcessor`, which is all the console has ever needed: it
-/// meters *or* it tracks, never both. the window does both at once — the BPM
+/// meters *or* it tracks, never both. The window does both at once — the BPM
 /// readout and the activation trace come from the tracker, the input meter from the same
 /// audio — and neither the engine nor the meter is a natural owner of the other. This
 /// sits between them.
 ///
-/// It runs on the audio thread, so the design binds it and everything behind it: the
+/// It runs on the audio thread, so that thread's rules bind it and everything behind it: the
 /// processors are fixed at construction, the loop allocates nothing and takes no lock,
 /// and each one is bound by exactly the rules it would be under if the stream drove it
 /// directly. They are called in order on that one thread — this is a fan-out, not a

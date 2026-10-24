@@ -63,7 +63,7 @@ bool timeConstrainedNow() {
 } // namespace
 
 TEST_CASE("a thread asked to run ahead does, and is put back afterwards", "[rt]") {
-    // an earlier review. Asked on a thread of its own, as each of takt4's threads asks for
+    // Asked on a thread of its own, as each of takt4's threads asks for
     // itself, and read by the thread itself: what another thread's priority is cannot be
     // asked through a pseudo-handle. Catch2's assertions are not for other threads, so the
     // readings come back here.

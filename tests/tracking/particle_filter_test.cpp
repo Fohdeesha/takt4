@@ -103,7 +103,7 @@ TEST_CASE("the generator produces the stream both sides are written against",
     }
 }
 
-// The Phase 4 gate. tools/pf_reference.py restates BeatNet+'s filter with this exact
+// The particle filter's gate. tools/pf_reference.py restates BeatNet+'s filter with this exact
 // generator and writes one row per frame; the C++ has to reproduce every one of them.
 // A particle filter has no exact answer to be held to — upstream's own output moves
 // when only the seed changes — so the comparison is against the restatement, and
@@ -216,8 +216,8 @@ TEST_CASE("the filter reports a tempo, a phase and a meter it could act on", "[t
     }
     CHECK(last.frameIndex == activations.rows - 1);
 
-    // synthetic.wav is a drum machine at 128 BPM, which Phase 3 already measured as
-    // peaks 23 frames apart. The tracker has to land on the same period.
+    // synthetic.wav is a drum machine at 128 BPM, and the model's activations on it were already
+    // measured as peaks 23 frames apart. The tracker has to land on the same period.
     REQUIRE(beatFrames.size() > 10);
     std::vector<double> gaps;
     for (std::size_t i = 1; i < beatFrames.size(); ++i) {
@@ -233,9 +233,8 @@ TEST_CASE("the filter reports a tempo, a phase and a meter it could act on", "[t
 }
 
 TEST_CASE("a frame of tracking touches no heap", "[tracking][filter][rt]") {
-    // the design puts the filter on the inference thread, which may allocate. It does not, and
-    // this keeps it that way: the resampling step's cost is data-dependent enough
-    // already without a heap in it.
+    // The filter runs on the inference thread, which may allocate. It does not, and this keeps it
+    // that way: the resampling step's cost is data-dependent enough already without a heap in it.
     const takt4::io::NpyMatrix activations =
         takt4::io::readNpyFloat32(kDataDir / "model" / "generic" / "vic-acid.npy");
     ParticleFilter filter(model());

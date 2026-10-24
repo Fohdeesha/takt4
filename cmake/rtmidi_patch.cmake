@@ -1,4 +1,4 @@
-# RtMidi 6.0.0's WinMM input, patched at configure time — an earlier review.
+# RtMidi 6.0.0's WinMM input, patched at configure time.
 #
 # `MidiInWinMM::closePort` takes the input's critical section and, holding it, calls
 # `midiInReset`, which hands every pending SysEx buffer back through the input callback — and

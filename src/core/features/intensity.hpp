@@ -10,14 +10,14 @@
 
 namespace takt4::features {
 
-/// the three intensity states.
+/// The three intensity states.
 ///
-/// The numbers are the wire format — the design gives `/<app>/intensity  int  0 | 1 | 2` — so
+/// The numbers are the wire format — `/takt4/intensity  int  0 | 1 | 2` — so
 /// they are fixed rather than an implementation detail, and everything that indexes by
 /// intensity (a rule's "intensity in set", a UI's three checkboxes) indexes by these.
 enum class Intensity : std::uint8_t { Calm = 0, Normal = 1, Intense = 2 };
 
-/// The three, in the own order — which is also their wire number, so a UI list and an
+/// The three, calm to intense — which is also their wire number, so a UI list and an
 /// OSC argument cannot drift apart about which is which.
 inline constexpr std::array<Intensity, 3> kIntensities{Intensity::Calm, Intensity::Normal,
                                                        Intensity::Intense};
@@ -27,10 +27,10 @@ std::string_view labelOf(Intensity intensity) noexcept;
 /// spells a rule's intensity set with — there is nothing to shorten and nothing to expand.
 std::optional<Intensity> intensityOf(std::string_view label) noexcept;
 
-/// the intensity classifier: *"Spectral flux across the full band, classified calm /
-/// normal / intense with hysteresis to stop it flickering between states. Feeds the ONLY IF
-/// stage and is published over OSC. Cheap to compute — it reuses the STFT magnitude we
-/// already have."*
+/// The intensity classifier: spectral flux across the full band, classified calm, normal or
+/// intense, with hysteresis to stop it flickering between states. It feeds a rule's ONLY IF
+/// stage, and `/takt4/intensity` is kept for it in the OSC namespace. Meant to be cheap to
+/// compute, by reusing the STFT magnitude already there.
 ///
 /// **Cheaper than that, in fact: it reuses the features.** `FeatureExtractor` already
 /// computes `max(log10(1 + band) - previous, 0)` for all 144 bands and puts it in the second
@@ -74,9 +74,9 @@ public:
         double slowFrames = 1000.0;
 
         /// The ratio of the two at which each state is entered, and the ratio at which it is
-        /// given up. the design asks for hysteresis by name; these four numbers are it. Enter
-        /// intense at 1.35 and hold it down to 1.10; enter calm at 0.70 and hold it up to
-        /// 0.85. The gaps are what stop a passage sitting on a threshold from flickering.
+        /// given up: the hysteresis is these four numbers. Enter intense at 1.35 and hold it
+        /// down to 1.10; enter calm at 0.70 and hold it up to 0.85. The gaps are what stop a
+        /// passage sitting on a threshold from flickering.
         double intenseAt = 1.35;
         double intenseUntil = 1.10;
         double calmAt = 0.70;
@@ -91,7 +91,7 @@ public:
 
         /// Frames before anything but `Normal` is reported, so the long average has
         /// something in it. 2 s: publishing "calm" because a track has only just started is
-        /// a guess, and the rule throughout is that nothing known is published as
+        /// a guess, and the tracker's rule throughout is that nothing known is published as
         /// nothing rather than as a guess.
         std::uint32_t settleFrames = 100;
 
@@ -108,7 +108,7 @@ public:
     void reset() noexcept;
 
     /// One feature frame, as `FeatureExtractor::frame()` gives it. Returns true when this
-    /// frame is an onset (the *"on onset"*).
+    /// frame is an onset (for the rules that fire *on onset*).
     bool push(std::span<const float, kFeatureDim> frame) noexcept;
 
     /// The flux of the last frame, before any smoothing — the raw sum. Published for a

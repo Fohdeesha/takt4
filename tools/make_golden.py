@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Cut a 10 s excerpt from a track and write the golden feature file for it.
 
-the design Phase 2: the same audio through madmom and through takt4's C++ front end
-must agree to within floating-point tolerance, on at least ten varied real recordings.
+The same audio through madmom and through takt4's C++ front end must agree to within
+floating-point tolerance, on at least ten varied real recordings.
 The full tracks stay out of git (references/audio/ is excluded); what is committed,
 under tests/data/features/, is per excerpt:
 
@@ -248,8 +248,7 @@ def regenerate(out_dir, names):
 
     Doing this by passing the `.wav` to make_golden.py as a source, which the README used to
     suggest, reproduced the data bit for bit and wrote a new sidecar describing a ten-second
-    file cut at 0 s — the track, the offset and --auto's measurements lost (the 2026-09-25
-    review's P11)."""
+    file cut at 0 s — the track, the offset and --auto's measurements lost."""
     names = names or sorted(p.stem for p in out_dir.glob("*.wav"))
     for name in names:
         wav_path, npy_path, json_path = (out_dir / f"{name}{ext}" for ext in (".wav", ".npy", ".json"))

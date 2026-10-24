@@ -22,8 +22,7 @@ enum class ThreadWork : std::uint8_t {
     /// the class PortAudio's WASAPI host gives its audio thread only in exclusive mode; in
     /// shared mode, which is how takt4 opens WASAPI, that thread asks for "Audio" — so on a
     /// WASAPI input the output thread is scheduled *ahead* of the audio callback, not behind it
-    /// as this said. An ASIO driver's callback
-    /// thread is the driver's own business.
+    /// as this said. An ASIO driver's callback thread is the driver's own business.
     Output,
     /// A few milliseconds of arithmetic per 20 ms hop, where falling behind loses hops: the
     /// model and the tracker. MMCSS "Audio", which is scheduled ahead of ordinary threads and

@@ -19,9 +19,9 @@
 
 namespace takt4::trigger {
 
-/// the WHEN column: *"every beat · every N beats · every bar · every N bars · on
+/// The WHEN stage of a rule: every beat · every N beats · every bar · every N bars · on
 /// downbeat · on tempo change · on lock or unlock · on intensity change · on onset · on
-/// manual hotkey"*.
+/// manual hotkey.
 ///
 /// Ten entries, eight kinds and a count, because "every beat" is "every N beats" with N of
 /// one and a UI can offer them as two lines of the same thing. Nothing else collapses:
@@ -38,13 +38,13 @@ enum class Trigger : std::uint8_t {
     /// `engine::EngineIntensity::onsets`); the output thread calls `TriggerEngine::onOnset`
     /// when that count moves.
     Onset,
-    /// the *"manual hotkey"* — `TriggerEngine::manual`, which the design will reach from OSC
-    /// and MIDI alongside the rest.
+    /// The manual hotkey — `TriggerEngine::manual`, which the control input will reach from
+    /// OSC and MIDI alongside the rest.
     Manual,
     /// A Euclidean rhythm: `pulses` hits spread as evenly as they go over `every` beats,
     /// counted from the first beat of the pattern.
     ///
-    /// **Not in the list**, and added on the user's ask for *"cool randomization or
+    /// **Not in the list above**, and added on the user's ask for *"cool randomization or
     /// algorithmic settings ... based on the bpm of the song and downbeat"*. It earns its
     /// place because it is the one pattern that is neither "every N" nor random: 3-in-8 is
     /// the tresillo, 5-in-8 the cinquillo, 5-in-16 the bossa. An operator gets those by
@@ -62,8 +62,8 @@ std::string_view labelOf(Trigger trigger) noexcept;
 std::string_view nameOf(Trigger trigger) noexcept;
 std::optional<Trigger> triggerOf(std::string_view name) noexcept;
 
-/// True where `Trigger::every` means anything — the two the design spells with an N, and
-/// `Euclid`, where it is the number of steps the pattern spans.
+/// True where `Trigger::every` means anything — the two spelled with an N, and `Euclid`,
+/// where it is the number of steps the pattern spans.
 bool takesEvery(Trigger trigger) noexcept;
 
 /// True where `Trigger::pulses` means anything — `Euclid` alone.
@@ -87,11 +87,11 @@ inline constexpr double kMaxFireDelaySeconds = 300.0;
 /// bursts — an onset, a tempo, lock or intensity change, the M key. **Not** beats, bars, the
 /// downbeat or a Euclidean pattern, which come round at the music's own pace: a cooldown there
 /// only ever thinned a steady pattern into an irregular one, and on a bar it never did anything
-/// at all. The editor switches the control off for them and the engine ignores it (the design,
-/// the rule editor locked 2026-09-30) — a control shown switched off must do nothing.
+/// at all. The editor switches the control off for them and the engine ignores it (the rule
+/// editor's design, locked 2026-09-30) — a control shown switched off must do nothing.
 bool takesCooldown(Trigger trigger) noexcept;
 
-/// How the *"optional follow-up value after a delay"* counts that delay.
+/// How a rule's optional follow-up value after a delay counts that delay.
 ///
 /// Milliseconds was the only answer, and it is the wrong one for what the follow-up is
 /// usually doing. A device's own lag is a fixed number of milliseconds — a media server takes
@@ -116,12 +116,12 @@ std::optional<DelayUnit> delayUnitOf(std::string_view name) noexcept;
 /// algorithm: hit *k* of the pattern falls on step `floor(k * steps / pulses)`, which is the
 /// same distribution and needs no allocation, no table and no state. `step` counts from zero.
 ///
-/// Degenerate cases are answered rather than refused, as the clamping policy asks: no
-/// pulses is silence, and pulses at or above steps is every step.
+/// Degenerate cases are answered rather than refused, as a generator's are: no pulses is
+/// silence, and pulses at or above steps is every step.
 bool euclidHit(std::uint32_t step, std::uint32_t pulses, std::uint32_t steps) noexcept;
 
-/// the ONLY IF column: *"confidence above threshold · intensity in set · BPM in range ·
-/// probability percentage"*. Its fifth, *"minimum cooldown in ms"*, is `Rule::Config::
+/// The ONLY IF stage of a rule: confidence above threshold · intensity in set · BPM in range ·
+/// probability percentage. Its fifth, a minimum cooldown in ms, is `Rule::Config::
 /// cooldownSeconds` since 2026-09-30: it says how often the trigger may come round, which is
 /// the WHEN's business, and the editor shows it there.
 ///
@@ -137,13 +137,14 @@ struct Conditions {
     /// Fires only at or above this. `TempoState::confidence`, 0 to 1.
     double minConfidence = 0.0;
     /// Whether each intensity is in the set, indexed by `features::Intensity`'s own value —
-    /// which is the wire number, so the array and the OSC address cannot drift apart.
+    /// which is the wire number `output::OscPublisher` documents for `/intensity`, so the array
+    /// and the OSC address cannot drift apart.
     std::array<bool, 3> intensities{true, true, true};
     /// Inclusive, on the *published* tempo — the number on screen, after the fold and any
     /// ÷2, because that is the one an operator reads before typing a range.
     double minBpm = 0.0;
     double maxBpm = 1000.0;
-    /// the *"probability percentage"*, as a fraction. Rolled after everything else, so a
+    /// The probability percentage, as a fraction. Rolled after everything else, so a
     /// rule that was going to be excluded anyway does not consume a draw — otherwise two
     /// rules sharing a stream would fire in a pattern neither of them describes.
     double probability = 1.0;
@@ -206,10 +207,10 @@ struct Message {
     Kind kind = Kind::Osc;
     /// Osc: the address, with every `{...}` segment already filled in. Owned, because the
     /// follow-up queue outlives the rule's own buffer. One allocation per fire past the
-    /// short-string optimisation, which on the output thread is nothing (the design forbids
-    /// allocation on the audio thread and nowhere else).
+    /// short-string optimisation, which on the output thread is nothing (allocation is
+    /// forbidden on the audio thread and nowhere else).
     std::string address;
-    /// Osc: the argument, when there is one. the Resolume resync takes `int 1`; some
+    /// Osc: the argument, when there is one. Resolume's resync takes `int 1`; some
     /// addresses take none at all.
     Value argument;
     bool hasArgument = true;
@@ -232,16 +233,16 @@ struct Message {
     /// seconds against the tempo that was playing.
     dmx::Payload payload;
 
-    /// the *"rule subset"*: which of the app's outputs this goes to, one bit each, in
+    /// The routing: which of the app's outputs this goes to, one bit each, in
     /// the order `output::Transports::outputs()` holds them. All bits — `output::
     /// kAllOutputs` — means everywhere, which is what an unrouted rule means and what
     /// every rule meant before routing existed.
     ///
     /// **A mask rather than the names themselves**, for two reasons that both matter. A
     /// fire allocates nothing extra, where a `vector<string>` per message would be three
-    /// allocations at 3.6 messages a second per rule. And a follow-up outlives its rule:
-    /// the design says a pending release is still sent after the rule set has been replaced, so
-    /// anything the message pointed *at* would dangle exactly when it was needed.
+    /// allocations at 3.6 messages a second per rule. And a follow-up outlives its rule: a
+    /// pending release is still sent after the rule set has been replaced, so anything the
+    /// message pointed *at* would dangle exactly when it was needed.
     std::uint64_t outputs = ~std::uint64_t{0};
 
     /// When the thing this message is about **happens**, on `Context::now`'s clock — which is
@@ -249,8 +250,8 @@ struct Message {
     /// prediction, so a message about it carries the beat's own time here, and the release that
     /// follows it carries that plus its delay. `output::RuleSink` offsets every target's latency
     /// from this, never from the round that happens to send it: that is what lets a negative
-    /// offset put a message *before* the beat it belongs to. Stamped by
-    /// `TriggerEngine` as it sends; zero before that.
+    /// offset put a message *before* the beat it belongs to. Stamped by `TriggerEngine` as it
+    /// sends; zero before that.
     double moment = 0.0;
 
     /// **A follow-up that is a gesture of its own** — one with a kind of its own (`FollowUp::kind`:
@@ -332,12 +333,12 @@ constexpr bool sendsValue(Message::Kind kind) noexcept {
 }
 
 /// The inclusive ceiling on `Message::value` for a kind: pitch bend is 14-bit, everything
-/// else is a data byte. `Rule` clamps to this and the editor reads it for its own range.
+/// else is a data byte. `Rule` clamps to this and the rule editor reads it for its own range.
 constexpr int valueCeiling(Message::Kind kind) noexcept {
     return kind == Message::Kind::MidiPitchBend ? 16383 : 127;
 }
 
-/// What the SEND dropdown offers, and what a preset spells the choice with.
+/// What the rule editor's SEND dropdown offers, and what a preset spells the choice with.
 std::string_view labelOf(Message::Kind kind) noexcept;
 std::string_view nameOf(Message::Kind kind) noexcept;
 std::optional<Message::Kind> messageKindOf(std::string_view name) noexcept;
@@ -399,7 +400,7 @@ std::optional<ColorMode> colorModeOf(std::string_view name) noexcept;
 
 /// The color generator a rule starts with: **one fixed color**, not a shuffle.
 ///
-/// `Generator::Config`'s own default is the — shuffle over the integers 1 to 8 — which is
+/// `Generator::Config`'s own default — shuffle over the integers 1 to 8 — is
 /// right for a clip index and nonsense for a color: every draw is a number `dmx::parseColor`
 /// cannot read, so every fire fell back to white and the editor showed a range box asking
 /// which eight colors 1 through 8 were. Reported from a rig on 2026-09-16: *"I define a range
@@ -527,10 +528,10 @@ struct DmxFollow {
     friend bool operator==(const DmxFollow&, const DmxFollow&) = default;
 };
 
-/// One of the messages a rule sends *after* the one it fired — the *"optional follow-up
-/// value after a delay"*, grown into a list.
+/// One of the messages a rule sends *after* the one it fired — the optional follow-up value
+/// after a delay, grown into a list.
 ///
-/// **It was one value and a delay, and that was not enough.** the press-then-release is
+/// **It was one value and a delay, and that was not enough.** Resolume's press-then-release is
 /// the case it was written for, and it reads as a tick box with a number beside it: send a 1,
 /// send a 0 fifty milliseconds later. A rig then asked for the thing a tick box cannot say —
 /// *"I need a note on trigger to trigger Liberation laser clips. when the beat is done, I
@@ -606,11 +607,11 @@ constexpr bool followUpFits(Message::Kind kind, Message::Kind sent) noexcept {
 /// Where a fired rule's messages go.
 ///
 /// An interface rather than a reference to `output::Transports`, for two reasons that both
-/// matter. A rule sends to *any* OSC address, which is a different thing from the design's
-/// generic namespace that `output::OscPublisher` owns — and the design wants each target to have
-/// "its own host, port, enabled state and rule subset", which is routing this layer should
-/// not know about. And a test has to be able to say exactly what a rule sent, which is what
-/// a recording implementation gives it.
+/// matter. A rule sends to *any* OSC address, which is a different thing from the generic
+/// namespace that `output::OscPublisher` owns — and each target has its own host, port,
+/// enabled state and rule subset, which is routing this layer should not know about. And a
+/// test has to be able to say exactly what a rule sent, which is what a recording
+/// implementation gives it.
 ///
 /// Called on the output thread, between a beat and the next MIDI tick. Keep it short.
 class Sink {
@@ -623,11 +624,11 @@ public:
     virtual bool send(const Message& message) = 0;
 };
 
-/// One rule: the *when → only if → send*.
+/// One rule: *when → only if → send*.
 ///
-/// Configuration is plain data so it can travel in a preset and be edited by clicking
-/// (the *"an internal representation the user never types"*). The state — the generators'
-/// bags, the cooldown clock, what the last tempo was — lives in the `Rule` around it.
+/// Configuration is plain data so it can travel in a preset and be edited by clicking — an
+/// internal representation the user never types. The state — the generators' bags, the
+/// cooldown clock, what the last tempo was — lives in the `Rule` around it.
 ///
 /// **An invalid rule never fires, and says why.** That is the opposite of `Generator`'s
 /// clamp-everything policy, and deliberately: a generator with a silly range sends a silly
@@ -636,20 +637,20 @@ public:
 /// missing is worse than nothing arriving at all.
 class Rule {
 public:
-    /// the own example, and the shape the address templating exists for:
+    /// Resolume's clip address, and the shape the address templating exists for:
     ///
     ///     /composition/layers/{L}/clips/{C}/connect   int 1 (press) then 0 (release)
     ///
     /// Each `{...}` is filled by the matching entry of `segments`, in order. What is inside
-    /// the braces is ignored — the design writes `{L}` and `{C}`, the design says the address is
+    /// the braces is ignored — the example writes `{L}` and `{C}`, and the address is
     /// assembled by clicking rather than typed, so the names are documentation and the
     /// position is what binds.
     struct Config {
-        /// the `/<app>/ctl/rule/<id>/enable <0|1>` addresses a rule by this, so it has to
-        /// be usable as an OSC address segment: printable ASCII, none of OSC 1.0's reserved
-        /// characters, and not empty.
+        /// The control input's `/<app>/ctl/rule/<id>/enable <0|1>` addresses a rule by this, so
+        /// it has to be usable as an OSC address segment: printable ASCII, none of OSC 1.0's
+        /// reserved characters, and not empty.
         std::string id = "rule";
-        /// What the rule card puts in its title bar.
+        /// What the rule editor's list calls the rule.
         std::string name;
         bool enabled = true;
 
@@ -696,7 +697,7 @@ public:
         /// that last fired rather than the last one seen, so a slow drift is one change and
         /// not a stream of them.
         double tempoChangeTolerance = 0.02;
-        /// the *"minimum cooldown in ms"*, in seconds, against `Context::now`: after the rule
+        /// The minimum cooldown, in seconds, against `Context::now`: after the rule
         /// fires it waits this long before it can fire again. Measured from the last time this
         /// rule *fired*, not from the last time it was evaluated. **Read only where
         /// `takesCooldown(trigger)`** — the triggers that come in bursts; on a beat, a bar, the
@@ -705,10 +706,11 @@ public:
         /// then still has it there (`settings::rulesFromJson` reads both).
         double cooldownSeconds = 0.0;
 
-        /// Whether the ONLY IF stage applies at all — the tick on the editor's B heading (the design
-        /// the design, locked 2026-09-30). **Off by default**: nothing optional is on until somebody
-        /// switches it on, and off is a rule that fires every time its trigger comes round. The
-        /// conditions are kept while it is off, so it can be set for later and switched on.
+        /// Whether the ONLY IF stage applies at all — the tick on the editor's B heading (the
+        /// rule editor's design, locked 2026-09-30). **Off by default**: nothing optional is on
+        /// until somebody switches it on, and off is a rule that fires every time its trigger
+        /// comes round. The conditions are kept while it is off, so it can be set for later and
+        /// switched on.
         bool conditionsOn = false;
         Conditions conditions;
 
@@ -730,8 +732,8 @@ public:
         /// fire**, and `problem` says why. A rule switched to a note or a controller has no
         /// number anybody meant, and the one it would otherwise draw from — a generator's own
         /// default, a shuffle over 1 to 8 — sent CC 7 at a value of one to every MIDI output on
-        /// some bar, which silences a synth. True by default, so every rule
-        /// already in a file goes on working.
+        /// some bar, which silences a synth. True by default, so every rule already in a file
+        /// goes on working.
         bool numberChosen = true;
 
         /// The lighting instruction, for `sendKind == Dmx`. Ignored by every other kind, and
@@ -740,7 +742,7 @@ public:
         /// switch it back.
         DmxSend dmx;
 
-        /// the *"optional follow-up value after a delay"*, as many as the rule needs.
+        /// The optional follow-up values, each after a delay, as many as the rule needs.
         /// Empty is a rule that sends one message and is done. See `FollowUp`, and
         /// `Rule::followUpsFor` for what each entry turns into.
         std::vector<FollowUp> followUps;
@@ -749,7 +751,7 @@ public:
         /// preset do not fire the same clip as each other. See `Generator::Config::seed`.
         std::uint64_t seed = 1;
 
-        /// the *"rule subset"*: the outputs this rule sends to, by `output::OutputTarget::id`.
+        /// The routing: the outputs this rule sends to, by `output::OutputTarget::id`.
         /// **Empty means every output**, which is what a rule an operator has not routed means
         /// and what every rule meant before there was more than one target.
         ///
@@ -791,7 +793,7 @@ public:
     bool enabled() const noexcept { return enabled_; }
     void setEnabled(bool on) noexcept { enabled_ = on; }
 
-    /// Whether this rule is **muted** — the `/ctl/rule/<id>/mute`, added on the operator's
+    /// Whether this rule is **muted** — `/ctl/rule/<id>/mute`, added on the operator's
     /// ask of 2026-09-16 for live per-rule control.
     ///
     /// **Muted is not disabled, and the difference is the whole reason both exist.** A
@@ -804,7 +806,7 @@ public:
     bool muted() const noexcept { return muted_; }
     void setMuted(bool on) noexcept { muted_ = on; }
 
-    /// A multiplier on `Config::every` — the `double`, `halve` and `rate`.
+    /// A multiplier on `Config::every` — the control input's `double`, `halve` and `rate`.
     ///
     /// Live, and *not* part of the configuration: it is a performance gesture, like the tempo
     /// ÷2 button, so it is not saved, and a set loaded rather than edited starts it at one
@@ -817,7 +819,7 @@ public:
     /// `Config::every` with `rate()` applied — what the trigger actually counts against.
     std::uint32_t effectiveEvery() const noexcept;
 
-    /// Empty when the rule is usable, and otherwise why it is not — for the rule card to
+    /// Empty when the rule is usable, and otherwise why it is not — for the rule editor to
     /// show. An invalid rule is still a rule: it is held, edited and saved, and only
     /// refuses to fire.
     const std::string& problem() const noexcept { return problem_; }
@@ -895,7 +897,7 @@ public:
 
     /// The messages this rule owes after `fired`, appended to `out` in configuration order.
     ///
-    /// the release half and everything past it: each is the fired message with whatever
+    /// The release half and everything past it: each is the fired message with whatever
     /// the matching `FollowUp` overrides. An entry whose kind does not fit the rule's own —
     /// see `followUpFits` — contributes nothing, so `out` can come back shorter than the
     /// configuration, and the index of an appended message is **not** its index in
@@ -933,7 +935,7 @@ public:
     double lastFired() const noexcept { return lastFired_; }
     std::uint64_t fires() const noexcept { return fires_; }
 
-    /// What each generator produced on the last fire, **in the order the editor draws
+    /// What each generator produced on the last fire, **in the order the rule editor draws
     /// the chips**: for OSC the address segments and then the value, the value left out when
     /// `sendValue` is false; for MIDI the number and then the value, each left out where the
     /// kind does not carry one — a pitch bend has no number and a program change no value,
@@ -980,7 +982,7 @@ private:
     Generator dmxPan_;
     Generator dmxTilt_;
     Generator dmxClip_;
-    /// the probability percentage, on this rule's own stream. See `conditionsHold`.
+    /// The probability percentage, on this rule's own stream. See `conditionsHold`.
     tracking::Xoshiro256pp probability_;
     /// See `outputMask`. Everywhere until somebody who knows the outputs says otherwise,
     /// which is the right default for a rule nobody has routed.
@@ -1005,7 +1007,7 @@ private:
 };
 
 /// How many `{...}` placeholders an address template holds, and where they are. Public
-/// because the editor needs it to draw the chips, and because a rule's validity is
+/// because the rule editor needs it to draw the chips, and because a rule's validity is
 /// mostly this number against the number of generators it was given.
 std::size_t countPlaceholders(std::string_view address) noexcept;
 
@@ -1037,7 +1039,7 @@ struct Slot {
 };
 
 /// The generators `config` draws when it fires, in the order `Rule::lastSlots` records what
-/// they drew. **The one walk of that order**: the editor builds its chips from it and
+/// they drew. **The one walk of that order**: the rule editor builds its chips from it and
 /// finds the generator a chip edits through it, where it used to walk the same conditions
 /// twice beside `Rule::fire`'s own, held together by comments saying they must not drift
 /// apart. Tested against what a fire records, for every kind.

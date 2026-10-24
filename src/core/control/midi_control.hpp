@@ -17,8 +17,8 @@
 
 namespace takt4::control {
 
-/// the other half: "Every one of these is also bindable to a MIDI note or CC
-/// through a learn mode."
+/// The MIDI half of the control input: every action a control surface can ask for is also
+/// bindable to a MIDI note or CC through a learn mode.
 ///
 /// A MIDI input port, a table of bindings, and `ControlSurface` at the end of it — the
 /// same route into the tracker `OscControl` uses, so the two surfaces cannot drift apart
@@ -52,7 +52,7 @@ public:
 
     /// The beat source and the hub must outlive this. Nothing is listened to until `start()`.
     ///
-    /// `rules` is where the `panic` and `rule/<id>/enable` go — `output::OutputRunner`
+    /// `rules` is where `panic` and `rule/<id>/enable` go — `output::OutputRunner`
     /// in an app, null where there is none, in which case a binding to either is refused
     /// rather than silently doing nothing. It must outlive this where it is not null;
     /// `setRuleControl` exists because an owner usually builds the runner second.
@@ -92,7 +92,7 @@ public:
 
     /// Arms learn mode for `target`. The next note or CC that arrives is bound to it.
     ///
-    /// A whole target, so that a caller who knows which rule — the editor, when it draws
+    /// A whole target, so that a caller who knows which rule — the rule editor, when it draws
     /// one — can arm `rule/<id>/enable` from the card that already names it. A gesture says
     /// *which button*, never *which rule*, so nothing else can supply that half.
     void learn(ControlTarget target);
@@ -122,8 +122,7 @@ public:
     bool dispatch(const MidiEvent& event);
     /// What RtMidi's callback does with a message while the port is open: the raw bytes read as
     /// a gesture (`readMidiEvent`), and dispatched when they are one. Everything but RtMidi's
-    /// own delivery, which needs a MIDI loopback to test — an earlier review, coverage
-    /// gap 13. Never throws.
+    /// own delivery, which needs a MIDI loopback to test. Never throws.
     void receive(std::span<const unsigned char> message) noexcept;
     /// Exactly what RtMidi's callback thread does with a message: turned away once `stop` has
     /// begun, and counted while it is being handled, so that `stop` can wait for it. For a test
@@ -171,8 +170,7 @@ private:
     /// The CC just learned, whose release is still to come. Learn binds on the press; a CC
     /// button then sends its release, and that used to be dispatched through the brand-new
     /// binding — so learning a CC pad fired its action after all, which is what learn promises
-    /// not to do. The next event from this control, if it is a release, is
-    /// swallowed.
+    /// not to do. The next event from this control, if it is a release, is swallowed.
     std::optional<MidiEvent> learnedRelease_;
     std::string portName_;
 };

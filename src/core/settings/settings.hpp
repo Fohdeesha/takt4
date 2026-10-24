@@ -18,13 +18,13 @@
 
 namespace takt4::settings {
 
-/// the design the two layers, and where they are kept.
+/// The settings' two layers, and where they are kept.
 ///
-/// Q7: *"Audio device and channel live in machine-local settings, never in a preset.
-/// Presets carry outputs, rules and tracker tuning, and are portable by design."* The
-/// split matters the moment a preset moves between machines — one that hardcodes "ASIO
-/// Focusrite, channel 7" is useless on the other laptop, and one that carries no audio
-/// config forces a re-setup on every load.
+/// The audio device and channel live in machine-local settings, never in a preset; presets
+/// carry outputs, rules and tracker tuning, and are portable by design. The split matters the
+/// moment a preset moves between machines — one that hardcodes "ASIO Focusrite, channel 7" is
+/// useless on the other laptop, and one that carries no audio config forces a re-setup on
+/// every load.
 ///
 /// So the two halves are separate types even though they are written to one file. Storing
 /// them together is a storage decision; keeping them apart in the format is what lets IMPORT
@@ -68,19 +68,19 @@ struct MachineSettings {
     /// device, so an older build given the file keeps its clock too.
     std::string midiClockPort;
 
-    /// the control input: the MIDI port the learn mode listens on, and what has been
+    /// The control input: the MIDI port the learn mode listens on, and what has been
     /// learned. Machine-local for the same reason again, and more strongly — "note 36 on
     /// channel 10 is tap" is a fact about the box of buttons on this desk, not about the
     /// music, so it must not travel in a preset to a machine with a different controller.
     std::string midiControlPort;
     /// Each one as `formatMidiBinding` writes it: "note 36 ch 10 -> tap". Text rather than
-    /// a struct because this is a file a person may open, and the headless mode is
-    /// expected to hand-write one — a line that reads as a sentence can be typed, and
+    /// a struct because this is a file a person may open, and a headless mode is expected
+    /// to hand-write one — a line that reads as a sentence can be typed, and
     /// `parseMidiBinding` drops anything that does not.
     std::vector<std::string> midiBindings;
 
-    /// the inbound OSC: whether to listen, on which port, and whether to accept anything
-    /// but loopback.
+    /// The inbound OSC control: whether to listen, on which port, and whether to accept
+    /// anything but loopback.
     ///
     /// **Machine-local, and more strongly than the ports above.** A listening socket is a
     /// fact about this box and its network — a preset carrying "listen on 0.0.0.0:7001" to
@@ -136,8 +136,8 @@ struct MachineSettings {
 
     /// The rule editor's sections folded — A when, B only if, C send, D then send — its event log
     /// open, and how tall the log's lines are, in logical pixels: remembered with the main window's
-    /// folds (the design, the rule editor locked 2026-09-30). As it opens the first time: B
-    /// folded, as a new rule's B starts, and the log folded to one line; open, five lines of 18.
+    /// folds (the rule editor's design, locked 2026-09-30). As it opens the first time: B folded,
+    /// as a new rule's B starts, and the log folded to one line; open, five lines of 18.
     std::array<bool, 4> ruleSectionsFolded{false, true, false, false};
     bool ruleLogOpen = false;
     double ruleLogHeight = 90.0;
@@ -148,7 +148,7 @@ struct MachineSettings {
     friend bool operator==(const MachineSettings&, const MachineSettings&) = default;
 };
 
-/// the tuning as a **fresh install** has it, which is not the same as `TempoTracker`'s
+/// The tracker's tuning as a **fresh install** has it, which is not the same as `TempoTracker`'s
 /// own defaults — one field differs, and only one.
 ///
 /// `TempoTracker::Options::octaveFold` defaults to true, because a tracker asked to publish a
@@ -168,17 +168,17 @@ struct MachineSettings {
 /// somebody has switched it on, `save` writes it and it stays on.
 tracking::TempoTracker::Options freshTempoOptions() noexcept;
 
-/// the latency offset, either side of zero, as far as the window's slider goes and as far as
-/// a settings file is taken at its word. Beyond half a beat the control stops meaning anything —
+/// The latency offset, either side of zero, as far as the window's slider goes and as far as a
+/// settings file is taken at its word. Beyond half a beat the control stops meaning anything —
 /// it is the next beat — and half a beat at 120 BPM is 250 ms. A file holding more, short of a
-/// second, is read as this much: it used to be taken as it was,
-/// and ran that late behind a slider pinned at its end, which the first touch then snapped to
-/// 250 ms. A second or more is refused, as it always was.
+/// second, is read as this much: it used to be taken as it was, and ran that late behind a
+/// slider pinned at its end, which the first touch then snapped to 250 ms. A second or more is
+/// refused, as it always was.
 inline constexpr double kMaxLatencyOffsetSeconds = 0.25;
 
 /// What travels.
 struct Preset {
-    /// the tuning — the tempo window, the confidence gate, the latency offset.
+    /// The tracker's tuning — the tempo window, the confidence gate, the latency offset.
     tracking::TempoTracker::Options tempo = freshTempoOptions();
     /// Which decoder turns the network's activations into beats: the exact forward filter,
     /// the default since it met every criterion set for replacing the particle filter
@@ -215,21 +215,21 @@ struct Preset {
     };
     TimingLatency timingLatency;
 
-    /// the *"multiple simultaneous targets, each with its own host, port, enabled state
-    /// and rule subset"* — the named outputs a rule routes to.
+    /// Multiple simultaneous targets, each with its own host, port, enabled state and rule
+    /// subset — the named outputs a rule routes to.
     ///
     /// Portable, and the judgement is worth stating because it is not obvious. A MIDI
     /// target names a *device*, which is a fact about this box — but the routing that
     /// names it is a fact about the show, and splitting the two would mean a preset that
     /// said "send the stabs to the lighting output" and could not say what that was. So the
     /// whole target travels, and a device that is not on this machine leaves that one
-    /// output unreachable and the rest of the rig working. the design says which.
+    /// output unreachable and the rest of the rig working. The window says which.
     ///
     /// Link and every MIDI clock are outputs here too since 2026-09-25, with the Link output
     /// always first (`output::ensureLinkOutput`, which `load` applies).
     std::vector<output::OutputTarget> outputs;
 
-    /// the rules, which Q7 puts here rather than in `MachineSettings`: a rule is about
+    /// The trigger rules, which belong here rather than in `MachineSettings`: a rule is about
     /// the *show* — "a random clip on every fourth downbeat" — and travels to whatever
     /// laptop is running it. The one machine-shaped thing a rule could carry is a MIDI
     /// port, and it does not: a MIDI rule names a channel and a note, and which port they
@@ -314,8 +314,7 @@ std::filesystem::path settingsFile();
 /// Where takt4 writes a text it hands to another program to show — the About box's licence and
 /// notices: `%TEMP%\takt4` (the temp directory's "takt4" elsewhere), or empty if there is no
 /// temp directory. **In a process given `TAKT4_SETTINGS_DIR`, a folder inside that one**: a test
-/// process's texts went to the same `%TEMP%\takt4` the real takt4 uses, over whatever it had
-/// open.
+/// process's texts went to the same `%TEMP%\takt4` the real takt4 uses, over whatever it had open.
 std::filesystem::path scratchDirectory();
 
 /// **Where to read**: `settingsFile()`, which `load` reports as the defaults when it is not
@@ -426,8 +425,8 @@ bool save(const Settings& settings, const std::filesystem::path& path);
 /// against the last save has in its hand. Never throws.
 bool saveText(std::string_view json, const std::filesystem::path& path);
 
-/// The file's text. Pretty-printed: this is a file a person may well open, and the
-/// headless mode is expected to hand-write one.
+/// The file's text. Pretty-printed: this is a file a person may well open, and a headless
+/// mode is expected to hand-write one.
 std::string toJson(const Settings& settings);
 
 /// Link's switch and the MIDI clock port of a file written before 2026-09-25, as the output

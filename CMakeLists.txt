@@ -45,13 +45,13 @@ option(TAKT4_WARNINGS_AS_ERRORS "Treat warnings in takt4's own sources as errors
 # **The Visual C++ runtime is a DLL, and an older copy of it must not crash takt4.**
 #
 # takt4.exe imports MSVCP140.dll, VCRUNTIME140.dll and VCRUNTIME140_1.dll, which come with the
-# Visual C++ redistributable. Linking the runtime statically instead was
-# tried on 2026-09-23 and cannot be done: Slint draws with Skia, which rust-skia ships as a
-# prebuilt archive, and it publishes no static-runtime build of the one Slint needs (the
-# download for `...-d3d-gl-jpegd-jpege-pdf-textlayout-static` is a 404) — so it would mean
-# building Skia from source on every clean build. The README says what to install instead.
+# Visual C++ redistributable. Linking the runtime statically instead was tried on 2026-09-23
+# and cannot be done: Slint draws with Skia, which rust-skia ships as a prebuilt archive, and
+# it publishes no static-runtime build of the one Slint needs (the download for
+# `...-d3d-gl-jpegd-jpege-pdf-textlayout-static` is a 404) — so it would mean building Skia
+# from source on every clean build. The README says what to install instead.
 #
-# What can be fixed is the other half of H17: from Visual Studio 2022 17.10, std::mutex has a
+# What can be fixed is the other half: from Visual Studio 2022 17.10, std::mutex has a
 # constexpr constructor that an *older* msvcp140.dll on the machine does not understand, and a
 # program built that way crashes on its first lock there. Microsoft's answer is this macro,
 # for everything compiled here; Skia's prebuilt archive is out of reach.
@@ -63,8 +63,8 @@ endif()
 #
 # Rust links the release C runtime whatever the profile, and Skia's prebuilt archive is built
 # against it with `_ITERATOR_DEBUG_LEVEL` 0, so a Debug build of anything that links Slint
-# against the debug runtime (/MDd) is 2,032 × `LNK2038` — an earlier review found the Debug app
-# unbuildable, which meant its Debug-only allocation guard had never run in the app. A Debug
+# against the debug runtime (/MDd) is 2,032 × `LNK2038` — the Debug app could not be built,
+# which meant its Debug-only allocation guard had never run in the app. A Debug
 # build is therefore /MD with the optimiser off, asserts on and the guard on; it gives up the
 # debug heap's checks, which the AddressSanitizer presets cover and more.
 if(MSVC)

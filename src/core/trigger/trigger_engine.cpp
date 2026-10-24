@@ -13,7 +13,7 @@ TriggerEngine::TriggerEngine(Sink& sink) noexcept : sink_(sink) {}
 void TriggerEngine::setRules(const std::vector<Rule::Config>& rules, bool fresh) {
     // **A rule that keeps its id carries on**, by id.
     //
-    // Every edit in the editor replaces the whole set — that is the command's stated
+    // Every edit in the rule editor replaces the whole set — that is the command's stated
     // purpose — so without this, renaming a rule mid-set would unmute every muted rule, put
     // every ÷2 back, replay every shuffle bag from its seed and switch back on a rule a Stream
     // Deck had switched off. The operator would have made one edit and silently undone half a
@@ -126,7 +126,7 @@ Rule* TriggerEngine::find(std::string_view id) noexcept {
 
 bool TriggerEngine::beatSatisfies(const Rule& rule, const Context& context) noexcept {
     const Rule::Config& config = rule.config();
-    // `effectiveEvery` and not `config.every`: the `double` and `halve` are a live gesture
+    // `effectiveEvery` and not `config.every`: a rule's `double` and `halve` are a live gesture
     // on top of what the operator wrote, like the tempo ÷2 button, and they act here so that
     // the counting stays in phase — a rule on every 4 bars taken to every 8 still lands on
     // bar 1, because both are counted from the first bar rather than from when the gesture

@@ -1,4 +1,4 @@
-# The Rust toolchain Slint is built with, pinned. an earlier review found it unpinned: whatever
+# The Rust toolchain Slint is built with, pinned. It used to be unpinned: whatever
 # rustc happened to be installed built the UI, on this machine and on CI alike.
 #
 # rustup reads this file for every cargo run under the repository, and the build trees are

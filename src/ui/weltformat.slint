@@ -2,8 +2,8 @@
 //
 // The Swiss poster wall at night: flat square charcoal sheets on a near-black page, Archivo in
 // bold lowercase, DM Mono for every number and address, one red. The operator chose it over four
-// other directions and shaped it over thirteen rounds of renders; the approved mockup is
-// `the approved design` (excluded from git) and every value here is its `swissdark` tokens.
+// other directions and shaped it over thirteen rounds of renders, and every value here is the
+// approved mockup's.
 //
 // **Why the controls are built here rather than taken from std-widgets.** Slint 1.18.1's
 // `Palette.accent-background` is an `out` property with Fluent's `#60CDFF` compiled in, so a
@@ -15,9 +15,9 @@
 //
 // - **None of them assigns its own value.** A widget that sets its own `checked`, `value` or
 //   `current-index` drops the binding its owner gave it, and goes on showing a row that is no
-//   longer there. These say what was asked for through
-//   a callback, and show whatever their owner then holds. The window's controller writes back
-//   in the same callback, so a slider still follows the hand.
+//   longer there. These say what was asked for through a callback, and show whatever their
+//   owner then holds. The window's controller writes back in the same callback, so a slider
+//   still follows the hand.
 // - **Every one of them takes the keyboard on a click**, so a text box being typed into loses
 //   it and commits — see `FocusSink`. Keys they do not want pass up to the window, which is
 //   where T, D, M and Escape (PANIC) are handled.
@@ -27,8 +27,8 @@
 // - **Escape inside a box, or inside an open list, is never PANIC.** It finishes the edit, or
 //   closes the list, and goes no further.
 //
-// The rule editor is in this look too since 2026-09-30 (its design locked that day, the design),
-// and the patch editor and the About box since 2026-10-01: every window.
+// The rule editor is in this look too since 2026-09-30 (its design locked that day), and the
+// patch editor and the About box since 2026-10-01: every window.
 
 import { FocusSink } from "theme.slint";
 
@@ -47,9 +47,9 @@ import "../../assets/fonts/dm-mono/DMMono-Medium.ttf";
 // a feature off (tools/drop_font_feature.py).
 import "../../assets/fonts/chivo-mono/ChivoMono-Medium.ttf";
 
-/// The `swissdark` tokens of the approved mockup (`t-swiss.css`), and nothing else. Every text
-/// colour here was measured against the surface it sits on at 4.5:1 or better, and nothing is set
-/// under 13 px — the bar the operator accepted.
+/// The tokens of the approved mockup, and nothing else. Every text colour here was measured
+/// against the surface it sits on at 4.5:1 or better, and nothing is set under 13 px — the bar the
+/// operator accepted.
 export global Wf {
     // --- the page and its sheets -------------------------------------------------------------
     out property <color> page: #0e0e0e;
@@ -145,7 +145,7 @@ export global Wf {
     /// plain. It carries a typographic family name, so it is "Chivo Mono" at weight 500.
     out property <string> code: "Chivo Mono";
 
-    // --- the rule editor's own (the design, locked 2026-09-30) -----------------------------
+    // --- the rule editor's own (locked 2026-09-30) -------------------------------------------
     /// A slot or a follow-up: a darker band inside a sheet.
     out property <color> band: #141414;
     /// The name of an address's slot, `{layer}`.
@@ -494,8 +494,8 @@ export component Tick inherits Rectangle {
 ///
 /// **It never picks for itself.** `selected` says which entry was chosen and the owner sets
 /// `current-index` — so a row bound to one follows its row whatever happens to the rows, and is
-/// never built again to catch up (an earlier review, L27; `WindowController::shownRows_`
-/// existed for std's ComboBox, which sets its own index). An entry chosen again is not a pick.
+/// never built again to catch up (`WindowController::shownRows_` existed for std's ComboBox,
+/// which sets its own index). An entry chosen again is not a pick.
 ///
 /// Keys, as std's ComboBox has them: with the box focused, Up and Down choose the entry before and
 /// after, and Enter or Space opens the list; in the open list Up and Down move the light, Enter
@@ -801,7 +801,7 @@ export component Pick inherits Rectangle {
 }
 
 /// A text box: dark, a 1 px edge, off-white type — and it shows what its owner says it holds, and
-/// never stops showing it.
+/// never stops showing it (`LiveField` in theme.slint, for this look).
 ///
 /// `value` is shown whenever the box is not being typed in, and put back the moment an edit is
 /// finished, so what the controller made of it — a port clamped, a name trimmed — is what the box
@@ -1001,9 +1001,9 @@ export component Entry inherits Rectangle {
     sink := FocusSink { }
 }
 
-/// A whole number typed into a box — "every", a MIDI channel, "no repeat" — in this look: theme.slint's
-/// `NumberBox` without the arrows beside it, which the approved rule editor has not got.
-/// Everything else `NumberBox` learned stays:
+/// A whole number typed into a box — "every", a MIDI channel, "no repeat" — in this look:
+/// theme.slint's `NumberBox` without the arrows beside it, which the approved rule editor has not
+/// got. Everything else `NumberBox` learned stays:
 ///
 /// - **Escape puts it back as it was** and goes no further, so it is never PANIC.
 /// - **Nothing is sent per keystroke.** What is typed is sent on Enter, a click away or a step, and
@@ -1181,9 +1181,9 @@ export component Reading inherits Rectangle {
 /// clamps it stops the handle at the clamp. A press on the track jumps there and goes on dragging.
 /// With the keyboard: Left and Right step, Home and End go to the ends. Never the wheel.
 ///
-/// Two looks of the rule editor's (the design, locked 2026-09-30): `quiet` draws it switched off
-/// and it still moves (B's sliders while B is off, set for later); and `painted` draws the track 8 px
-/// tall in `paint` — a colour picker's hue round the wheel, its saturation, its brightness — with the
+/// Two looks of the rule editor's (locked 2026-09-30): `quiet` draws it switched off and it still
+/// moves (B's sliders while B is off, set for later); and `painted` draws the track 8 px tall in
+/// `paint` — a colour picker's hue round the wheel, its saturation, its brightness — with the
 /// handle ringed in the field's near-black so it reads over any colour.
 export component Track inherits Rectangle {
     in property <float> value;

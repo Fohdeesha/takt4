@@ -123,7 +123,7 @@ public:
         if (!out_) {
             throw std::runtime_error("MIDI output: no usable MIDI API on this machine");
         }
-        // RtMidi's Windows port returns without a word when it is not open (C1), so the question
+        // RtMidi's Windows port returns without a word when it is not open, so the question
         // is asked here: a message that goes nowhere has failed.
         if (!out_->isPortOpen()) {
             throw std::runtime_error("MIDI output: the port is not open");
@@ -160,7 +160,7 @@ MidiOutput::~MidiOutput() {
 void MidiOutput::send(std::span<const unsigned char> message) noexcept {
     if (!open_) {
         // Closed by a reconnect that could not open it again. Nothing reaches the device, and
-        // counting that as a send is what kept an unplugged interface "back" for good (C1).
+        // counting that as a send is what kept an unplugged interface "back" for good.
         ++failed_;
         failedInARow_ = kLostAfterFailures;
         return;

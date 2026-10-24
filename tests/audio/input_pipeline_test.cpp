@@ -99,8 +99,8 @@ double hopRms(const std::vector<float>& hop) {
 } // namespace
 
 TEST_CASE("picking input 7 meters only input 7", "[audio]") {
-    // The Phase 1 exit criterion in synthetic form: with loud signal on
-    // the neighbouring inputs, the hops carry input 7's tone and nothing else.
+    // Channel selection in synthetic form: with loud signal on the neighbouring inputs, the hops
+    // carry input 7's tone and nothing else.
     constexpr std::size_t kFrames = 48000 * 2;
     const std::vector<float> block = interfaceBlock(kFrames);
     const InputDevice wasapi = device(HostApiKind::Wasapi);
@@ -159,7 +159,7 @@ TEST_CASE("a silent input stays exactly silent beside loud ones", "[audio]") {
 }
 
 TEST_CASE("a sample that is not a number reaches no hop as one", "[audio]") {
-    // an earlier review, at the front door. A loopback or a virtual cable can hand over a NaN or
+    // At the front door: a loopback or a virtual cable can hand over a NaN or
     // an infinity, and the resampler's filter would spread one across every output sample it
     // touches — on the way to a network whose state it would never leave.
     std::vector<float> block = interfaceBlock(48000);

@@ -73,10 +73,10 @@ TEST_CASE("MIDI output ports can be listed without throwing", "[midi]") {
 }
 
 TEST_CASE("a MIDI port is found again by name when it comes back at another number", "[midi]") {
-    // RtMidi's Windows backend ends every port's name with its place
-    // in the list, so a device unplugged and plugged back in — or a machine that lists its ports
-    // in another order — comes back under another name, and the one it was saved under matched
-    // nothing, or matched "USB MIDI 10" by containing "USB MIDI 1".
+    // RtMidi's Windows backend ends every port's name with its place in the list, so a device
+    // unplugged and plugged back in — or a machine that lists its ports in another order — comes
+    // back under another name, and the one it was saved under matched nothing, or matched
+    // "USB MIDI 10" by containing "USB MIDI 1".
     using takt4::output::findMidiPort;
     using takt4::output::midiPortBaseName;
 

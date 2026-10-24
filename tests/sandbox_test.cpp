@@ -239,10 +239,9 @@ TEST_CASE("the sandbox looks up no name but localhost", "[sandbox][net]") {
 
 TEST_CASE("a name is looked up again while its address goes on being used, and a number never is",
           "[net]") {
-    // an earlier review, L20: a name was looked up once, so a media server that came back
-    // from a restart on a new DHCP address was sent to the old one until the output was edited.
-    // Here the refresh is a twentieth of a second rather than half a minute; localhost is the
-    // one name the sandbox lets through.
+    // A name was looked up once, so a media server that came back from a restart on a new DHCP
+    // address was sent to the old one until the output was edited. Here the refresh is a twentieth
+    // of a second rather than half a minute; localhost is the one name the sandbox lets through.
     takt4::net::AsyncAddress local("localhost", 9000, 0.05);
     const auto by = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (!local.address() && std::chrono::steady_clock::now() < by) {

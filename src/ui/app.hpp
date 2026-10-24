@@ -12,8 +12,7 @@ int run();
 struct ShotOptions {
     /// The size the window opens at (`kMainWindowWidth` and `kMainWindowHeight` in
     /// window_state.hpp, which shot.cpp holds these to), so the picture is the window an
-    /// operator first sees. They were 900 by 836, which no window opened at (an earlier review of
-    /// 2026-09-25, L34).
+    /// operator first sees. They were 900 by 836, which no window opened at.
     int width = 800;
     int height = 934;
     /// Draw the window as it looks with a tracker running. False renders the idle
@@ -41,9 +40,8 @@ struct ShotOptions {
     /// another program holds, an OSC row whose host will not resolve, and both control inputs
     /// asked for and not open — the red lines each says under itself (2026-09-28).
     bool trouble = false;
-    /// With the running window, hold exactly what the approved mockup of 2026-09-29 holds
-    /// (`the approved design`, the design) — its readouts, its five outputs, its pickers —
-    /// so the render and the approved picture can be laid over each other and compared.
+    /// With the running window, hold a fixed made-up set — readouts, five outputs, pickers —
+    /// the same in every render, so two renders can be laid over each other and compared.
     bool mockup = false;
     /// Draw Inputs, Outputs, or both folded down to their headings.
     bool foldInputs = false;
@@ -60,11 +58,11 @@ struct ShotOptions {
     /// and one address on its list.
     bool remote = false;
     /// With `--rules`, one of the rule editor's other states, as the locked design's pictures show
-    /// them (the design, `the approved design`): "message" (the editor's
-    /// own message under the top row), "onset" (a fast "when", its cooldown live), "log" (the log
-    /// open), "fit" (every section open), "folded" (every section folded), "b-on" (B switched on
-    /// and open), "b-off" (B open and switched off), "none" (no rule picked), "no-lights" (a
-    /// lighting rule naming no fixture). Empty is the editor as it opens.
+    /// them: "message" (the editor's own message under the top row), "onset" (a fast "when", its
+    /// cooldown live), "log" (the log open), "fit" (every section open), "folded" (every section
+    /// folded), "b-on" (B switched on and open), "b-off" (B open and switched off), "none" (no
+    /// rule picked), "no-lights" (a lighting rule naming no fixture). Empty is the editor as it
+    /// opens.
     std::string state;
     /// The display's scale, as Windows' "Scale" setting gives it: 1.25 is 125 %. `width` and
     /// `height` stay logical, as the window's own sizes are, and the picture is that many times
@@ -83,7 +81,7 @@ inline constexpr int kFixturesShotHeight = 800;
 
 /// Renders the main window to a 24-bit BMP at `out`, with no window system involved.
 ///
-/// the window is worked on from sessions that have no display, where every
+/// The window is worked on from sessions that have no display, where every
 /// screen-capture route fails; this one does not need one. See `shot.cpp`.
 int renderShot(const std::filesystem::path& out, const ShotOptions& options);
 

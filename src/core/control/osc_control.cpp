@@ -62,7 +62,7 @@ std::string OscControl::lastMessage() const {
 }
 
 bool OscControl::dispatch(std::string_view address, std::optional<double> argument) {
-    // Everything the design lists hangs off `<prefix>/ctl/`. A message for another app's
+    // Every control address hangs off `<prefix>/ctl/`. A message for another app's
     // namespace is not ours to act on, however familiar the tail looks.
     const std::string base = config_.prefix + "/ctl/";
     if (address.size() <= base.size() || address.compare(0, base.size(), base) != 0) {

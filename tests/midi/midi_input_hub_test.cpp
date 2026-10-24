@@ -365,7 +365,7 @@ TEST_CASE("a real MIDI input is shared by two listeners, a clock on it is follow
         CHECK(hub.openPorts() == 0);
     }
 
-    // an earlier review. RtMidi 6.0.0's WinMM `closePort` takes its lock and, holding it,
+    // RtMidi 6.0.0's WinMM `closePort` takes its lock and, holding it,
     // calls `midiInReset`, which hands back every SysEx buffer being filled through the input
     // callback — and the callback took the same lock to queue the buffer again: a close that never
     // returned, on STOP, on a port change and on the way out. cmake/rtmidi_patch.cmake applies

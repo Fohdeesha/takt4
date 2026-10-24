@@ -1,7 +1,7 @@
 add_subdirectory(core)
 
 # takt4_version_resource(<target> <file name> <description>): the Windows version resource
-# from src/version.rc.in — FileVersion the release, ProductVersion the commit (an earlier review found
+# from src/version.rc.in — FileVersion the release, ProductVersion the commit (there used to be
 # none, which made a crash report from the field harder to place).
 function(takt4_version_resource target file description)
   if(NOT WIN32)
@@ -16,9 +16,9 @@ function(takt4_version_resource target file description)
   target_sources(${target} PRIVATE "${rc}")
 endfunction()
 
-# takt4-cli: the development console (the design Phase 1). Built in every configuration
-# including UI-less ones, and attached to every release beside the app. Its allocation guard
-# is on in Debug so a real-time violation found on the bench aborts rather than hides.
+# takt4-cli: the development console. Built in every configuration including UI-less ones, and
+# attached to every release beside the app. Its allocation guard is on in Debug so a real-time
+# violation found on the bench aborts rather than hides.
 add_executable(takt4-cli cli/annotate.cpp cli/annotate.hpp cli/args.hpp cli/console.hpp
                          cli/follow.cpp cli/follow.hpp cli/main.cpp cli/midi_in.cpp
                          cli/midi_in.hpp cli/prolink_watch.cpp cli/prolink_watch.hpp)
@@ -32,8 +32,7 @@ endif()
 # one is looked up in the source tree, which only a bench has; the built-in set and the
 # default state space come from the copies compiled into the binary wherever the assets are
 # built (every full build, which is what ships), so the console that goes out with a release
-# works on any machine. A core-only build has no assets and reads the
-# source tree for everything.
+# works on any machine. A core-only build has no assets and reads the source tree for everything.
 target_compile_definitions(takt4-cli PRIVATE
   "TAKT4_WEIGHTS_DIR=\"${PROJECT_SOURCE_DIR}/assets/weights\""
   "TAKT4_STATESPACE_DIR=\"${PROJECT_SOURCE_DIR}/assets/statespace\""

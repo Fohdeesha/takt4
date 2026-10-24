@@ -32,7 +32,7 @@ namespace takt4::dmx {
 /// command queue exactly as a rule does.
 ///
 /// It allocates when an effect starts (one small vector of tracks) and never in `tick`, which
-/// is the call that happens a thousand times a second. the design forbids allocation on the audio
+/// is the call that happens a thousand times a second. Allocation is forbidden on the audio
 /// thread and nowhere else, so this is a cost decision rather than a correctness one.
 class DmxEngine {
 public:
@@ -47,21 +47,20 @@ public:
     /// without the rig blinking: re-patching is an edit to the map, not an instruction to reset
     /// the lights.
     ///
-    /// Everything else is put right. A channel newly patched, or whose role or
-    /// parked level changed — a head re-moded from 8-bit to 16-bit, a parked shutter edited —
-    /// takes its fixture's parked level; it used to keep the old byte until a restart, so the
-    /// re-moded head inherited a closed shutter. And a channel no enabled fixture covers any
-    /// more goes to **zero**: a fixture switched off or deleted used to go on transmitting its
-    /// last levels, out of reach of every rule, Blackout included.
+    /// Everything else is put right. A channel newly patched, or whose role or parked level
+    /// changed — a head re-moded from 8-bit to 16-bit, a parked shutter edited — takes its
+    /// fixture's parked level; it used to keep the old byte until a restart, so the re-moded
+    /// head inherited a closed shutter. And a channel no enabled fixture covers any more goes to
+    /// **zero**: a fixture switched off or deleted used to go on transmitting its last levels,
+    /// out of reach of every rule, Blackout included.
     ///
-    /// **So does a whole universe the patch no longer uses**. A
-    /// rig with one par on a node — an ordinary small rig — lost that universe from the patch
-    /// when the par was switched off or deleted, and nothing ever sent it again: the node held
-    /// its last frame, and the lamp stayed lit through Stop, quit and Blackout. Such a universe
-    /// is `released()`: sent all zeros for `kReleasedSeconds`, a fresh frame at the 44 Hz
-    /// ceiling so one dropped datagram costs nothing, and then left alone — the operator's
-    /// answer to an earlier review, so that anything else that takes the universe over is not
-    /// fought for it.
+    /// **So does a whole universe the patch no longer uses.** A rig with one par on a node — an
+    /// ordinary small rig — lost that universe from the patch when the par was switched off or
+    /// deleted, and nothing ever sent it again: the node held its last frame, and the lamp
+    /// stayed lit through Stop, quit and Blackout. Such a universe is `released()`: sent all
+    /// zeros for `kReleasedSeconds`, a fresh frame at the 44 Hz ceiling so one dropped datagram
+    /// costs nothing, and then left alone — the operator's choice, so that anything else that
+    /// takes the universe over is not fought for it.
     ///
     /// Running effects **carry on**, re-aimed at the same fixture — by `Fixture::id`, so a
     /// rename is not a different fixture — in the new patch; they were all cancelled, so every
@@ -104,7 +103,7 @@ public:
     void holdChannel(PortAddress universe, std::uint16_t channel, std::uint8_t level,
                      double seconds, double now);
 
-    /// Stops every effect and **holds the levels where they are** — the PANIC, as the
+    /// Stops every effect and **holds the levels where they are** — PANIC, as the
     /// operator asked for it on 2026-09-16: the lights freeze rather than going dark.
     ///
     /// The reasoning is theirs and it is a live-show one. takt4 may be one source among
@@ -268,9 +267,9 @@ private:
     ///
     /// It used to take the hue for a dimmer effect from the channels' *current* levels, so once
     /// a flash had decayed to zero the fixture read as dark and was taken as white: a color rule
-    /// and a beat flash gave the chosen color on the first flash and white on every one after
-    ///. A color effect now moves the color and a dimmer effect the intensity,
-    /// and neither forgets the other.
+    /// and a beat flash gave the chosen color on the first flash and white on every one after.
+    /// A color effect now moves the color and a dimmer effect the intensity, and neither forgets
+    /// the other.
     struct Virtual {
         bool active = false;
         double intensity = 1.0;

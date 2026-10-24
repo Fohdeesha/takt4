@@ -1,11 +1,11 @@
 """The BeatNet+ feature front end, built from madmom exactly as BeatNet+ builds it.
 
-This is the reference that src/core/features/ has to match (the design, the design Phase 2).
+This is the reference that src/core/features/ has to match.
 It is BeatNet+'s ``LOG_SPECT`` class (src/BeatNetPlus/log_spect.py at commit
 bb90eb0a9065b101a4b4c4cb2b2061950266cb4b) restated without the torch dependency; the
-processor chain and every parameter are copied from there, not from the design, whose
-description of the log step ("log1p") is wrong: madmom's
-LogarithmicSpectrogramProcessor(mul=1, add=1) computes log10(1 + x).
+processor chain and every parameter are copied from there, not from a summary, and the log
+step is not "log1p": madmom's LogarithmicSpectrogramProcessor(mul=1, add=1) computes
+log10(1 + x).
 
 What the chain does, for a mono float signal at 22050 Hz:
 

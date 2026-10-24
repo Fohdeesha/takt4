@@ -21,13 +21,13 @@ public:
 /// The one thread every PortAudio call of an `engine::LiveTracker` is made on — and the reason no
 /// audio driver can hold the window's thread for longer than the window is prepared to wait.
 ///
-/// **Why a thread of its own**. PortAudio's ASIO and WASAPI hosts
-/// stop a stream in code that waits with no limit — `ASIOStop`, and a `SignalObjectAndWait(...,
-/// INFINITE)` — and so a driver wedged in there held whichever thread had asked. That was the
-/// window's: STOP, a device change, and since the outage handling reopens an input on its own a
-/// second after the audio stops, a wedged driver froze the whole window, PANIC included, with
-/// nothing anybody could press. A caller here waits as long as it chooses and then gets on with
-/// it; the job goes on waiting for the driver on this thread instead.
+/// **Why a thread of its own.** PortAudio's ASIO and WASAPI hosts stop a stream in code that waits
+/// with no limit — `ASIOStop`, and a `SignalObjectAndWait(..., INFINITE)` — and so a driver wedged
+/// in there held whichever thread had asked. That was the window's: STOP, a device change, and
+/// since the outage handling reopens an input on its own a second after the audio stops, a wedged
+/// driver froze the whole window, PANIC included, with nothing anybody could press. A caller here
+/// waits as long as it chooses and then gets on with it; the job goes on waiting for the driver on
+/// this thread instead.
 ///
 /// **Why one thread, and not one per call**: an ASIO driver is a COM object, created in the
 /// apartment of the thread that opens it — PortAudio leaves COM on any other thread to the

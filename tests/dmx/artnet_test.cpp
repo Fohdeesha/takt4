@@ -74,7 +74,7 @@ void feed(ArtNetPublisher& publisher, const takt4::testing::ArtNetNodes& nodes,
 
 } // namespace
 
-// The wire format, byte for byte, against Art-Net 4 Protocol Release V1.4 "ArtDmx packet
+// The wire format, byte for byte, against Art-Net 4 Protocol Release V1.4, section "ArtDmx packet
 // definition". Field order and the two *different* endiannesses are the whole of what can go
 // wrong here, and neither shows up as anything but a rig that does nothing.
 TEST_CASE("an ArtDmx packet is encoded exactly as Art-Net 4 says", "[dmx][artnet]") {
@@ -301,9 +301,8 @@ TEST_CASE("an Art-Net node that cannot be resolved is reported, not swallowed", 
 }
 
 TEST_CASE("an Art-Net node the network will not send to is reported", "[dmx][artnet]") {
-    // an earlier review and M12: a network that is down, or a cable that is out, fails every
-    // send — and nothing said so; the node simply went dark. See `kUnsendableHost` for what
-    // stands in for that here.
+    // A network that is down, or a cable that is out, fails every send — and nothing said so; the
+    // node simply went dark. See `kUnsendableHost` for what stands in for that here.
     if constexpr (!takt4::testing::kUnsendableFails) {
         SKIP(takt4::testing::kUnsendableSkip);
     }
@@ -319,7 +318,7 @@ TEST_CASE("an Art-Net node the network will not send to is reported", "[dmx][art
 TEST_CASE("an Art-Net node at a broadcast address really sends", "[dmx][artnet][network]") {
     // Art-Net's spec forbids broadcasting ArtDmx, and some rigs do it anyway; the socket has to
     // be allowed to or every frame is refused. It goes through `net::prepareSender`, shared
-    // with OSC since an earlier review, so this is what notices if the node stops calling it.
+    // with OSC, so this is what notices if the node stops calling it.
     // One frame to the limited broadcast, on a port nothing uses.
     ArtNetSender node("255.255.255.255", 57092);
     const std::array<std::uint8_t, 3> levels{0, 0, 0};
@@ -418,10 +417,10 @@ TEST_CASE("frames are paced at 44 Hz and kept alive when nothing moves", "[dmx][
 TEST_CASE("a delayed node's frame is looked up only when one can go, and only patched universes "
           "are kept",
           "[dmx][artnet]") {
-    // an earlier review: a delayed node's frame was looked up in the history — a walk back through
-    // five hundred frames at a second's delay — every round, for every node and universe,
-    // before the 44 Hz pacing said whether anything could be sent at all. And L17: the history
-    // of a universe the patch had dropped was kept for as long as any node lagged.
+    // A delayed node's frame was looked up in the history — a walk back through five hundred frames
+    // at a second's delay — every round, for every node and universe, before the 44 Hz pacing said
+    // whether anything could be sent at all. And the history of a universe the patch had dropped
+    // was kept for as long as any node lagged.
     takt4::testing::ArtNetNodes nodes(1);
     DmxEngine engine;
     engine.setPatch({rgbAt("par", 0, 1)});
@@ -508,10 +507,9 @@ TEST_CASE("an Art-Net node set later is sent the lighting that much later", "[dm
 }
 
 TEST_CASE("PANIC freezes a delayed Art-Net node when it freezes the rest", "[dmx][artnet]") {
-    // PANIC stopped the animation and froze the levels — and a node
-    // set half a second late went on being sent the half-second before the freeze from the
-    // history: a strobe that went on strobing, out of the operator's reach, beside a node that had
-    // stopped.
+    // PANIC stopped the animation and froze the levels — and a node set half a second late went on
+    // being sent the half-second before the freeze from the history: a strobe that went on
+    // strobing, out of the operator's reach, beside a node that had stopped.
     using takt4::testing::kArtNetFrame;
     takt4::testing::ArtNetNodes nodes(2);
     DmxEngine engine;
@@ -579,11 +577,11 @@ TEST_CASE("an Art-Net node set earlier has the lighting as it is made, and the r
 
 TEST_CASE("a delay raised from nothing holds a node where it was, then plays on that far behind",
           "[dmx][artnet]") {
-    // an earlier review, coverage gap 9. With every node on time no history is kept — half
-    // a megabyte a universe for nothing — so a delay raised mid-set has nothing to reach back
-    // into. The node is held on the lighting as it was when the delay was raised until the history
-    // reaches back that far, and from then on it is sent the lighting that long ago: a delay
-    // introduced live has to hold somewhere, and it holds on what the node already shows.
+    // With every node on time no history is kept — half a megabyte a universe for nothing — so a
+    // delay raised mid-set has nothing to reach back into. The node is held on the lighting as it
+    // was when the delay was raised until the history reaches back that far, and from then on it is
+    // sent the lighting that long ago: a delay introduced live has to hold somewhere, and it holds
+    // on what the node already shows.
     using takt4::testing::kArtNetFrame;
     takt4::testing::ArtNetNodes nodes(2);
     DmxEngine engine;
@@ -618,7 +616,7 @@ TEST_CASE("a delay raised from nothing holds a node where it was, then plays on 
 
 TEST_CASE("a node's history goes round its ring and still sends what was that long ago",
           "[dmx][artnet]") {
-    // Coverage gap 9. The history is a ring allocated once, 1033 frames kept at most one every
+    // The history is a ring allocated once, 1033 frames kept at most one every
     // 2 ms, and a universe that changes every round fills it in two to three seconds (a frame is
     // kept only once 2 ms have passed, so the gaps come out 2 or 3 ms). So this runs a universe
     // that changes every millisecond for eight, and holds the delayed node, every frame it is
@@ -673,10 +671,10 @@ TEST_CASE("a node's history goes round its ring and still sends what was that lo
 
 TEST_CASE("the same node given again keeps its sender, its sequence and its pacing",
           "[dmx][artnet]") {
-    // Coverage gap 9, and an earlier review before it. Every edit of every output hands the
-    // publisher the whole list of nodes again; a node whose id and address are unchanged has to
-    // carry on as it was — its ArtDmx sequence numbers counting on, and its 44 Hz clock — or a
-    // slider dragged on another row sends it frames faster than it takes them.
+    // Every edit of every output hands the publisher the whole list of nodes again; a node whose id
+    // and address are unchanged has to carry on as it was — its ArtDmx sequence numbers counting
+    // on, and its 44 Hz clock — or a slider dragged on another row sends it frames faster than it
+    // takes them.
     LoopbackReceiver receiver;
     DmxEngine engine;
     engine.setPatch({rgbAt("par", 0, 1)});

@@ -86,7 +86,7 @@ OscReceiver::OscReceiver(std::uint16_t port, bool localOnly) : port_(port) {
     auto impl = std::make_unique<Impl>();
 
     // IPv4 only, deliberately. A dual-stack socket would need per-platform handling of
-    // IPV6_V6ONLY, and every control surface the design names speaks IPv4.
+    // IPV6_V6ONLY, and every control surface it was built for speaks IPv4.
     impl->socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (impl->socket == kInvalidSocket) {
         throw std::runtime_error("OSC control: cannot open a socket (" +

@@ -2,8 +2,8 @@
 
 #include <cstdint>
 
-/// **The test binaries' sandbox: nothing a test does reaches the rig** (an earlier review,
-/// T1 and T2, and the operator's answer to its Q8).
+/// **The test binaries' sandbox: nothing a test does reaches the rig** (the operator's call of
+/// 2026-09-26).
 ///
 /// The machine the tests run on is the one the show runs from. A window test pressed
 /// [+ ADD OUTPUT] and sent real OSC to 127.0.0.1:9000, the port this rig's own receiver listens
@@ -33,8 +33,8 @@
 ///   open nothing (`ui::WindowController`). On 2026-10-08 a click sweep over the About box
 ///   opened the licence in the rig's text editor 140 times and froze the desktop.
 /// - **No name is looked up**, apart from `localhost`: a host typed as a name would send a DNS
-///   query out of the rig's network card. It fails the way a name
-///   nobody knows fails — "cannot resolve" — so the tests of that path still see it.
+///   query out of the rig's network card. It fails the way a name nobody knows fails —
+///   "cannot resolve" — so the tests of that path still see it.
 ///
 /// Looking a device up is left alone: a port that is not there is still reported as not
 /// there, in the words an operator would get. Only the step that would open it is refused,

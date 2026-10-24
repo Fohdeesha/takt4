@@ -7,7 +7,7 @@
 
 namespace takt4::trigger {
 
-/// the intensity is `features::Intensity`, which lives with the thing that
+/// The intensity a rule reads is `features::Intensity`, which lives with the thing that
 /// computes it: `features::IntensityClassifier` reads it straight out of the feature frame,
 /// so the type belongs beside the features rather than up here.
 ///
@@ -21,7 +21,7 @@ namespace takt4::trigger {
 
 /// Everything a rule can be asked about at the moment it might fire.
 ///
-/// One struct rather than a reference to the tracker, for the reason the design gives the whole
+/// One struct rather than a reference to the tracker, for the reason that shapes the whole
 /// output side: the rules run on the output thread and the tracker belongs to the inference
 /// thread. This is a copy taken once per round, so every rule in a round sees the same
 /// instant — which matters more than it looks. Two rules with the same "BPM in range"
@@ -31,7 +31,7 @@ namespace takt4::trigger {
 /// Nothing here is a pointer and nothing is owned, so a round's context costs one copy of
 /// forty-odd bytes.
 struct Context {
-    /// the published tempo — the one on screen, after the fold and any ÷2 or ×2, because
+    /// The published tempo — the one on screen, after the fold and any ÷2 or ×2, because
     /// that is the number an operator set their "BPM in range" condition against.
     double bpm = 0.0;
     /// How far apart the beats going out are, in seconds: `tracking::TempoState::gridBpm` as a

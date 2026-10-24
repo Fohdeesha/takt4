@@ -190,10 +190,9 @@ TEST_CASE("a bound control reaches the tracker", "[control][midi]") {
 
 TEST_CASE("the bytes a controller sends reach the tracker as RtMidi hands them over",
           "[control][midi]") {
-    // an earlier review, coverage gap 13: the callback's own path — raw bytes, read as a
-    // gesture or not, then dispatched — which every other test here skips by building the event
-    // itself. RtMidi delivering them needs a MIDI loopback this machine has not got; everything
-    // after that is here.
+    // The callback's own path — raw bytes, read as a gesture or not, then dispatched — which
+    // every other test here skips by building the event itself. RtMidi delivering them needs a
+    // MIDI loopback this machine has not got; everything after that is here.
     auto engine = makeEngine();
     MidiControl control(*engine, inputs(), offline());
     trackUntilLocked(*engine);
@@ -219,8 +218,8 @@ TEST_CASE("the bytes a controller sends reach the tracker as RtMidi hands them o
     CHECK_THAT(engine->state().bpm, WithinAbs(shown / 2.0, 1e-9));
 
     // The release of that press, both ways a keyboard spells it: it reaches the binding, as a
-    // CC pad's release does, and a button does nothing with it — the tempo is
-    // halved once, not again.
+    // CC pad's release does, and a button does nothing with it — the tempo is halved once, not
+    // again.
     receive({0x80, 40, 0});
     receive({0x90, 40, 0});
     CHECK(control.handled() == 3);
@@ -275,11 +274,11 @@ TEST_CASE("a switch bound to the lock pins with its own position", "[control][mi
     CHECK_FALSE(engine->state().locked); // released, so the tracker has it back
 
     SECTION("a pad bound to it pins while it is held, and lets go when it is released") {
-        // A note used to carry its press and no release, so a pad
-        // bound to the lock pinned it and nothing on the controller could let go — "bind two
-        // notes, one for each end" pinned it twice. Its release is the note at 0 now, as a CC
-        // pad's release is a CC at 0, and the lock follows the pad exactly as it follows the
-        // CC above. Still no toggle: that would depend on a state the controller cannot see.
+        // A note used to carry its press and no release, so a pad bound to the lock pinned it
+        // and nothing on the controller could let go — "bind two notes, one for each end"
+        // pinned it twice. Its release is the note at 0 now, as a CC pad's release is a CC
+        // at 0, and the lock follows the pad exactly as it follows the CC above. Still no
+        // toggle: that would depend on a state the controller cannot see.
         MidiBinding pad;
         pad.number = 50;
         pad.target = ControlAction::Lock;
@@ -306,8 +305,8 @@ TEST_CASE("a switch bound to the lock pins with its own position", "[control][mi
     }
 
     SECTION("learning a pad for it does not let go of a lock pinned from elsewhere") {
-        // The release of the press being learned reaches the bindings now, and is swallowed
-        // as a CC pad's is: otherwise learning a pad for the lock unpinned it on the way.
+        // The release of the press being learned reaches the bindings now, and is swallowed as a
+        // CC pad's is: otherwise learning a pad for the lock unpinned it on the way.
         CHECK(control.dispatch(cc(64, 127)));
         (void)engine->step();
         REQUIRE(engine->state().pinned);
@@ -324,17 +323,17 @@ TEST_CASE("a switch bound to the lock pins with its own position", "[control][mi
 }
 
 TEST_CASE("a box of buttons can reach the rules as well as the tracker", "[control][midi]") {
-    // the design: "Every one of these is also bindable to a MIDI note or CC through a learn
-    // mode." That includes the two addresses whose subject is the rules rather than the
-    // tracker, and they take a different route out of the surface to get there.
+    // Every control address is also bindable to a MIDI note or CC through a learn mode. That
+    // includes the two addresses whose subject is the rules rather than the tracker, and they
+    // take a different route out of the surface to get there.
     auto engine = makeEngine();
     takt4::testing::RecordingRules rules;
     MidiControl control(*engine, inputs(), offline(), &rules);
 
     SECTION("a pad bound to panic is a panic button, and stays one") {
         // Every press engages, and neither a second press nor lifting the finger lets go: a
-        // note's release reaches the binding since an earlier review, and PANIC from MIDI skips
-        // it, as it skips a CC pad's. Releasing is the window's RELEASE.
+        // note's release reaches the binding, and PANIC from MIDI skips it, as it skips a CC
+        // pad's. Releasing is the window's RELEASE.
         MidiBinding pad;
         pad.number = 36;
         pad.target = ControlAction::Panic;
@@ -348,11 +347,10 @@ TEST_CASE("a box of buttons can reach the rules as well as the tracker", "[contr
     }
 
     SECTION("a CC bound to panic engages it, and letting go of the pad does not release it") {
-        // an earlier review. A CC reads below 64 as "off", which made a momentary CC pad —
-        // 127 on the press, 0 on the release, the commonest pad there is — hold-to-panic: the
-        // halt let go the moment the finger came up. PANIC from a control surface engages and
-        // nothing else, as the window's has since H18; RELEASE is the window's, or
-        // `panic/release`.
+        // A CC reads below 64 as "off", which made a momentary CC pad — 127 on the press, 0 on
+        // the release, the commonest pad there is — hold-to-panic: the halt let go the moment
+        // the finger came up. PANIC from a control surface engages and nothing else, as the
+        // window's does; RELEASE is the window's, or `panic/release`.
         MidiBinding knob;
         knob.kind = MidiEvent::Kind::ControlChange;
         knob.number = 64;
@@ -378,7 +376,7 @@ TEST_CASE("a box of buttons can reach the rules as well as the tracker", "[contr
     }
 
     SECTION("learn mode arms a whole target, so the rule survives being bound") {
-        // the editor is what will call this, from the card that already names the rule —
+        // The rule editor is what will call this, from the card that already names the rule —
         // which is why `learn` takes a target rather than an action.
         control.learn(takt4::control::ControlTarget(ControlAction::RuleEnable, "intro"));
         REQUIRE(control.dispatch(note(48)));
@@ -395,7 +393,7 @@ TEST_CASE("a box of buttons can reach the rules as well as the tracker", "[contr
 }
 
 TEST_CASE("a rule control that is not there refuses rather than swallows", "[control][midi]") {
-    // The default: a `MidiControl` built with no rules — the headless mode before it has
+    // The default: a `MidiControl` built with no rules — a headless mode before it has
     // an output runner, or any app that has none. A binding to panic then reports that it
     // did nothing, which is what puts "your panic button is not wired" in front of somebody
     // at the bench rather than during a set.
@@ -426,9 +424,9 @@ TEST_CASE("a rule control that is not there refuses rather than swallows", "[con
 
 TEST_CASE("three taps on a pad make a tempo, even from a pad that chatters", "[control][midi]") {
     // This used to stop at "handled", which is how a pad that tapped twice per press went
-    // unseen. A rhythm played in real time, every press retriggering
-    // 5 ms later the way a worn pad does, and where the tracker's tempo window ends up: centred
-    // on the tempo tapped (a seed, the design) — which, without the bounce guard, it is not.
+    // unseen. A rhythm played in real time, every press retriggering 5 ms later the way a worn
+    // pad does, and where the tracker's tempo window ends up: centred on the tempo tapped (a
+    // tap is a seed, not an override) — which, without the bounce guard, it is not.
     auto engine = makeEngine();
     MidiControl control(*engine, inputs(), offline());
 
@@ -593,13 +591,12 @@ TEST_CASE("a port that is not there is reported rather than silently dead",
 }
 
 TEST_CASE("a real MIDI input opens and closes again and again", "[control][midi][hardware]") {
-    // an earlier review: RtMidi's WinMM close held its lock across `midiInReset`, which hands
-    // pending SysEx buffers back through the input callback — which takes the same lock
-    // (cmake/rtmidi_patch.cmake). The deadlock itself wants a device sending SysEx at the
-    // moment of the close, which no test can arrange; what this does run is the patched close
-    // and open, against a real port and the real driver, over and over: every close returns,
-    // and every reopen works — which upstream's fix alone would not have kept, since it never
-    // lowered its flag again.
+    // RtMidi's WinMM close held its lock across `midiInReset`, which hands pending SysEx buffers
+    // back through the input callback — which takes the same lock (cmake/rtmidi_patch.cmake). The
+    // deadlock itself wants a device sending SysEx at the moment of the close, which no test can
+    // arrange; what this does run is the patched close and open, against a real port and the real
+    // driver, over and over: every close returns, and every reopen works — which upstream's fix
+    // alone would not have kept, since it never lowered its flag again.
     const std::vector<std::string> ports = takt4::output::listMidiInputPorts();
     if (ports.empty()) {
         SKIP("no MIDI input on this machine");
@@ -633,9 +630,9 @@ TEST_CASE("the machine's MIDI inputs can be listed without opening one", "[contr
 }
 
 TEST_CASE("a CC pad's release is not a second press", "[control][midi]") {
-    // an earlier review. A pad in CC mode sends 127 on the press and 0 on the release, and every
-    // CC value used to be dispatched — so ÷2 halved twice, a tap button tapped twice about
-    // 120 ms apart, and a downbeat snapped again, late, on the release.
+    // A pad in CC mode sends 127 on the press and 0 on the release, and every CC value used to
+    // be dispatched — so ÷2 halved twice, a tap button tapped twice about 120 ms apart, and a
+    // downbeat snapped again, late, on the release.
     auto engine = makeEngine();
     MidiControl control(*engine, inputs(), offline());
     trackUntilLocked(*engine);
@@ -711,9 +708,9 @@ TEST_CASE("a push button that sends 1 then 0 taps once a press", "[control]") {
     }
 
     SECTION("and panic/release lets go, where a panic 0 no longer does") {
-        // an earlier review, L15: a 0 to panic was a release, so a push button's
-        // own release undid the halt. A panic engages whatever it carries; letting go is an
-        // action of its own.
+        // A 0 to panic was a release, so a push button's own release undid the halt. The
+        // operator's call: a panic engages whatever it carries; letting go is an action of its
+        // own.
         const takt4::control::ControlTarget panic(ControlAction::Panic);
         const takt4::control::ControlTarget release(ControlAction::PanicRelease);
         CHECK(surface.apply(panic, 1.0, 30.0));
@@ -752,11 +749,11 @@ public:
 TEST_CASE("a message already on its way when the control input stops is finished before stop "
           "returns, and none is handled after",
           "[control]") {
-    // an earlier review residue: RtMidi's `cancelCallback` joins nothing, so a message
-    // that had passed the running flag when `stop` began went on being handled after it — a
-    // PANIC or a tap acted on by a surface already switched off, and on the way out a dispatch
-    // into an object being destroyed. Here the message is a PANIC whose handling waits, played
-    // on a thread of its own as RtMidi's would.
+    // RtMidi's `cancelCallback` joins nothing, so a message that had passed the running flag
+    // when `stop` began went on being handled after it — a PANIC or a tap acted on by a surface
+    // already switched off, and on the way out a dispatch into an object being destroyed. Here
+    // the message is a PANIC whose handling waits, played on a thread of its own as RtMidi's
+    // would.
     auto engine = makeEngine();
     HeldPanic rules;
     MidiControl control(*engine, inputs(), MidiControl::Config{}, &rules);

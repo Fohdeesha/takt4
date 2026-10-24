@@ -365,7 +365,7 @@ TEST_CASE("a hue sweep travels round the wheel", "[dmx][engine]") {
     CHECK(at(engine, 0, 3) == 255); // 240 is blue
 
     SECTION("from the white a rule starts with, too") {
-        // an earlier review: the sweep took its saturation from the rule's color, and a rule's
+        // The sweep took its saturation from the rule's color, and a rule's
         // color is white until somebody picks one — so the default sweep was white from end to
         // end, an effect that changed nothing. A color with no saturation sweeps at full.
         DmxEngine fresh;
@@ -498,7 +498,7 @@ TEST_CASE("re-patching keeps the rig lit", "[dmx][engine]") {
 }
 
 TEST_CASE("a re-patch re-parks what changed and releases what is gone", "[dmx][engine]") {
-    // an earlier review. Coverage was copied forward and only ever set, so a channel that had ever
+    // Coverage was copied forward and only ever set, so a channel that had ever
     // been patched never took a new parked level: an edited parked value, a changed mode, or a
     // fixture deleted and added again kept the old bytes until a restart — a head re-moded from
     // 8-bit to 16-bit inherited a closed shutter.
@@ -515,7 +515,7 @@ TEST_CASE("a re-patch re-parks what changed and releases what is gone", "[dmx][e
 
     SECTION("a fixture re-moded takes the new mode's parked levels") {
         // Channel 7 is the 8-bit map's green, parked at zero, and the 16-bit map's shutter,
-        // parked open — an earlier review own example.
+        // parked open — the example above.
         engine.setPatch({takt4::dmx::fixtureFromMode("head", 5, 0, 1)}); // 8-bit head
         REQUIRE(at(engine, 0, 7) == 0);
         engine.setPatch({head16("head", 1)});
@@ -633,7 +633,7 @@ TEST_CASE("a re-patch re-parks what changed and releases what is gone", "[dmx][e
 }
 
 TEST_CASE("an LED par keeps its color apart from its brightness", "[dmx][engine]") {
-    // an earlier review. A dimmer effect on a fixture with no dimmer channel took its hue from the
+    // A dimmer effect on a fixture with no dimmer channel took its hue from the
     // channels' current levels, so once a flash had decayed to zero the fixture read as dark
     // and was taken as white: a color rule and a beat flash gave the chosen color on the first
     // flash and white on every flash after.
@@ -860,7 +860,7 @@ TEST_CASE("a channel test holds one channel and puts it back", "[dmx][engine]") 
 }
 
 TEST_CASE("a fixture with a role on several channels drives every one of them", "[dmx][engine]") {
-    // an earlier review: `channelOf` answered with the first channel carrying a role, so a bar of
+    // `channelOf` answered with the first channel carrying a role, so a bar of
     // RGB cells lit its first cell only, and a Blackout left the others lit.
     DmxEngine engine;
 
@@ -912,7 +912,7 @@ TEST_CASE("a fixture with a role on several channels drives every one of them", 
 }
 
 TEST_CASE("a blackout reaches every fixture, past the 64 a rule can name", "[dmx][engine]") {
-    // an earlier review: `blackout` went through the mask a rule uses, which names 64 fixtures,
+    // `blackout` went through the mask a rule uses, which names 64 fixtures,
     // on the word of a comment saying the patch was capped there. It is not — the editor only
     // warns — so a 65th fixture stayed lit through Stop and quit.
     std::vector<Fixture> patch;
@@ -936,7 +936,7 @@ TEST_CASE("a blackout reaches every fixture, past the 64 a rule can name", "[dmx
 }
 
 TEST_CASE("PANIC and Stop let a channel test go, back to the level it found", "[dmx][engine]") {
-    // an earlier review: PANIC (`cancelAll`) and Stop (`blackout`) dropped every running effect,
+    // PANIC (`cancelAll`) and Stop (`blackout`) dropped every running effect,
     // and a TEST hold is one, so the channel stayed at the test level for good — where a patch
     // change had always put it back.
     DmxEngine engine;

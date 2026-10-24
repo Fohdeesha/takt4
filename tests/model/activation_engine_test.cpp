@@ -112,7 +112,7 @@ float loudestBeat(const std::vector<FrameActivation>& frames, std::size_t from, 
 } // namespace
 
 TEST_CASE("a sample that is not a number does not end the run", "[model][engine]") {
-    // an earlier review. The network is recurrent and so is the intensity state: one NaN in the
+    // The network is recurrent and so is the intensity state: one NaN in the
     // audio was a NaN in every frame after it, which is a tracker with no beats until somebody
     // pressed Stop and Start. The console's file path reaches the model without the input
     // pipeline, so this is checked at the model's own door.
@@ -142,8 +142,8 @@ TEST_CASE("a sample that is not a number does not end the run", "[model][engine]
 }
 
 TEST_CASE("a clipped input is still an input the model can track", "[model][engine]") {
-    // an earlier review: nothing tested what a hot input does to the model. The excerpt driven
-    // twenty times over and hard-clipped at full scale — a gain knob turned all the way up.
+    // Nothing tested what a hot input does to the model. The excerpt driven twenty times over and
+    // hard-clipped at full scale — a gain knob turned all the way up.
     std::vector<float> signal = syntheticExcerpt();
     for (float& sample : signal) {
         sample = std::clamp(sample * 20.0f, -1.0f, 1.0f);
@@ -159,8 +159,8 @@ TEST_CASE("a clipped input is still an input the model can track", "[model][engi
 }
 
 TEST_CASE("an activation carries the host time of the audio it was made from", "[model][engine]") {
-    // the design. LinkSession is the real source; this one is a straight line, so the
-    // arithmetic can be checked rather than merely exercised.
+    // LinkSession is the real source of host time; this one is a straight line, so the arithmetic
+    // can be checked rather than merely exercised.
     struct RulerClock final : takt4::audio::HostTimeSource {
         std::int64_t hostMicrosForSample(double sampleTime) noexcept override {
             ++calls;
@@ -210,7 +210,7 @@ TEST_CASE("an activation carries the host time of the audio it was made from", "
 
 TEST_CASE("a stamp stays on the audio it was made from after hops were dropped",
           "[model][engine]") {
-    // an earlier review. The stamp was worked back from the hop's own index, which counts every
+    // The stamp was worked back from the hop's own index, which counts every
     // hop the audio thread saw — including the ones dropped because the worker's queue was
     // full. So after one stall every later frame was stamped with audio that many hops older
     // than its own, and every beat after it reached Link that many 20 ms early, to the end of
@@ -273,7 +273,7 @@ TEST_CASE("the worker thread produces the same activations as stepping by hand",
           "[model][engine]") {
     // **And two minutes of digital silence after the music**.
     // The worker reads denormals as zero, and a quiet passage is where a denormal would turn
-    // up, so the comparison runs through one. Since T20 the hand-stepped path runs in the
+    // up, so the comparison runs through one. The hand-stepped path now runs in the
     // worker's floating-point mode too, and the two are compared like for like. Measured on
     // 2026-09-26 with `step()` left in the caller's mode: they still agree bit for bit here —
     // this network over this audio makes no denormal that reaches an output — so this guards
@@ -326,9 +326,8 @@ TEST_CASE("the worker thread produces the same activations as stepping by hand",
         CHECK(fromWorker[f].nonBeat == byHand[f].nonBeat);
     }
 
-    // the design Phase 3's other exit criterion, measured rather than assumed: one hop of
-    // audio is 20 ms, and the worker has to be inside that or the queue grows without
-    // bound.
+    // The worker's real-time budget, measured rather than assumed: one hop of audio is 20 ms, and
+    // the worker has to be inside that or the queue grows without bound.
     //
     // The claim is about the *mean*, not the worst. A single hop that overruns is
     // absorbed by the 64-hop ring — that is what the ring is for — and on a shared CI

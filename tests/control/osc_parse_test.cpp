@@ -89,8 +89,8 @@ TEST_CASE("an address on its own is a message", "[control]") {
 }
 
 TEST_CASE("a flag argument reads the way a control surface sends it", "[control]") {
-    // the `<0|1>`. A Stream Deck sending a boolean means what one sending 1 or 0 means, so
-    // `T` and `F` read as the numbers they stand for.
+    // A flag is written `<0|1>`. A Stream Deck sending a boolean means what one sending 1 or 0
+    // means, so `T` and `F` read as the numbers they stand for.
     OscMessage one("/ctl/lock");
     one.addInt(1);
     CHECK(parseOsc(one.packet())->number(0) == 1.0);
@@ -170,8 +170,7 @@ TEST_CASE("truncating a real message at any length never reads past the end", "[
     // **Each prefix in an allocation of exactly its own length.** Sliced out of `whole`, a
     // read one byte past the end of a prefix is still inside `whole`, so no sanitizer can see
     // it — which made the "never reads past the end" of this test's name a claim nothing
-    // checked. A heap block of `length` bytes puts ASan's redzone straight
-    // after the last one.
+    // checked. A heap block of `length` bytes puts ASan's redzone straight after the last one.
     std::size_t parsed = 0;
     for (std::size_t length = 0; length < whole.size(); ++length) {
         const std::unique_ptr<std::byte[]> prefix(new std::byte[length == 0 ? 1 : length]);

@@ -209,14 +209,13 @@ def layout_harmonix():
     return tracks, {"annotated_without_audio": missing}
 
 
-#: Ballroom clips that are one recording twice, found on
-#: 2026-09-26 from the stored features: onset envelopes correlated above 0.8 at some lag,
-#: and the log spectrograms 0.82 to 1.0 alike frame by frame at that lag, where clips of one
-#: album that are not the same song score 0.49 to 0.66. Fire-08 and -09 are one file filed
-#: under two genres; the rest are one song cut at the same point or a few seconds apart.
-#: Two pairs straddled the split, so a model trained on one clip was scored on its twin:
-#: Latin_Jam2-13 and Media-105816 are among the 70 held-out clips. finetune.py no longer
-#: trains a clip whose twin is in the validation split.
+#: Ballroom clips that are one recording twice, found on 2026-09-26 from the stored features:
+#: onset envelopes correlated above 0.8 at some lag, and the log spectrograms 0.82 to 1.0
+#: alike frame by frame at that lag, where clips of one album that are not the same song score
+#: 0.49 to 0.66. Fire-08 and -09 are one file filed under two genres; the rest are one song
+#: cut at the same point or a few seconds apart. Two pairs straddled the split, so a model
+#: trained on one clip was scored on its twin: Latin_Jam2-13 and Media-105816 are among the 70
+#: held-out clips. finetune.py no longer trains a clip whose twin is in the validation split.
 BALLROOM_DUPLICATES = (
     ("Albums-Fire-08", "Albums-Fire-09"),
     ("Albums-Latin_Jam2-05", "Albums-Latin_Jam2-13"),
@@ -436,11 +435,11 @@ def carry_label_changes(old_tracks, new_tracks):
 
     Re-running this used to rebuild every track from its annotation, which put `beats` back
     on the original file while the `.gt.npy` that octave.py halved and shift_labels.py moved
-    stayed as they had left it — so training read halved labels and selection unhalved ones
-   . A change is carried when the files it names are still
-    there and the annotation it was made from is the one just laid out; otherwise it is
-    dropped and said, since then the labels on disk have to be rebuilt by running those
-    scripts again — and until they are, finetune.py refuses to start (labels.py).
+    stayed as they had left it — so training read halved labels and selection unhalved ones.
+    A change is carried when the files it names are still there and the annotation it was
+    made from is the one just laid out; otherwise it is dropped and said, since then the
+    labels on disk have to be rebuilt by running those scripts again — and until they are,
+    finetune.py refuses to start (labels.py).
     Returns (carried, dropped) track ids."""
     old = {t["id"]: t for t in old_tracks}
     carried, dropped = [], []
@@ -477,8 +476,8 @@ def assign_split(tracks, seed, val_fraction, previous=()):
     a hash of its id. The split used to be a seeded shuffle of the sorted ids, where one clip
     missing from Ballroom moved a hundred others and one track added to the library moved
     170, and a model was then scored on its own training data by every tool that reads the
-    current manifest. `previous` is the old layout's tracks, and
-    is only passed when it was made with the same seed and fraction."""
+    current manifest. `previous` is the old layout's tracks, and is only passed when it was
+    made with the same seed and fraction."""
     kept = {t["id"]: t["split"] for t in previous if t.get("split") in ("train", "val")}
     for t in tracks:
         t["split"] = kept.get(t["id"]) or hashed_split(t["id"], seed, val_fraction)

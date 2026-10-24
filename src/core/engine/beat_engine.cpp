@@ -99,16 +99,15 @@ void BeatEngine::start() {
     }
     // **Not the beat ring.** Its one consumer is the output thread, which drains it all the
     // time; this is the UI thread, and two threads taking from a single-consumer ring race on
-    // its read position. What the last run left there is
-    // stamped with that run, and the consumer drops it.
+    // its read position. What the last run left there is stamped with that run, and the
+    // consumer drops it.
     run_.fetch_add(1, std::memory_order_acq_rel);
     decoder_->reset();
     tempo_.reset();
     // The tempo hold goes with the pin. `reset()` keeps a decoder's hold by design — it is a
     // setting, not tracking state — and the tracker's reset lets go of the pin, so a stop and
     // start while pinned left the window showing no pin while the decoder went on penalising
-    // every tempo but the old one: the next track at a new tempo could not be acquired (the
-    // review's H3).
+    // every tempo but the old one: the next track at a new tempo could not be acquired.
     if (decoder_->canHoldTempo()) {
         decoder_->holdTempo(0.0);
     }
@@ -251,11 +250,11 @@ void BeatEngine::applyCommands() noexcept {
             break;
         }
     }
-    // **A pinned lock a command took away takes the decoder's hold with it** (an earlier review of
-    // 2026-09-25, M4). A fold window moved out from under the pinned tempo drops the lock, as it
-    // should, and left the decoder held to the old tempo — so the tracker re-locked onto it
-    // within half a second, and the window move did nothing. The pin stays the operator's; the
-    // hold is taken again, at the new tempo, on the frame a lock is earned (see `trackOne`).
+    // **A pinned lock a command took away takes the decoder's hold with it.** A fold window
+    // moved out from under the pinned tempo drops the lock, as it should, and left the decoder
+    // held to the old tempo — so the tracker re-locked onto it within half a second, and the
+    // window move did nothing. The pin stays the operator's; the hold is taken again, at the new
+    // tempo, on the frame a lock is earned (see `trackOne`).
     if (decoder_->canHoldTempo() && tempo_.lockPinned() && wasLocked && !tempo_.state().locked) {
         decoder_->holdTempo(0.0);
         pinHoldPending_ = true;

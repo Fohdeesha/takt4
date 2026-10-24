@@ -47,8 +47,8 @@ std::vector<Frame> featureFrames(const std::filesystem::path& path) {
 std::vector<std::string> weightSets() {
     // `electronic` is the set the app ships by default, fine-tuned from `generic`; its traces
     // come from the checkpoint it was converted from (tools/model_reference.py --checkpoint),
-    // which the script checks against assets/weights/electronic.json to the byte (an earlier review
-    // T3: until then no test ran the shipped weights against PyTorch at all).
+    // which the script checks against assets/weights/electronic.json to the byte (until then no
+    // test ran the shipped weights against PyTorch at all).
     return {"generic", "generic-main", "af-non-percussive", "electronic"};
 }
 
@@ -69,11 +69,11 @@ std::vector<std::filesystem::path> referenceTraces(const std::string& set) {
 
 } // namespace
 
-// the design Phase 3, the gate: "activation traces match PyTorch to tolerance on the
-// Phase 2 test set". The traces under tests/data/model/ are what the real BeatNet+
-// makes of the committed madmom features of every golden excerpt, recorded once by
-// tools/model_reference.py; the input here is those same madmom features, so a Phase 2
-// regression shows up in the feature test rather than muddying this one.
+// The model's gate: activation traces match PyTorch to tolerance on the feature test's golden
+// excerpts. The traces under tests/data/model/ are what the real BeatNet+ makes of the committed
+// madmom features of every golden excerpt, recorded once by tools/model_reference.py; the input
+// here is those same madmom features, so a regression in the feature front end shows up in the
+// feature test rather than muddying this one.
 TEST_CASE("the C++ model matches PyTorch on every golden excerpt", "[model][golden]") {
     // Measured first, then set above what was measured, the way the feature tolerance
     // was. On MSVC 2022 x64, Release, across all 72 excerpt-and-weight-set pairs: the

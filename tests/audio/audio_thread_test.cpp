@@ -106,10 +106,10 @@ TEST_CASE("what a job on the audio thread throws reaches the caller that waited 
 
 TEST_CASE("a job that does not come back costs its caller its limit and no more",
           "[audio][thread]") {
-    // an earlier review, L23: PortAudio's ASIO and WASAPI hosts stop a stream in code that
-    // waits with no limit, and a driver wedged in there held the window's thread — STOP, a device
-    // change, and the outage's own reopen froze the whole window. Here the driver is a job that
-    // waits on a promise nobody keeps until the test says so.
+    // PortAudio's ASIO and WASAPI hosts stop a stream in code that waits with no limit, and a
+    // driver wedged in there held the window's thread — STOP, a device change, and the outage's own
+    // reopen froze the whole window. Here the driver is a job that waits on a promise nobody keeps
+    // until the test says so.
     AudioThread thread;
     settle(thread);
     std::promise<void> release;

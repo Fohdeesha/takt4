@@ -20,8 +20,8 @@ namespace {
 //   5 % / 144 dB  (chosen)                       18 / 16 / 17 ms
 //  10 % / 144 dB                                  9 /  8 /  8 ms
 // 5 % puts the -3 dB point at 10.47 kHz, which touches only the top two or so of the
-// 24-per-octave bands the features use; 144 dB is the 24-bit noise
-// floor, below any converter. The resampler test logs the delay and fails past 25 ms.
+// 24-per-octave bands the features use; 144 dB is the 24-bit noise floor, below any
+// converter. The resampler test logs the delay and fails past 25 ms.
 constexpr double kTransitionBandPercent = 5.0;
 constexpr double kStopbandAttenuationDb = 144.0;
 

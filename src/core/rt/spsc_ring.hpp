@@ -50,9 +50,9 @@ public:
     /// **The tail first.** Neither index ever goes back and the tail never passes the head, so
     /// a head read after the tail is at least that tail. Read the other way round — as this
     /// did — a third thread could take the head, lose the core while the consumer popped past
-    /// it, and subtract a larger tail from a smaller head: a count in the quintillions (the
-    /// review's Low items). A head read later can also have moved on by more than one ring's
-    /// worth of pushes and pops, so it is held to the capacity.
+    /// it, and subtract a larger tail from a smaller head: a count in the quintillions. A
+    /// head read later can also have moved on by more than one ring's worth of pushes and
+    /// pops, so it is held to the capacity.
     std::size_t size() const noexcept {
         const std::size_t tail = tail_.load(std::memory_order_acquire);
         const std::size_t head = head_.load(std::memory_order_acquire);

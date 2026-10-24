@@ -7,7 +7,7 @@ and dual-branch machinery around it left out. tools/beatnet_features.py does the
 for the feature front end, and for the same reason: the upstream package pulls in
 pyaudio and its own madmom pin, and nothing here needs either.
 
-The shapes are not taken on trust from the design. They are checked against the
+The shapes are not taken on trust from a diagram. They are checked against the
 state_dict of whichever .pt is loaded, and the parameter count is checked against the
 file: 767,125 parameters, of which the four LSTM layers are 724,800.
 
@@ -19,7 +19,7 @@ file: 767,125 parameters, of which the four LSTM layers are 724,800.
       -> Linear(150, 3)                                          453
       -> softmax over the three classes           P(beat), P(downbeat), P(non-beat)
 
-Two details the C++ port has to match and neither diagram mentions. MaxPool1d(2) over
+Two details the C++ port has to match and no diagram mentions. MaxPool1d(2) over
 279 convolution outputs keeps 139 and *discards the last one*, and the flatten that
 follows is PyTorch's row-major ``view``: filter 0's 139 values, then filter 1's. Get
 either wrong and Linear(278, 150) is fed a permutation of the right numbers.

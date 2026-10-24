@@ -1,6 +1,6 @@
 # Golden feature excerpts
 
-The reference data for the Phase 2 gate: the C++ feature front end
+The reference data for the feature gate: the C++ feature front end
 (`src/core/features/`) must reproduce madmom's input features for BeatNet+ to within
 floating-point tolerance, on real music, before any model output is trusted.
 

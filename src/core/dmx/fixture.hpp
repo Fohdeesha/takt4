@@ -144,8 +144,8 @@ constexpr bool isFine(Role role) noexcept {
 struct Fixture {
     /// What a rule aims at it by: generated once (`newFixtureId`), saved with it, never shown
     /// or edited. **Not the name** — a rule aimed at a fixture by name stopped reaching it the
-    /// moment it was renamed (an earlier review, and the operator's call of 2026-09-23 that
-    /// nothing may hang off a name somebody can edit). Unique within a patch.
+    /// moment it was renamed (the operator's call of 2026-09-23 that nothing may hang off a
+    /// name somebody can edit). Unique within a patch.
     std::string id;
     /// What the patch editor and the rule editor show. The operator's to change.
     std::string name;

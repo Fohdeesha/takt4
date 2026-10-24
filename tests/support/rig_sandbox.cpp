@@ -2,7 +2,7 @@
 //
 // On for every test. Off for the length of one tagged [network] or [hardware]: those are the
 // tests the `-all` presets exist to run, and the only ones allowed to reach the rig — which is
-// what the tags have meant since an earlier review, and is now enforced rather than hoped for. An
+// what the tags mean, and is now enforced rather than hoped for. An
 // untagged test that needs a real device, a real session or a real socket fails, which is the
 // point: untagged is a promise that a test stays off the machine the show runs from, in the
 // `-all` run as much as in the default one.

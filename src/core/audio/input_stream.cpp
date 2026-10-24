@@ -118,8 +118,8 @@ InputStream::InputStream(const PortAudioSession& /*session*/, const InputDevice&
     }
     PaError err = openAt(rate);
 
-    // **An ASIO interface is never re-clocked**. PortAudio's ASIO host used to
-    // call ASIOSetSampleRate whenever the rate asked for differed from the interface's own, so
+    // **An ASIO interface is never re-clocked.** PortAudio's ASIO host used to call
+    // ASIOSetSampleRate whenever the rate asked for differed from the interface's own, so
     // pressing Start with Live or a front-of-house mix on the MOTU at 48 kHz moved everyone to
     // 44.1 kHz — audibly, mid-show. The patched host refuses instead and says what the
     // interface is running at (cmake/pa_asio_patch.cmake), and takt4 opens again at that rate:
@@ -182,11 +182,11 @@ void InputStream::stop() {
         return;
     }
     // Abort rather than stop: an input stream has nothing queued to play out, so nothing is lost
-    // by not waiting for the buffers in flight. **It is no guard against a hung driver** (the
-    // review of 2026-09-25, L23): in PortAudio's ASIO and WASAPI hosts both calls end in the same
-    // blocking code — `ASIOStop`, and a wait with no timeout — so a driver wedged in there holds
-    // whichever thread called this. That is why `engine::LiveTracker` calls it on its audio
-    // thread, having `detach`ed the stream first on its own, and waits only as long as it chooses.
+    // by not waiting for the buffers in flight. **It is no guard against a hung driver**: in
+    // PortAudio's ASIO and WASAPI hosts both calls end in the same blocking code — `ASIOStop`, and
+    // a wait with no timeout — so a driver wedged in there holds whichever thread called this.
+    // That is why `engine::LiveTracker` calls it on its audio thread, having `detach`ed the stream
+    // first on its own, and waits only as long as it chooses.
     if (const PaError err = Pa_AbortStream(impl_->stream); err != paNoError) {
         detail::throwPortAudioError("Pa_AbortStream failed", err);
     }

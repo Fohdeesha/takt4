@@ -45,7 +45,7 @@ TEST_CASE("the ASIO host is built in", "[audio][hardware]") {
 }
 
 TEST_CASE("a test process leaves ASIO alone unless it is run for the rig", "[audio]") {
-    // an earlier review. Listing ASIO devices loads every installed ASIO driver into the process
+    // Listing ASIO devices loads every installed ASIO driver into the process
     // and initialises it — and every window test builds a tracker that lists devices, so a
     // plain `ctest` did that about sixty times over, on the machine a show may be running
     // from. The test binaries now start with TAKT4_NO_ASIO set (tests/support/

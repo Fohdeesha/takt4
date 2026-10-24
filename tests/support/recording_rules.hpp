@@ -6,9 +6,9 @@
 // implementation is `output::OutputRunner`, which owns a Link session, three sockets and a
 // thread — none of which a test about an *address table* has any business building. Shared
 // by tests/control/osc_control_test.cpp and tests/control/midi_control_test.cpp, because
-// the two rule addresses arrive over both surfaces and the claim is the same either way.
+// rules are addressed over both surfaces and the claim is the same either way.
 //
-// The two calls come from whichever thread the surface runs on, so this is written to be
+// The calls come from whichever thread the surface runs on, so this is written to be
 // safe on one: RtMidi's callback and the OSC receiver's loop both reach it directly.
 
 #include "core/control/rule_control.hpp"
@@ -62,7 +62,7 @@ public:
         bool relative = false;
     };
 
-    /// Every `panic` in order, as the state it was asked for — the latch means `false` is
+    /// Every `panic` in order, as the state it was asked for — PANIC's latch means `false` is
     /// a release and not a repeat, so the sequence matters and a count would not do.
     std::vector<bool> panics() const {
         const std::lock_guard<std::mutex> lock(mutex_);

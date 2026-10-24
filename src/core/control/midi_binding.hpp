@@ -14,7 +14,7 @@ namespace takt4::control {
 /// One MIDI message, reduced to the three things a binding cares about.
 ///
 /// Not every MIDI message — this is what a *control surface* sends when a button is
-/// pressed or a knob turned, which is what the learn mode is for. System messages,
+/// pressed or a knob turned, which is what learn mode is for. System messages,
 /// pitch bend, aftertouch and program change are none of those, and a binding table that
 /// accepted them would be inviting an operator to bind a clock tick.
 struct MidiEvent {
@@ -34,8 +34,8 @@ struct MidiEvent {
 /// Reads one raw MIDI message. Nothing for anything that is not a note or a CC. A note's
 /// release — a note-off, or the note-on of velocity 0 most hardware sends instead — is a
 /// `Note` with `value` 0, as a CC pad's release is a CC at 0: a button ignores it, which
-/// keeps a tap on the press, and a state bound to a pad follows it (an earlier review,
-/// L6: dropped, a pad bound to the lock could pin it and never let it go).
+/// keeps a tap on the press, and a state bound to a pad follows it (dropped, a pad bound to the
+/// lock could pin it and never let it go).
 std::optional<MidiEvent> readMidiEvent(std::span<const unsigned char> message) noexcept;
 
 /// A control surface's control bound to one action.

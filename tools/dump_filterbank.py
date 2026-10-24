@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Dump madmom's filterbank as the C++ table src/core/features/filterbank_table.cpp.
 
-the design: the filterbank is never reimplemented; the matrix madmom actually applies
-is dumped once and compiled in. Run this after changing tools/requirements.txt (a new
-madmom or numpy) and commit the result together with regenerated goldens.
+The filterbank is never reimplemented; the matrix madmom actually applies is dumped once
+and compiled in. Run this after changing tools/requirements.txt (a new madmom or numpy)
+and commit the result together with regenerated goldens.
 
 The (882, 144) matrix is sparse: every band is one contiguous triangle of bins, 1601
 weights in all. The table stores each band as (first bin, bin count, offset into one

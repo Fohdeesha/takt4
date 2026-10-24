@@ -89,8 +89,8 @@ TEST_CASE("a rule aims at fixtures by id and at groups by label", "[dmx][fixture
     CHECK(takt4::dmx::resolveFixtures(patch, {"heads", washL}) == 0b101);
 
     SECTION("a fixture's name reaches nothing, so renaming it moves no rule") {
-        // The operator's report of 2026-09-23, and an earlier review: a rule aimed at a fixture
-        // by name stopped reaching it the moment it was renamed.
+        // The operator's report of 2026-09-23: a rule aimed at a fixture by name stopped reaching
+        // it the moment it was renamed.
         CHECK(takt4::dmx::resolveFixtures(patch, {"wash L"}) == 0);
         patch[0].name = "front wash";
         CHECK(takt4::dmx::resolveFixtures(patch, {washL}) == 0b001);
@@ -150,7 +150,7 @@ TEST_CASE("the patch's universes are what gets buffers and frames", "[dmx][fixtu
 }
 
 TEST_CASE("two fixtures on the same channels are found", "[dmx][fixture]") {
-    // an earlier review: an RGB par at 1 and another at 3 on one universe share channel 3 — the
+    // An RGB par at 1 and another at 3 on one universe share channel 3 — the
     // first's blue is the second's red — and they drive each other, and nothing said so.
     std::vector<Fixture> patch;
     patch.push_back(takt4::dmx::fixtureFromMode("left", 1, 0, 1));  // 1-3

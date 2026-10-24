@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Measure takt4's beat and downbeat F-measure against an annotated dataset.
 
-the design Phase 4's last item: "offline evaluation against annotated audio; compare F1
-with the published numbers" — BeatNet+'s 80.62 beat and 56.51 downbeat F-measure on
-GTZAN at a 70 ms tolerance. That is the only number that can settle Q4, the fate of the
-DSP fallback.
+An offline evaluation against annotated audio, to compare F1 with the published numbers —
+BeatNet+'s 80.62 beat and 56.51 downbeat F-measure on GTZAN at a 70 ms tolerance. That is
+the only number that can settle the fate of the DSP fallback.
 
 This runs the real thing: every file goes through `takt4-cli track`, so what is measured
 is the shipped C++ front end, model, particle filter and tempo state machine, not a
@@ -27,17 +26,17 @@ An annotation is matched to its audio by file stem, searched for recursively, an
 one column of times or two columns of "time <TAB> beat number in the bar". Downbeat
 F-measure needs the second column; without it only the beat numbers are reported.
 
-**The octave fold is off by default.** the fold is an operator's tool — it needs a
+**The octave fold is off by default.** The fold is an operator's tool — it needs a
 tempo range nobody evaluating a tracker is allowed to assume — and the published numbers
 are measured without one. `--bpm LO-HI` turns it on, which is worth doing separately to
 see what it is worth on material whose range is known.
 
 **A fine-tune trained on most of Ballroom.** tools/train/layout.py puts about nine clips in
 ten of every set it lays out in the training split — 628 of Ballroom's 698 — so a fine-tuned
-set's Ballroom score over the whole set is a score on its own training data (an earlier review
-Python-tools items). `--held-out MANIFEST` scores only the clips that manifest keeps out of
-training (its `val` split, or in no set at all), which is the comparison that means
-something between a fine-tune and the set it started from:
+set's Ballroom score over the whole set is a score on its own training data.
+`--held-out MANIFEST` scores only the clips that manifest keeps out of training (its `val`
+split, or in no set at all), which is the comparison that means something between a
+fine-tune and the set it started from:
 
     python tools/evaluate.py BallroomData --annotations BallroomAnnotations \
         --weights electronic --cli-args "--meters 3,4" --held-out build/training/manifest.json
@@ -67,10 +66,10 @@ ANNOTATION_SUFFIXES = (".beats", ".txt", ".beats.txt", ".csv", ".onsets")
 SAMPLE_RATE = 22050
 
 #: What BeatNet+ was trained on, from its own README's dataset table — Ballroom 699,
-#: Hainsworth 220, Rock Corpus 200, MUSDB18 150, URSing 65, RWC — and the design. A
-#: score on any of these says the port reproduces what the model can do; it says nothing
-#: about how the model generalises, and it cannot be compared with the figures, which
-#: are GTZAN and GTZAN alone ("test-only and never seen in training").
+#: Hainsworth 220, Rock Corpus 200, MUSDB18 150, URSing 65, RWC. A score on any of these
+#: says the port reproduces what the model can do; it says nothing about how the model
+#: generalises, and it cannot be compared with the published figures, which are GTZAN and
+#: GTZAN alone (test-only and never seen in training).
 TRAINING_SETS = ("ballroom", "hainsworth", "rock_corpus", "rockcorpus", "musdb", "ursing",
                  "rwc")
 
@@ -79,8 +78,8 @@ def find_cli(given):
     """The takt4-cli to measure. An unoptimised build would be a different tracker only
     in speed, but it would take hours, so a Debug path is refused rather than run."""
     # --cli, then TAKT4_CLI — which is what the training runs and gate scripts set to freeze the
-    # decoder under a long job, and which this used to ignore,
-    # so a gate "on the frozen CLI" measured whatever the build tree held that day.
+    # decoder under a long job, and which this used to ignore, so a gate "on the frozen CLI"
+    # measured whatever the build tree held that day.
     given = given if given is not None else os.environ.get("TAKT4_CLI")
     if given:
         path = Path(given)
@@ -426,15 +425,15 @@ def main():
     # against them at all.
     trained_on = [name for name in TRAINING_SETS
                   if name in str(options.dataset).lower().replace("-", "_")]
-    print("\nthe design for reference: BeatNet+ 80.62 beat / 56.51 downbeat F-measure "
+    print("\nFor reference, as published: BeatNet+ 80.62 beat / 56.51 downbeat F-measure "
           "on GTZAN,\nat the same 70 ms tolerance.")
     if trained_on:
         print(f"\n  !! This dataset ({trained_on[0]}) is one BeatNet+ was TRAINED on, per its own\n"
-              "     README's dataset table and the design. The score above therefore says\n"
+              "     README's dataset table. The score above therefore says\n"
               "     that this port reproduces what the model can do — a real end-to-end\n"
               "     check, over hours of audio — and says nothing about how it generalises.\n"
               "     It must not be compared with the figures above: those are GTZAN, which\n"
-              "     the design records as test-only and never seen in training.")
+              "     was test-only and never seen in training.")
     else:
         print("     A different dataset is a different number; only GTZAN compares directly.")
 

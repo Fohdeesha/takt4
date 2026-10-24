@@ -54,8 +54,8 @@ inline constexpr const char* kBuiltInWeights = "electronic";
 /// The weights `spec` names. **The built-in set comes from this binary** wherever it has
 /// them (every full build, which is what ships): the console is attached to every release
 /// beside the app, and it used to open its weights from the source tree it was built in, so
-/// on any other machine `beats`, `track` and `annotate` failed. Any other
-/// set is a file — under the source tree for a bare name, which only a bench has.
+/// on any other machine `beats`, `track` and `annotate` failed. Any other set is a file — under
+/// the source tree for a bare name, which only a bench has.
 inline model::ModelWeights loadWeights(const std::string& spec) {
 #if TAKT4_CLI_EMBEDDED_ASSETS
     if (spec == kBuiltInWeights) {
@@ -87,7 +87,7 @@ inline tracking::StateSpaceModel loadStateSpace(const std::string& which) {
 
 /// Single keys from the terminal, without waiting for one.
 ///
-/// the manual controls — tap, the octave shift, the downbeat snap, the latency slider
+/// The manual controls — tap, the octave shift, the downbeat snap, the latency slider
 /// — need somewhere to be pressed before there is a UI, and `BeatEngine`'s control queue
 /// needs a producer that is not a test. This is both, and it is the shape a UI's input
 /// handling takes too: read a key, post a command, never touch the tracker.
@@ -181,8 +181,8 @@ private:
 /// lives — instead of the end of the process. `annotate` had nothing of the kind: a Ctrl+C in
 /// the middle of tapping along killed it and every tap with it, because a key reader never
 /// sees Ctrl+C at all (`_getch` cannot read it, and the terminal's ISIG turns it into a signal
-/// on the other platforms), and the default handler for the signal ends the process (the
-/// review's Low items). The handlers in force before are put back after.
+/// on the other platforms), and the default handler for the signal ends the process. The
+/// handlers in force before are put back after.
 class Interrupts {
 public:
     Interrupts() noexcept {
@@ -210,8 +210,7 @@ private:
     }
     /// **Installed again first.** Windows' runtime puts a signal back to its default before
     /// it calls the handler, so the second Ctrl+C of an impatient operator ended the process —
-    /// before annotate's taps were written, or `track --device` sent the MIDI clock its Stop
-    ///.
+    /// before annotate's taps were written, or `track --device` sent the MIDI clock its Stop.
     static void raise(int signal) {
         (void)std::signal(signal, &Interrupts::raise);
         flag().store(true);

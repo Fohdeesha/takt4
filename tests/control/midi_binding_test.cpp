@@ -35,7 +35,7 @@ TEST_CASE("a press is a note, and its release the same note at 0", "[control][mi
     // Its release, both ways hardware spells it: velocity 0, which most send, and an actual
     // note-off, whose velocity is how fast the key came up and not a press. Both are the note
     // at 0, as a CC pad's release is a CC at 0 — a button ignores it and a state follows it
-    //.
+    // (it used to be dropped, so a pad bound to the lock could never let go).
     for (const auto& release : {read({0x99, 36, 0}), read({0x89, 36, 100})}) {
         REQUIRE(release.has_value());
         CHECK(release->kind == MidiEvent::Kind::Note);
@@ -88,7 +88,7 @@ TEST_CASE("a binding survives being written down and read back", "[control][midi
         }
     }
 
-    // The form it takes is a sentence, because the headless mode expects one to be typed.
+    // The form it takes is a sentence, because a headless mode expects one to be typed.
     MidiBinding tap;
     tap.number = 36;
     tap.channel = 10;
@@ -166,11 +166,11 @@ TEST_CASE("the verbs a binding and an OSC address share", "[control]") {
     }
     CHECK_FALSE(targetOf("").has_value());
     CHECK_FALSE(targetOf("tap/").has_value());
-    CHECK_FALSE(targetOf("preset").has_value()); // the, and refused rather than half-done
+    CHECK_FALSE(targetOf("preset").has_value()); // waits for presets: refused rather than half-done
 
-    // the own spellings: `lock <0|1>` and `rule/<id>/enable <0|1>` are written with an
-    // argument and `panic` is written bare, and that difference is the rule here. A panic
-    // button that had to send a value would not be a panic button.
+    // The control addresses' own spellings: `lock <0|1>` and `rule/<id>/enable <0|1>` are
+    // written with an argument and `panic` is written bare, and that difference is the rule
+    // here. A panic button that had to send a value would not be a panic button.
     CHECK(takt4::control::takesArgument(ControlAction::Lock));
     CHECK(takt4::control::takesArgument(ControlAction::RuleEnable));
     CHECK_FALSE(takt4::control::takesArgument(ControlAction::Panic));

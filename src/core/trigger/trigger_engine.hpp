@@ -14,22 +14,21 @@
 
 namespace takt4::trigger {
 
-/// the *"Rule model, evaluator and scheduler on the output thread"* — the last
-/// two of the three.
+/// The rules' evaluator and scheduler, on the output thread.
 ///
 /// The rules themselves are `Rule`; this holds them, decides which of them a moment
-/// satisfies, and owns the one thing a rule cannot do for itself: the *"optional
-/// follow-up value after a delay"*, which needs a clock and a queue.
+/// satisfies, and owns the one thing a rule cannot do for itself: the optional follow-up
+/// value after a delay, which needs a clock and a queue.
 ///
-/// **Not thread-safe, and on the output thread by construction.** the design says so directly:
-/// *"Rules are evaluated on the output thread, never the audio thread."* `output::
-/// OutputRunner` already owns that thread and the transports on it, and this joins them:
-/// one thread touches all three. Changing the rules from a UI goes through the runner's
-/// command queue for the same reason changing an OSC target does.
+/// **Not thread-safe, and on the output thread by construction.** Rules are evaluated on the
+/// output thread, never the audio thread. `output::OutputRunner` already owns that thread and
+/// the transports on it, and this joins them: one thread touches all three. Changing the rules
+/// from a UI goes through the runner's command queue for the same reason changing an OSC
+/// target does.
 ///
 /// The two calls the runner makes, and the difference between them:
 ///
-///   * `onBeat` for each beat drained off the ring — the *every beat · every N beats ·
+///   * `onBeat` for each beat drained off the ring — *every beat · every N beats ·
 ///     every bar · every N bars · on downbeat*.
 ///   * `advance` once a round, beat or no beat — *on tempo change · on lock or unlock · on
 ///     intensity change*, none of which waits for a beat, and the follow-ups that have come
@@ -40,24 +39,24 @@ class TriggerEngine {
 public:
     /// Told about every message that goes out, and which rule sent it.
     ///
-    /// the design wants two things this is the only source of: *"the last-fired line on each rule
-    /// card, showing the actually-sent message with a timestamp"*, and Phase 6's event log.
-    /// Both need to know what was sent *and* by whom, and `Sink` deliberately does not — it
-    /// is the seam to the transports, which have no business knowing what a rule is.
+    /// The UI wants two things this is the only source of: a last-fired line for each rule,
+    /// showing the actually-sent message with a timestamp, and the event log. Both need to
+    /// know what was sent *and* by whom, and `Sink` deliberately does not — it is the seam to
+    /// the transports, which have no business knowing what a rule is.
     ///
     /// Called on the output thread, between a beat and the next MIDI tick, so an
     /// implementation must be short and must not block. `output::OutputRunner` is the one
     /// that sets it, and copies into a ring a UI can drain from its own thread — this class
     /// stays single-threaded, which is what its class note promises.
     ///
-    /// `followUp` marks the release half — the second half of a press-and-release, sent
+    /// `followUp` marks a release half — the second half of a press-and-release, sent
     /// on a timer after the message it follows. It goes to the observer because the event
     /// log should show it (a release that never left is a clip left held, and invisible
     /// otherwise) and because **a rule that fires once must count once**: a Resolume connect
     /// sends a 1 and then a 0, and a counter that could not tell them apart would say every
     /// such rule had fired twice as often as it had.
     ///
-    /// `slots` is what each generator produced, in the order the editor draws the chips
+    /// `slots` is what each generator produced, in the order the rule editor draws the chips
     /// — `Rule::lastSlots`. Empty for a follow-up, which produces no new values: it is the
     /// message just sent with one number changed.
     ///
@@ -78,14 +77,14 @@ public:
     /// Set before anything fires; the output thread reads it without synchronisation.
     void setFireObserver(FireObserver observer) { observer_ = std::move(observer); }
 
-    /// Replaces every rule. The `Rule::Config::id`s are what the design's
-    /// `/ctl/rule/<id>/enable` and the cards address them by; a duplicate id is kept
-    /// rather than dropped — a preset that holds one is an editing mistake to show, not a
-    /// rule to silently discard — and `find` returns the first.
+    /// Replaces every rule. The `Rule::Config::id`s are what `/ctl/rule/<id>/enable` and the
+    /// rule editor address them by; a duplicate id is kept rather than dropped — a preset that
+    /// holds one is an editing mistake to show, not a rule to silently discard — and `find`
+    /// returns the first.
     ///
     /// **A rule that keeps its id keeps everything it was doing** — its mute and its rate, a
     /// switch a control surface flipped, where its shuffle bags and cycles have got to, its
-    /// cooldown. See `Rule::carryFrom`. Every edit in the editor comes through here, a
+    /// cooldown. See `Rule::carryFrom`. Every edit in the rule editor comes through here, a
     /// keystroke of a rename included, and rebuilding every rule from its configuration on each
     /// one replayed every bag from its seed and undid a remote enable.
     ///
@@ -111,7 +110,7 @@ public:
     std::size_t ruleCount() const noexcept { return rules_.size(); }
     Rule& rule(std::size_t index) noexcept { return rules_[index]; }
     const Rule& rule(std::size_t index) const noexcept { return rules_[index]; }
-    /// The first rule with this id, or null. the `/ctl/rule/<id>/enable` route.
+    /// The first rule with this id, or null. The `/ctl/rule/<id>/enable` route.
     Rule* find(std::string_view id) noexcept;
 
     /// One beat the tracker called, with the state at it.
@@ -134,7 +133,7 @@ public:
     /// that is what makes a follow-up delay mean milliseconds rather than beats.
     void advance(const Context& context);
 
-    /// the *"on onset"*. `output::OutputRunner` calls it once per round in which the
+    /// The *on onset* trigger. `output::OutputRunner` calls it once per round in which the
     /// intensity classifier's onset count moved, however far it moved.
     void onOnset(const Context& context);
 
@@ -145,11 +144,11 @@ public:
     /// bar. Beat-counting rules are not touched: that beat did fire them.
     void onBarDeclared(const Context& context);
 
-    /// the *"on manual hotkey"* — fires every rule whose trigger is `Manual`, conditions
+    /// The *on manual hotkey* trigger — fires every rule whose trigger is `Manual`, conditions
     /// and all.
     void manual(const Context& context);
 
-    /// the per-rule `[test]` button: fires one rule **whatever its trigger says and
+    /// The rule editor's per-rule `[test]` button: fires one rule **whatever its trigger says and
     /// whatever its conditions say**, so that an operator building a rule can see where the
     /// message lands without waiting for a downbeat at the right confidence. Its cooldown
     /// and its generators advance as they would on a real fire, because the point is to see
@@ -194,12 +193,12 @@ public:
     /// Fires held for their rule's delay — see `Rule::Config::delayOn`.
     std::size_t heldFires() const noexcept;
 
-    /// the PANIC: *"A global halt that stops every rule instantly, reachable from the UI,
-    /// a keyboard shortcut, OSC and MIDI. Non-negotiable for live use."*
+    /// PANIC: a global halt that stops every rule instantly, reachable from the UI, a keyboard
+    /// shortcut, OSC and MIDI. Non-negotiable for live use.
     ///
     /// It is a latch, not a flush: nothing fires again until `release()`. But every
     /// follow-up still owed **is sent immediately** rather than dropped, and that is the
-    /// deliberate part. the shape is press-then-release — `int 1 (press) then 0
+    /// deliberate part. A Resolume clip's shape is press-then-release — `int 1 (press) then 0
     /// (release)` — so the pending half is what turns a clip *off*. Dropping it would leave
     /// the rig latched into exactly the state panic was hit to escape.
     void panic(const Context& context);
@@ -211,7 +210,7 @@ public:
     /// of tempo, lock or intensity. What an operator fires by hand — `manual`, `test` — still
     /// does, with its follow-ups: building a rig with the tracker stopped is ordinary.
     ///
-    /// STOP's half of The engine's last state stays published after
+    /// STOP's half of keeping its blackout dark: the engine's last state stays published after
     /// it stops, so a rule watching it could still fire on the way down. Listening until told
     /// otherwise, which is every engine the console and the tests drive.
     void setListening(bool on) noexcept { listening_ = on; }
@@ -255,7 +254,7 @@ private:
         Message message;
         /// Which rule owes it, so the observer can name the sender of a release the same
         /// way it names the press. Copied rather than pointed at: the rule set can be
-        /// replaced while a follow-up is still owed, and the design says those are still sent.
+        /// replaced while a follow-up is still owed, and those are still sent.
         std::string ruleId;
         /// **A fire, not a follow-up**: held for `Rule::Config::delayOn`. Dropped rather than
         /// sent early by everything that stops the rig, and by its rule going quiet before it

@@ -16,11 +16,10 @@
 
 namespace takt4::output {
 
-/// the generic OSC namespace, published to any number of targets.
+/// takt4's generic OSC namespace, published to any number of targets.
 ///
-/// "Always publish a generic namespace regardless of which host preset is active, so
-/// anything can consume it with zero configuration." These nine addresses are that
-/// namespace, verbatim from the design:
+/// A generic namespace, the same whichever host preset is active, so anything can consume it
+/// with zero configuration. These nine addresses are that namespace:
 ///
 ///     /takt4/bpm         float   the published tempo
 ///     /takt4/beat        int     1, on every beat
@@ -30,7 +29,7 @@ namespace takt4::output {
 ///     /takt4/locked      int     0 or 1
 ///     /takt4/meter       int     N, the detected beats per bar
 ///     /takt4/resync      int     1, when the tracker has just re-found itself
-///     /takt4/intensity   int     0, 1 or 2 — Phase 6's classifier; not sent yet
+///     /takt4/intensity   int     0, 1 or 2 — the intensity classifier's; not sent yet
 ///
 /// And one more since (the operator's answer of 2026-10-22), with every beat after `/downbeat`:
 ///
@@ -46,9 +45,9 @@ namespace takt4::output {
 /// To every target that wants them — `OutputTarget::sendsNamespace`, which an output has off
 /// until it is asked for. A target with it off is sent the rules aimed at it and nothing of this.
 ///
-/// Host presets (the design: Resolume, TouchDesigner, MadMapper, QLC+) fill in address
-/// templates and belong to Phase 6's trigger engine; this is the layer underneath them,
-/// and is never a hardcoded code path for any one host.
+/// Host presets (Resolume, TouchDesigner, MadMapper) fill in address templates and belong
+/// to the trigger engine; this is the layer underneath them, and is never a hardcoded code
+/// path for any one host.
 /// Whether `prefix` is one `OscPublisher` will take: it starts with '/', does not end with
 /// one, and every address built from it is a legal OSC address.
 ///
@@ -127,7 +126,7 @@ public:
     void setNow(double now) noexcept { now_ = now; }
     double now() const noexcept { return now_; }
 
-    /// the latency offset, added to every target's own before either is applied.
+    /// The rig-wide latency offset, added to every target's own before either is applied.
     ///
     /// The whole-rig control and the per-target one are the same quantity measured from two
     /// places — one says "everything downstream of me is this late", the other "this device
@@ -190,12 +189,12 @@ public:
     /// frame: when nothing has changed it sends nothing.
     void publishState(const tracking::TempoState& state, bool running = true);
 
-    /// the resync: tell downstream to snap. Sent by itself whenever the published lock goes
+    /// `/resync`: tell downstream to snap. Sent by itself whenever the published lock goes
     /// from off to on — see `sendChangedState` — and callable for anything else that means the
     /// same.
     void publishResync();
 
-    /// One address of Phase 6's own choosing, to every target. the rules build their
+    /// One address of the trigger engine's own choosing, to every target. The rules build their
     /// addresses from templates and aim them at a host's namespace — Resolume's
     /// `/composition/layers/3/clips/7/connect` — so **the prefix is deliberately not
     /// applied**: it names this app inside the generic namespace, and a rule's address
@@ -210,7 +209,7 @@ public:
     void sendAddress(std::string_view address, float value);
     void sendAddress(std::string_view address, std::string_view value);
 
-    /// The same, to the targets `outputs` selects — the *"rule subset"*. `kAllOutputs`
+    /// The same, to the targets `outputs` selects — a rule's own subset of them. `kAllOutputs`
     /// is every one of them and is what an unrouted rule carries.
     ///
     /// `moment` is when the thing the message is about happens — `trigger::Message::moment` —
@@ -237,11 +236,11 @@ private:
     /// The only place a datagram leaves this class.
     ///
     /// Each target has it at `moment` plus the rig's offset plus its own delay, or at once
-    /// when that has already gone. **Nothing else decides when**, and that is an earlier review:
-    /// this used to turn a negative offset into "hold for what is left of a beat" and apply it
-    /// to every message, so a bar-1 clip cue landed just before beat 2 and a manual cue nearly
-    /// a beat late. A message about a beat the output thread is firing ahead of time now carries
-    /// that beat's own moment, and "earlier" means earlier than it; a message about now goes now.
+    /// when that has already gone. **Nothing else decides when**: this used to turn a negative
+    /// offset into "hold for what is left of a beat" and apply it to every message, so a bar-1
+    /// clip cue landed just before beat 2 and a manual cue nearly a beat late. A message about a
+    /// beat the output thread is firing ahead of time now carries that beat's own moment, and
+    /// "earlier" means earlier than it; a message about now goes now.
     ///
     /// `own` is a message of the namespace's, which skips a target that does not take it.
     void sendPacket(OscMessage& message, std::uint64_t outputs, double moment, bool own);

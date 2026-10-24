@@ -1,7 +1,7 @@
 #pragma once
 
 // What the weight blob and the state space blob have in common: they are read whole, and they
-// carry the same checksum. Each file kept its own copy of both until an earlier review Low items.
+// carry the same checksum. Each file used to keep its own copy of both.
 
 #include <cstddef>
 #include <cstdint>

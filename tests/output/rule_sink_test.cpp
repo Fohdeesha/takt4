@@ -47,14 +47,14 @@ Message oscTo(std::string address, Value argument) {
 
 TEST_CASE("a rule's message reaches a socket that really receives", "[output][trigger]") {
     // The whole point of the adapter: `trigger` builds messages and has no business owning
-    // a socket, `Transports` sends 5.6's namespace and has no business knowing what a rule
-    // is, and this is the one file that knows both. That a rule's address is *built*
+    // a socket, `Transports` sends the generic namespace and has no business knowing what a
+    // rule is, and this is the one file that knows both. That a rule's address is *built*
     // correctly is tests/trigger's business; that it goes out is this one's.
     LoopbackReceiver receiver;
     Transports transports(withTarget(receiver.port()));
     RuleSink sink(transports);
 
-    // 5.6's own Resolume example, with its templated segments already filled in.
+    // Resolume's clip trigger, with its templated segments already filled in.
     sink.send(oscTo("/composition/layers/2/clips/5/connect", Value::ofInt(1)));
     const std::string datagram = receiver.receive();
     REQUIRE_FALSE(datagram.empty());
@@ -140,7 +140,7 @@ TEST_CASE("a released note puts a real note off on the wire, not a note on of ze
 
 TEST_CASE("a note rule's follow-up is a note off, carrying the same note and channel",
           "[trigger][midi]") {
-    // the press-then-release, which is what turns a clip off. The follow-up must name the
+    // A rule's press-then-release, which is what turns a clip off. The follow-up must name the
     // same note on the same channel or it releases something else.
     takt4::trigger::Rule::Config config;
     config.id = "lasers";
@@ -224,8 +224,8 @@ Message midi(Message::Kind kind, int number, int value, std::uint64_t outputs = 
 } // namespace
 
 TEST_CASE("pitch bend and program change go on the wire as MIDI spells them", "[output][trigger][midi]") {
-    // an earlier review, coverage gap 10: the bytes themselves, which nothing read. Pitch
-    // bend is fourteen bits sent low seven first; program change is two bytes and no third.
+    // The bytes themselves, which nothing read. Pitch bend is fourteen bits sent low seven
+    // first; program change is two bytes and no third.
     const auto cable = std::make_shared<Cable>();
     Transports transports(midiRig({midiOutput("desk")}, cable));
     RuleSink sink(transports);
@@ -247,10 +247,10 @@ TEST_CASE("pitch bend and program change go on the wire as MIDI spells them", "[
 
 TEST_CASE("held MIDI follows its output through an edit of the outputs, and goes with it",
           "[output][trigger][midi]") {
-    // Coverage gap 10. A note held for an output's delay carries the output's place in the list,
-    // and the list can change before it goes — a row added above, one removed. `remap` moves each
-    // held message to where its output now is, and drops one whose output is gone, rather than
-    // sending it to whatever took its place.
+    // A note held for an output's delay carries the output's place in the list, and the list can
+    // change before it goes — a row added above, one removed. `remap` moves each held message to
+    // where its output now is, and drops one whose output is gone, rather than sending it to
+    // whatever took its place.
     const auto cable = std::make_shared<Cable>();
     Transports transports(midiRig(
         {midiOutput("a", 0.5), midiOutput("b", 0.5), midiOutput("c", 0.5)}, cable));
@@ -280,8 +280,8 @@ TEST_CASE("held MIDI follows its output through an edit of the outputs, and goes
 }
 
 TEST_CASE("a held lighting effect follows its fixture through a re-patch", "[output][trigger][dmx]") {
-    // Coverage gap 10's other half. An effect waiting for its moment names fixtures by their place
-    // in the patch; remove the one before it and it has to start on the fixture it was meant for,
+    // The same for lighting: an effect waiting for its moment names fixtures by their place in
+    // the patch; remove the one before it and it has to start on the fixture it was meant for,
     // which now sits one place up.
     Transports::Config config;
     takt4::dmx::Fixture first = takt4::dmx::fixtureFromMode("first", 1, 0, 1);
@@ -313,10 +313,10 @@ TEST_CASE("a held lighting effect follows its fixture through a re-patch", "[out
 }
 
 TEST_CASE("held messages stop at the cap, the newest dropped and counted", "[output][trigger][midi]") {
-    // Coverage gap 10. A second of delay on a rule firing every 32nd note at 215 BPM is 115 held
-    // messages; past `kMaxQueued` something upstream is wrong, and the newest are dropped with a
-    // count rather than a queue growing on the thread that runs the MIDI clock. What was kept goes
-    // out, in the order it came.
+    // A second of delay on a rule firing every 32nd note at 215 BPM is 115 held messages; past
+    // `kMaxQueued` something upstream is wrong, and the newest are dropped with a count rather
+    // than a queue growing on the thread that runs the MIDI clock. What was kept goes out, in the
+    // order it came.
     const auto cable = std::make_shared<Cable>();
     Transports transports(midiRig({midiOutput("desk", 1.0)}, cable));
     RuleSink sink(transports);

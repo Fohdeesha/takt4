@@ -24,12 +24,12 @@
 
 namespace takt4::ui {
 
-/// the rule editor, behind its own window.
+/// The rule editor, behind its own window.
 ///
-/// the exit criterion for Phase 6 is entirely about this: *"A rule that fires a
-/// non-repeating random clip on every fourth downbeat can be built entirely by clicking, in
-/// under a minute, by someone who has not read the docs."* Everything under that sentence
-/// has worked since Phase 6's engine half.
+/// The bar it is built to: a rule that fires a non-repeating random clip on every fourth
+/// downbeat can be built entirely by clicking, in under a minute, by someone who has not read
+/// the docs. Everything under that sentence has worked since the trigger engine itself was
+/// built.
 ///
 /// **It edits its own copy of the rules and posts the set whole.** The live rules belong to
 /// the output thread — `OutputRunner::triggers()` is documented as safe to read only
@@ -40,7 +40,7 @@ namespace takt4::ui {
 /// to what the output thread does between rounds anyway.
 ///
 /// Nothing here touches a Slint property outside `tick()` and the callbacks, both of which
-/// run on the UI thread — the rule.
+/// run on the UI thread — the only thread a Slint property may be touched from.
 class RulesController {
 public:
     /// Called whenever the rule set changes, so the owner can save it and keep its own
@@ -66,9 +66,9 @@ public:
     /// asks again with `goAhead`.
     using RigNeeded = std::function<std::string(const RigSetup&)>;
 
-    /// How many messages the event log remembers. Phase 6's list asks for a log tab; this is
-    /// the pane. Bounded because a rule on every beat at 214 BPM is 3.6 lines a second, and
-    /// an unbounded log of a four-hour set is a memory leak with a scrollbar.
+    /// How many messages the event log's pane remembers. Bounded because a rule on every beat
+    /// at 214 BPM is 3.6 lines a second, and an unbounded log of a four-hour set is a memory
+    /// leak with a scrollbar.
     static constexpr std::size_t kLogLines = 200;
 
     /// The runner must outlive this. Nothing is shown until `show()`.
@@ -100,8 +100,8 @@ public:
     bool visible() const noexcept { return visible_; }
 
     /// The window's folds — A, B, C, D and the event log — and the log's height, as a settings
-    /// file left them (the design: "Folds are the window's and remembered across launches, like
-    /// the main window's"). Machine-local, as those are.
+    /// file left them: folds are the window's and remembered across launches, like the main
+    /// window's. Machine-local, as those are.
     void applyLayout(const settings::MachineSettings& machine);
     /// And as they are now, into `machine`, for saving.
     void layoutInto(settings::MachineSettings& machine) const;
@@ -173,7 +173,7 @@ public:
     /// what it looks like it does rather than deleting six rules somewhere else.
     void removeAt(int index);
     void duplicateAt(int index);
-    /// Adds a whole rig at once — the presets, but several rules rather than one address.
+    /// Adds a whole rig at once — the host presets, but several rules rather than one address.
     /// "Random clips on three layers" is three rules with three seeds, and nobody should
     /// have to build the same rule three times. Index 0 is "no preset" and adds nothing; the
     /// menu counts from one. Every rule it makes is armed, like every rule the editor makes.
@@ -203,21 +203,21 @@ public:
     void setLiberationPort(int port);
     void rename(const std::string& name);
     void setEnabled(bool on);
-    /// the per-rule mute, from the window rather than from a control surface. **Live state,
+    /// The per-rule mute, from the window rather than from a control surface. **Live state,
     /// not configuration**: it goes straight to the output thread and is never saved, for the
     /// reason `trigger::Rule::muted` gives — a preset that loaded silent would look exactly
     /// like a preset that did not load.
     void setMuted(bool on);
-    /// The same, from row `index`'s dot in the list — whichever rule that is, picked or not
-    /// (the design: "the dot is the mute switch"). The selection does not move.
+    /// The same, from row `index`'s dot in the list, which is the mute switch — whichever rule
+    /// that is, picked or not. The selection does not move.
     void setMutedAt(int index, bool on);
     /// A relative multiplier on the selected rule's interval — the ÷2 and ×2 buttons. Live
     /// like the mute, and mirrored here so the readout can say what the rule is doing without
     /// reading the output thread's rules, which is unsafe while it runs.
     void nudgeRate(double factor);
     void test();
-    /// the PANIC: engages, and only engages — a second press while panicked does nothing,
-    /// so a double-click cannot let go of it. `releasePanic` is RELEASE.
+    /// PANIC: engages, and only engages — a second press while panicked does nothing, so a
+    /// double-click cannot let go of it. `releasePanic` is RELEASE.
     void panic();
     void releasePanic();
 
@@ -231,9 +231,9 @@ public:
     void setDelayOn(bool on);
     void setDelay(const std::string& text);
     void pickDelayUnit(int unit);
-    /// the rule subset, as a comma-separated list of output names. Empty is everywhere.
-    /// Not reachable from the window any more — the routing is ticked from the rig's own
-    /// list — but it is how a whole routing is set at once. The rule keeps the *ids* of the
+    /// The outputs this rule is routed to, as a comma-separated list of output names. Empty is
+    /// everywhere. Not reachable from the window any more — the routing is ticked from the rig's
+    /// own list — but it is how a whole routing is set at once. The rule keeps the *ids* of the
     /// outputs named, so renaming one afterwards leaves it routed.
     void setOutputs(const std::string& text);
     /// One output, by its id, routed or not. Un-routing the last one is "every output" again:
@@ -334,11 +334,11 @@ public:
     /// rather than by holding a coordinate that would rot the first time a row moved.
     bool pickerOpen() const noexcept { return pickerOpen_; }
 
-    /// the follow-ups, which are now a list — see `trigger::FollowUp`. `index` is a row of
+    /// The follow-ups, which are now a list — see `trigger::FollowUp`. `index` is a row of
     /// the selected rule's own `Config::followUps`; anything outside it does nothing.
     ///
     /// A new entry is a **release** at one beat, because that is what an operator adding one
-    /// nearly always means: let go of what was just pressed, a beat later. the design's
+    /// nearly always means: let go of what was just pressed, a beat later. Resolume's
     /// press-then-release with the delay spelled musically.
     void addFollowUp();
     void removeFollowUp(int index);
@@ -377,14 +377,13 @@ public:
     void clearLog();
 
 private:
-    /// The rule with this id, or null. Rule ids have to be unique: the design addresses one by
-    /// id and `TriggerEngine::find` takes the first of a duplicate pair.
+    /// The rule with this id, or null. Rule ids have to be unique: a control surface addresses
+    /// one by id and `TriggerEngine::find` takes the first of a duplicate pair.
     const trigger::Rule::Config* findRule(std::string_view id) const noexcept;
     /// A seed no rule of the set has, nor any of `pending` (rules about to be added): past the
     /// largest in use, by the stride seeds have always been spaced by. `add` counted the rules
     /// and `duplicate` stepped from its source, and both handed out a seed another rule already
-    /// had once one had been deleted or copied — two rules then drew the same "random" values
-    ///.
+    /// had once one had been deleted or copied — two rules then drew the same "random" values.
     std::uint64_t freshSeed(const std::vector<trigger::Rule::Config>& pending = {}) const;
     /// The selected rule, or null when there is none.
     trigger::Rule::Config* current() noexcept;
@@ -393,8 +392,8 @@ private:
     /// `trigger::slotLayout`, which is the order `Rule::lastSlots` records.
     trigger::Generator::Config* slotConfig(int slot) noexcept;
     /// Says an edit to `slot` has landed: if that slot is a MIDI rule's note or controller, the
-    /// number is one the operator chose and the rule may fire. Called by each
-    /// slot setter just before it commits, so an edit that was refused does not count.
+    /// number is one the operator chose and the rule may fire. Called by each slot setter just
+    /// before it commits, so an edit that was refused does not count.
     void choseSlot(int slot) noexcept;
     /// Where a box being typed into sits. See `typing_`.
     enum class TypedIn : std::uint8_t { Slot, FollowUp, Palette, Rule };
@@ -438,17 +437,17 @@ private:
     /// wired — so that what an action acts on is what is on the screen.
     void commitTyping();
     /// Takes in what a control surface changed on the live rules — enabled, mute, rate — so
-    /// the card shows what is really running. Enabled is configuration and is
-    /// saved, so it goes into `rules_` and out through the changed callback; mute and rate are
-    /// live gestures and only reach the mirrors. Touches only those controls: a full republish
-    /// would overwrite a box somebody is typing in.
+    /// the card shows what is really running. Enabled is configuration and is saved, so it goes
+    /// into `rules_` and out through the changed callback; mute and rate are live gestures and
+    /// only reach the mirrors. Touches only those controls: a full republish would overwrite a
+    /// box somebody is typing in.
     void adoptLive(const std::vector<output::OutputRunner::LiveRule>& live);
     /// The selected rule's follow-up at this row, or null.
     trigger::FollowUp* followConfig(int index) noexcept;
 
     /// Hands the set to the output thread and tells the owner. Every edit ends here.
     void commit();
-    /// Keeps `segments` as long as the address has placeholders — the validity is mostly
+    /// Keeps `segments` as long as the address has placeholders — a rule's validity is mostly
     /// that count, so an edit that adds a `{}` should give the operator a chip rather than a
     /// rule that refuses to fire until they work out why.
     void matchSegmentsToAddress(trigger::Rule::Config& rule);
@@ -531,7 +530,7 @@ private:
     /// Appends `added` as one rig: ids numbered up where taken, seeds made fresh where shared,
     /// and the whole of it selected — `addRig`'s, and the Liberation prompt's.
     void appendRig(std::vector<trigger::Rule::Config> added);
-    /// What the targets are called on this rig, so the editor can say which of a rule's
+    /// What the output targets are called on this rig, so the editor can say which of a rule's
     /// names reach something. Only the names are needed; the addresses are the main
     /// window's business.
     std::vector<output::OutputTarget> targets_;
@@ -568,7 +567,8 @@ private:
     /// and start describing a different rule. An id survives reordering; a loaded set starts
     /// the counts again whatever its ids (`setRules`).
     ///
-    /// the release half is not counted: see `OutputRunner::Fired::followUp`.
+    /// The release half of a press-then-release is not counted: see
+    /// `OutputRunner::Fired::followUp`.
     std::unordered_map<std::string, std::uint64_t> firesSeen_;
     /// What each rule's generators last produced, by rule id — `trigger::Rule::lastSlots`,
     /// kept per rule so selecting another card shows *its* last values rather than nothing
@@ -588,14 +588,14 @@ private:
     /// `OutputRunner::liveRulesVersion` as `tick` last adopted it. See `adoptLive`.
     std::uint64_t liveSeen_ = 0;
     /// What is in a box that has not been committed yet — kept from its keystrokes, so that
-    /// switching rules commits it to the rule it was typed for. Switching used
-    /// to rebuild the rows at once, which destroyed the box and what was in it; and a box that
-    /// survived committed, when it lost the focus, into whichever rule was showing by then.
+    /// switching rules commits it to the rule it was typed for. Switching used to rebuild the rows
+    /// at once, which destroyed the box and what was in it; and a box that survived committed,
+    /// when it lost the focus, into whichever rule was showing by then.
     ///
-    /// **Every box, and before every action**. A box commits when
-    /// it loses the keyboard, a turn of the event loop *after* the click that took it — so TEST
-    /// fired the rule as it was before the edit, and + ADD, MUTE, ÷2 or a follow-up's × wrote the
-    /// stored value back over what was typed. Only one box has the keyboard, so one is enough.
+    /// **Every box, and before every action.** A box commits when it loses the keyboard, a turn of
+    /// the event loop *after* the click that took it — so TEST fired the rule as it was before the
+    /// edit, and + ADD, MUTE, ÷2 or a follow-up's × wrote the stored value back over what was
+    /// typed. Only one box has the keyboard, so one is enough.
     struct Typing {
         std::string ruleId;
         TypedIn where = TypedIn::Slot;

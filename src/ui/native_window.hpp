@@ -87,11 +87,11 @@ LogicalExtent fitWithin(LogicalExtent wanted, LogicalExtent work) noexcept;
 /// been said, which the application does and the tests do not, so a test window opens at the
 /// size its layout assertions were written for.
 ///
-/// **an earlier review.** The main window opened at 1000 x 934 logical pixels, which at 125 %
-/// scaling is 1168 physical: taller than a 1080-line screen once its taskbar is off it, so the
-/// status bar and PANIC opened under the taskbar on exactly the laptop a show runs from. The
-/// rule and patch editors (872 and 800 tall) the same on a smaller screen. Only the first show
-/// is sized this way; a window the operator drags larger stays larger.
+/// The main window opened at 1000 x 934 logical pixels, which at 125 % scaling is 1168
+/// physical: taller than a 1080-line screen once its taskbar is off it, so the status bar and
+/// PANIC opened under the taskbar on exactly the laptop a show runs from. The rule and patch
+/// editors (872 and 800 tall) the same on a smaller screen. Only the first show is sized this
+/// way; a window the operator drags larger stays larger.
 ///
 /// Away from Windows, or when the screen cannot be asked, `wanted` unchanged.
 LogicalExtent fitToScreen(LogicalExtent wanted) noexcept;

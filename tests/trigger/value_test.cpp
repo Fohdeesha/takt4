@@ -22,8 +22,8 @@ std::string spelled(const Value& value) {
 } // namespace
 
 TEST_CASE("a value carries what the transports underneath can", "[trigger][value]") {
-    // the Fixed generator: "Literal int, float, string or bool" — which is also what
-    // OSC 1.0 as output::OscMessage encodes, plus MIDI's integers.
+    // The Fixed generator's literal int, float, string or bool — which is also what OSC 1.0
+    // as output::OscMessage encodes, plus MIDI's integers.
     CHECK(Value{}.kind() == Value::Kind::Int);
     CHECK(Value{}.asInt() == 0);
 

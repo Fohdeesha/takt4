@@ -10,12 +10,12 @@ namespace takt4::audio {
 /// the engine, the meter — which a caller can shut and then **know nothing is inside**, without
 /// asking the driver anything.
 ///
-/// Why it exists: stopping a stream is the one way PortAudio
-/// promises the callback has returned, and a wedged driver never returns from the stop. So the
-/// window could not stop on another thread and go on — the callback might still be writing into
-/// an engine the window was about to restart or destroy. Shut this first and it can: a callback
-/// that begins afterwards turns straight round, and one already inside is waited for, which is a
-/// callback's length — it is real-time code that never blocks.
+/// Why it exists: stopping a stream is the one way PortAudio promises the callback has returned,
+/// and a wedged driver never returns from the stop. So the window could not stop on another thread
+/// and go on — the callback might still be writing into an engine the window was about to restart
+/// or destroy. Shut this first and it can: a callback that begins afterwards turns straight round,
+/// and one already inside is waited for, which is a callback's length — it is real-time code that
+/// never blocks.
 ///
 /// **Sequentially consistent on both sides**, deliberately: the callback raises `inside_` and
 /// then reads `open_`, the closer lowers `open_` and then reads `inside_`, and only with both

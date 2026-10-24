@@ -28,9 +28,9 @@ int presetOf(std::string_view address) {
 // three layers" is three rules, and nobody wants to build the same rule three times and
 // remember to give each a different seed.
 //
-// Still the rule about presets — "a starting point the user can edit, never a hardcoded
-// code path". Every one of these produces ordinary `Rule::Config`s that the editor then edits
-// like any other, and nothing downstream ever asks which preset a rule came from.
+// Still the rule about presets — a starting point the user can edit, never a hardcoded code
+// path. Every one of these produces ordinary `Rule::Config`s that the editor then edits like
+// any other, and nothing downstream ever asks which preset a rule came from.
 
 trigger::FollowUp releaseAfterMs(std::int32_t value, double milliseconds) {
     trigger::FollowUp entry;
@@ -54,7 +54,7 @@ Rule::Config resolumeLayer(int layer, std::uint32_t everyBars, std::uint64_t see
     which.fixed = trigger::Value::ofInt(layer);
 
     Generator::Config clip;
-    clip.kind = GeneratorKind::Shuffle; // the default, and why: repeats read as bugs
+    clip.kind = GeneratorKind::Shuffle; // the default generator, and why: repeats read as bugs
     clip.low = 1;
     clip.high = 8;
     clip.noRepeatWithin = 2;
@@ -62,7 +62,7 @@ Rule::Config resolumeLayer(int layer, std::uint32_t everyBars, std::uint64_t see
 
     rule.value.kind = GeneratorKind::Fixed;
     rule.value.fixed = trigger::Value::ofInt(1);
-    // the design: connect is a mouse click. Without the release the clip stays held.
+    // Resolume's connect is a mouse click. Without the release the clip stays held.
     rule.followUps.push_back(releaseAfterMs(0, 50));
     rule.seed = seed;
     return rule;
@@ -88,9 +88,10 @@ std::vector<Rule::Config> rigPresetRules(std::size_t index) {
         return {resolumeLayer(3, 16, 303), resolumeLayer(2, 8, 202), resolumeLayer(1, 4, 101)};
     }
     case 2: {
-        // Resolume's own tempo, kept in step with the tracker. the design and the design verified both
-        // addresses: the tempo is "float, normalised 0-1 across 20-500 BPM", which is exactly
-        // what the `Live` generator's `BpmNormalised` source exists for.
+        // Resolume's own tempo, kept in step with the tracker. Both addresses were checked
+        // against Resolume's own documentation: the tempo is a float, normalised 0-1 across
+        // 20-500 BPM, which is exactly what the `Live` generator's `BpmNormalised` source
+        // exists for.
         Rule::Config tempo;
         tempo.id = "tempo";
         tempo.name = "Resolume tempo follows takt4";

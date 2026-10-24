@@ -9,9 +9,9 @@ namespace takt4::ui {
 ///
 /// Deleting a row moves the one below it up under the pointer, so the second click of a
 /// double-click on × landed on the next row's × and deleted that one too — two rows for one
-/// gesture, with no undo. A press on the same row's mark within
-/// the system's double-click time of the last press is taken for that second click and
-/// ignored; a press after it, or on another row, is an operator deleting on purpose.
+/// gesture, with no undo. A press on the same row's mark within the system's double-click time
+/// of the last press is taken for that second click and ignored; a press after it, or on
+/// another row, is an operator deleting on purpose.
 ///
 /// On the click's path only — the markup's callback — so a controller's own `removeAt` still
 /// does what it is asked, however quickly it is asked.

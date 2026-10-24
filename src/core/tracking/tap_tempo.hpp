@@ -6,7 +6,7 @@
 
 namespace takt4::tracking {
 
-/// the tap tempo: taps in, a tempo out.
+/// Tap tempo: taps in, a tempo out.
 ///
 /// Deliberately not part of `TempoTracker`. That class is "deterministic, allocation-free
 /// and independent of wall-clock time: everything is derived from the frame index the
@@ -34,8 +34,7 @@ public:
         /// a pad that retriggered, a key held down — and is ignored outright rather than
         /// counted. A tenth of a second is 600 BPM; nobody taps that, and a switch bounces in a
         /// few milliseconds. Without it two taps 20 ms apart were a tempo of 3000 BPM, and with
-        /// the fold off that went straight to Link and the MIDI clock as an octave shift (the
-        /// review's H1).
+        /// the fold off that went straight to Link and the MIDI clock as an octave shift.
         double bounceSeconds = 0.1;
         /// The tempi a set of taps may offer. Outside this nothing is offered and the set goes
         /// on counting: a tap tempo of 12 or 900 BPM is a set that went wrong, not a tempo.

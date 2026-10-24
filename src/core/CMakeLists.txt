@@ -278,10 +278,10 @@ endif()
 
 # takt4_assets — the weights and the state space, compiled into the program.
 #
-# What makes takt4.exe one file somebody can copy to a stick and run. the design Phase 7
-# had an installer put these beside the executable; inside it is the same intent taken one
-# step further, and it removes the failure the copy on D:\ actually hit — an exe that went
-# on reading its weights out of the source tree it happened to be built in.
+# What makes takt4.exe one file somebody can copy to a stick and run. An installer was first
+# meant to put these beside the executable; inside it is the same intent taken one step
+# further, and it removes the failure the copy on D:\ actually hit — an exe that went on
+# reading its weights out of the source tree it happened to be built in.
 #
 # Kept out of takt4_core deliberately. The console and the test binary link core, want to be
 # pointed at *any* weight set rather than the one that is built in, and have no reason to

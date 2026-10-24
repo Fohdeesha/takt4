@@ -6,10 +6,10 @@ namespace takt4::audio {
 
 /// Consumer of the input pipeline's output: mono hops of kHopSize samples at
 /// kInternalSampleRate. `engine::BeatEngine` is the one that tracks — the feature front end
-/// and the model behind it — and `audio::HopMeter` is the level meter
-/// the console prints from.
+/// and the model behind it — and `audio::HopMeter` is the level meter the console prints
+/// from.
 ///
-/// processHop runs on the audio thread and is bound by the design: no allocation,
+/// processHop runs on the audio thread and is bound by that thread's rules: no allocation,
 /// no locks, no I/O, fixed buffers, results out through a lock-free ring only.
 class HopProcessor {
 public:
@@ -18,7 +18,7 @@ public:
     /// `hop` holds kHopSize samples and is valid only during the call. `hopIndex`
     /// counts hops from 0 at stream start; hop k covers internal-rate samples
     /// [k · kHopSize, (k + 1) · kHopSize), so it doubles as the monotonic sample clock
-    /// of the design.
+    /// that host time is read from.
     virtual void processHop(const float* hop, std::uint64_t hopIndex) noexcept = 0;
 
     /// A buffer of input has arrived, before any hop it completes is handed over: its first

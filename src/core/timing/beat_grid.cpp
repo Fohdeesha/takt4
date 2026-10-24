@@ -126,7 +126,7 @@ void BeatGrid::declareBar() noexcept {
     state_.beatInBar = 1;
     if (!wasBarStart) {
         // A bar the count did not make, whose first beat has already gone out as another: the
-        // output thread fires its rules now, late by the press (the tracker's M4 path).
+        // output thread fires its rules now, late by the press, as it does for the tracker's.
         ++state_.bars;
         ++state_.barsDeclared;
         state_.declaredBar = state_.bars;

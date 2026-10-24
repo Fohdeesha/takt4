@@ -120,9 +120,9 @@ std::string usablePrefix(const settings::Settings& settings) {
 /// hostname does not resolve yet because the network is still coming up. `Transports` throws for
 /// those, from inside `OutputRunner`'s constructor, from inside this class's member initialisers —
 /// and nothing above that caught it, so takt4 died within seconds of every launch with no window
-/// and no message. The only way out was to
-/// hand-edit `settings.json`. So both are applied once the window exists, through the same
-/// `post` an operator's edit takes, and a failure lands on the status line like any other.
+/// and no message (reproduced with the Release build). The only way out was to hand-edit
+/// `settings.json`. So both are applied once the window exists, through the same `post` an
+/// operator's edit takes, and a failure lands on the status line like any other.
 output::Transports::Config transportConfig(const settings::Settings& settings,
                                            const Options& tempo) {
     output::Transports::Config config;
@@ -214,8 +214,8 @@ bool startsWithUniverse(std::string_view part) noexcept {
 }
 
 /// The next comma or line break at or after `at` that is not inside a quoted name — the way a
-/// name is written when it has one of those in it (`output::formatOutputTarget`, an earlier review of
-/// 2026-09-25's L28). `npos` when there is none.
+/// name is written when it has one of those in it (`output::formatOutputTarget`). `npos` when
+/// there is none.
 std::size_t nextSeparator(std::string_view text, std::size_t at) {
     bool quoted = false;
     for (std::size_t i = at; i < text.size(); ++i) {
@@ -242,7 +242,7 @@ std::vector<std::string_view> splitTargets(std::string_view text) {
             // **A comma inside an Art-Net universe list is the list's.** `artnet h:6454 u0,1,4`
             // is one target, and splitting it at every comma left "1" and "4" as targets that
             // would not parse — so the whole row was refused and a node fed more than one
-            // universe was never sent anything (found while fixing an earlier review). Joined
+            // universe was never sent anything (found while fixing universe parsing). Joined
             // back onto the target it belongs to, as the text it was: the views are into `text`.
             if (!parts.empty() && text[at - 1] == ',' && endsInUniverseList(parts.back()) &&
                 startsWithUniverse(part)) {
@@ -301,10 +301,10 @@ constexpr double kOutageCarrySeconds = 30.0;
 /// out on its own, before anything may replace it. Long enough to be read.
 constexpr double kStartupHoldSeconds = 15.0;
 
-/// START and STOP as the button presses them (an earlier review; see
-/// `WindowController::requestToggleRun`). Long enough for the window to draw "OPENING…" before
-/// the driver takes the thread — a frame is 16 ms — and a press after it is carried out that
-/// is refused, because a click made while the window could not draw arrives only then.
+/// START and STOP as the button presses them (see `WindowController::requestToggleRun`). Long
+/// enough for the window to draw "OPENING…" before the driver takes the thread — a frame is
+/// 16 ms — and a press after it is carried out that is refused, because a click made while the
+/// window could not draw arrives only then.
 constexpr std::chrono::milliseconds kRunDrawFirst{40};
 constexpr double kRunGraceSeconds = 0.3;
 
@@ -314,8 +314,8 @@ constexpr double kRunGraceSeconds = 0.3;
 /// `ports` is `WindowController::deviceNames_`: the MIDI outputs this machine has, and after them
 /// every device a row names that it has not — a preset from another rig, an interface left at
 /// home — marked in the list as not plugged in. So the row shows the device it is trying to open
-/// rather than "select a MIDI device", which read as a row with no device at all (an earlier review of
-/// 2026-09-25, L32). Zero only for a name in neither, which is a row still being filled in.
+/// rather than "select a MIDI device", which read as a row with no device at all. Zero only for a
+/// name in neither, which is a row still being filled in.
 int deviceIndexOf(const std::vector<std::string>& ports, const std::string& device) {
     for (std::size_t i = 0; i < ports.size(); ++i) {
         if (ports[i] == device) {
@@ -457,7 +457,8 @@ void splitAddress(OutputRow& row, const std::vector<std::string>& midiPorts) {
     row.port = shared(std::string(text.substr(colon + 1)));
 }
 
-/// the listening socket, from the machine half — a port on this box, never a preset's.
+/// The OSC control input's listening socket, from the machine half — a port on this box, never
+/// a preset's.
 ///
 /// `enabled` is carried across but the socket is not opened here: the constructor builds
 /// this and `setOscControlEnabled` starts it, after the window exists, so a port that is
@@ -467,11 +468,11 @@ control::OscControl::Config oscControlConfig(const settings::Settings& settings)
     config.enabled = settings.machine.oscControlEnabled;
     config.port = settings.machine.oscControlPort;
     config.localOnly = settings.machine.oscControlLocalOnly;
-    // One namespace in both directions: the design publishes `<prefix>/bpm` and the design listens on
-    // `<prefix>/ctl/…`, and an operator who has learned one has learned the other. The
-    // prefix is the portable half's — it describes the app, not the box — while whether to
-    // listen at all is machine-local. The same checked prefix the transports get, so the two
-    // directions cannot disagree about a bad one.
+    // One namespace in both directions: the outputs publish `<prefix>/bpm` and the control
+    // input listens on `<prefix>/ctl/…`, and an operator who has learned one has learned the
+    // other. The prefix is the portable half's — it describes the app, not the box — while
+    // whether to listen at all is machine-local. The same checked prefix the transports get, so
+    // the two directions cannot disagree about a bad one.
     config.prefix = usablePrefix(settings);
     return config;
 }
@@ -558,18 +559,18 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
       // Both built disabled; `setMidiControlPort` and `setOscControlEnabled` are what open
       // a port, so a machine with a controller plugged in is not listened to — and no
       // socket is bound — until somebody says to. The runner is each one's second
-      // destination: the `panic` and `rule/<id>/enable` are questions for the rules,
+      // destination: `panic` and `rule/<id>/enable` are questions for the rules,
       // which live on the output thread behind that queue.
       control_(source_, inputs_, control::MidiControl::Config{}, &runner_),
       oscControl_(source_, oscControlConfig(settings), &runner_),
-      // the editor, built with the window and shown on demand. It is given the rules
+      // The rule editor, built with the window and shown on demand. It is given the rules
       // straight from the preset rather than through `setRules`, because the runner has
       // not been told about them yet — the constructor body does that below, once.
       editor_(runner_, settings.preset.rules),
       // And the lighting patch, the same way. The runner was built with it (see
       // `transportConfig`), so this one really is only the editor's copy.
       patch_(runner_, settings.preset.fixtures, settings.preset.library) {
-    // the stamp is taken on the audio thread, so the clock has to be installed before a
+    // The host-time stamp is taken on the audio thread, so the clock has to be installed before a
     // stream is opened. Handing it to the tracker rather than to the engine is what makes
     // that ordering `LiveTracker::start`'s business instead of this class's.
     tickProbe_ = environmentPath("TAKT4_TICK_PROBE");
@@ -592,7 +593,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // The prefix an OSC row's tick names. Once: a new one takes a restart (`pendingPrefix_`).
     window_->set_osc_prefix(shared(usablePrefix(settings)));
 
-    // the targets as the last run left them, into the rows that edit them. Seeded once:
+    // The output targets as the last run left them, into the rows that edit them. Seeded once:
     // the drafts are the window's copy from here on, because `publishOutputs` runs thirty
     // times a second while the tracker does and would otherwise replace a row mid-word.
     // From the settings rather than the runner, which has none yet — see `transportConfig`;
@@ -695,7 +696,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
                           });
     });
     // A double-click on × is one deletion: the row below moves up under the pointer and
-    // would take the second click (`DeleteGuard`, an earlier review, L10).
+    // would take the second click (`DeleteGuard`).
     window_->on_output_removed([this](int index) {
         if (outputMarks_.press(index)) {
             removeTarget(index);
@@ -859,7 +860,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     if (!settings.machine.midiControlPort.empty()) {
         setMidiControlPort(settings.machine.midiControlPort);
     }
-    // the rules from the preset half, handed to the output thread. Before the OSC
+    // The rules from the preset half, handed to the output thread. Before the OSC
     // socket, so a control surface that comes up listening cannot enable a rule that has
     // not been loaded yet.
     if (!settings.preset.rules.empty()) {
@@ -903,7 +904,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     publishControl();
 
     // **Closing this window closes takt4.** Slint's event loop runs until the *last* window
-    // is hidden, and the editor is a window of its own — so closing the main window with
+    // is hidden, and the rule editor is a window of its own — so closing the main window with
     // the editor up left the process alive with nothing but the editor on screen, and the
     // settings unwritten, since `ui::run` only saves once the loop has returned. An operator
     // who has just closed the app and been told nothing was kept has met the one failure the
@@ -912,8 +913,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // **Every other window, not only the editor** — the patch editor is a window of its own
     // too, and closing the main window with PATCH LIGHTS open left takt4 running with nothing
     // on screen but that: the ASIO device, Link and the ports still held, nothing saved, and
-    // a relaunch finding the interface busy. And the About box, which is a
-    // window of its own as well and was left out.
+    // a relaunch finding the interface busy. And the About box, which is a window of its own
+    // as well and was left out.
     window_->window().on_close_requested([this] {
         // What is being typed is finished first, as a click anywhere else finishes it: the
         // settings are saved once the loop has returned, and a name or a port typed and closed on
@@ -943,10 +944,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     editor_.applyLayout(settings.machine);
     patch_.applyLayout(settings.machine);
 
-    // **The outputs from now until the window goes**, not from Start to Stop — an earlier review
-    // and the operator's call of 2026-09-23. Last, after every setting above has been applied
-    // on this thread: a `post` to a running runner is taken by its thread a millisecond later,
-    // and the lines above read `lastError()` straight after posting.
+    // **The outputs from now until the window goes**, not from Start to Stop — the operator's
+    // call of 2026-09-23. Last, after every setting above has been applied on this thread: a
+    // `post` to a running runner is taken by its thread a millisecond later, and the lines above
+    // read `lastError()` straight after posting.
     //
     // Caught, because this is the constructor of the window an operator is about to see: a
     // failure here is said on the status line rather than taking the application with it.
@@ -956,14 +957,14 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         setStatus(std::string("Cannot start the outputs: ") + e.what(), true);
     }
 
-    // **Every error the window met on the way up, not only the last**. Each
-    // `setStatus` replaces the one before, so a launch that found the MIDI clock port missing
-    // and the OSC control port taken said only the second, and the first was never seen.
+    // **Every error the window met on the way up, not only the last.** Each `setStatus` replaces
+    // the one before, so a launch that found the MIDI clock port missing and the OSC control
+    // port taken said only the second, and the first was never seen.
     //
-    // **And one as well as several**: a single error was left
-    // where it was, and the constructor's own later news — "Control input on …", "pick an input
-    // and press Start" — wrote over it before the window was up. The ASIO scan's problem, "N
-    // rules will not fire" and a bad OSC prefix were each lost that way.
+    // **And one as well as several**: a single error was left where it was, and the
+    // constructor's own later news — "Control input on …", "pick an input and press Start" —
+    // wrote over it before the window was up. The ASIO scan's problem, "N rules will not fire"
+    // and a bad OSC prefix were each lost that way.
     constructing_ = false;
     if (!startupErrors_.empty()) {
         std::string all;
@@ -1053,9 +1054,8 @@ void WindowController::relistDuringOutage() {
         return;
     }
     // The list PortAudio has just read, and **the device the outage is about found in it again
-    // by name**. This used to replace the list and keep the old
-    // position — so the picker, STOP and START, and the settings file all meant whatever now sat
-    // where the interface used to be.
+    // by name**. This used to replace the list and keep the old position — so the picker, STOP
+    // and START, and the settings file all meant whatever now sat where the interface used to be.
     const audio::InputDevice wanted = input_->device;
     const int channel = input_->selection.channels.front();
     listDevices();
@@ -1121,7 +1121,7 @@ void WindowController::refreshDevices(const settings::MachineSettings& remembere
     deviceFallback_ = !restored && !remembered.deviceName.empty();
     if (!restored) {
         // Nothing remembered, or it is not here any more. The most useful device to land
-        // on: a real input before a loopback of the speakers (Q3 offers loopback as a way
+        // on: a real input before a loopback of the speakers (loopback is offered as a way
         // round a busy interface, not as the normal path), then a host API that can pick
         // channels natively, then the machine's own default input, then the most inputs.
         const auto rank = [](const audio::InputDevice& device) {
@@ -1278,7 +1278,7 @@ void WindowController::publishPortLists() {
     //
     // The MIDI outputs, as a MIDI row's and a MIDI clock row's dropdown offers them — the ones
     // this machine has, and after them any a row names that it has not, said to be missing
-    // (`deviceNames_`, an earlier review).
+    // (`deviceNames_`).
     auto devices = std::make_shared<slint::VectorModel<slint::SharedString>>();
     devices->push_back(
         shared(midiPorts_.empty() ? "no MIDI outputs on this machine" : "select a MIDI device"));
@@ -1287,8 +1287,8 @@ void WindowController::publishPortLists() {
                                                         : deviceNames_[i] + " \xE2\x80\x94 not plugged in"));
     }
     // A MIDI row's dropdown shows the entry its row names, from whichever list this is: it never
-    // answers a new list by picking for itself, as std's ComboBox did (an earlier review,
-    // L27, which had every MIDI row built again here).
+    // answers a new list by picking for itself, as std's ComboBox did, which had every MIDI row
+    // built again here.
     window_->set_output_devices(devices);
 
     publishMidiInputList();
@@ -1602,12 +1602,12 @@ void WindowController::superviseStereo(const audio::StereoSums& sums, double now
 }
 
 void WindowController::requestToggleRun() {
-    // an earlier review. Opening an ASIO driver, and closing one, holds this thread for as long as
-    // the driver likes — seconds, on some — and nothing is drawn meanwhile, so the button went on
-    // saying START with no sign it had been pressed. A click made in that time is delivered once
-    // the thread is free, and pressed STOP on an input that had only just opened. So: say it on
-    // the button, give the window a frame to show it, carry it out, and take no press until a
-    // moment after — the button is disabled for all of it.
+    // Opening an ASIO driver, and closing one, holds this thread for as long as the driver
+    // likes — seconds, on some — and nothing is drawn meanwhile, so the button went on saying
+    // START with no sign it had been pressed. A click made in that time is delivered once the
+    // thread is free, and pressed STOP on an input that had only just opened. So: say it on the
+    // button, give the window a frame to show it, carry it out, and take no press until a moment
+    // after — the button is disabled for all of it.
     if (runPending_ || window_->get_run_busy()) {
         return;
     }
@@ -1679,8 +1679,7 @@ void WindowController::toggleRun() {
         return;
     }
     // Nothing selected — the machine has no inputs, or the one being used went away and nothing
-    // was put in its place — or a position the list no longer has, which used to be read anyway
-    //.
+    // was put in its place — or a position the list no longer has, which used to be read anyway.
     if (device_ < 0 || static_cast<std::size_t>(device_) >= devices_.size()) {
         setStatus(devices_.empty() ? "No input device. Connect an interface and press RESCAN."
                                    : "Pick an input, then press Start.",
@@ -1698,9 +1697,9 @@ void WindowController::toggleRun() {
         publishStopped();
         return;
     } catch (const audio::PortAudioError& e) {
-        // the design Q3 and R2: most ASIO drivers are single-client, and a busy interface is
-        // the exact situation takt4 exists for. A PortAudio error code is no use to anyone
-        // standing at a laptop, so say what it means and what the ways round it are.
+        // Most ASIO drivers are single-client, and a busy interface is the exact situation
+        // takt4 exists for. A PortAudio error code is no use to anyone standing at a laptop,
+        // so say what it means and what the ways round it are.
         setStatus("Cannot open " + device.name + ": " + e.what() +
                       ". If another application already has this interface, most ASIO "
                       "drivers will not share it — use the same interface's WASAPI "
@@ -1755,9 +1754,9 @@ bool WindowController::reopenInput(std::string& error) {
         audio::findInput(devices_, input_->device.name, input_->device.hostApiName);
     const audio::InputDevice* device = found ? &devices_[*found] : nullptr;
     if (device == nullptr) {
-        // **Not there is a failure, not a reason to use the old entry** (an earlier review of
-        // 2026-09-25, H1). The old one's index belongs to the PortAudio session before the
-        // rescan, and opening it opened whatever now has that number — and said "Audio is back".
+        // **Not there is a failure, not a reason to use the old entry.** The old one's index
+        // belongs to the PortAudio session before the rescan, and opening it opened whatever now
+        // has that number — and said "Audio is back".
         error = input_->device.name + " is not on this machine at the moment";
         return false;
     }
@@ -1796,8 +1795,8 @@ void WindowController::beginOutage(const std::string& why, double since, double 
     outage.nextTry = now + kOutageFirstTrySeconds;
     outage.why = why;
     // An input that came back for a moment and went again goes on counting, so the rescan every
-    // third try is still reached: each return used to start the
-    // count from nothing, and an input that kept flapping never had the machine looked at again.
+    // third try is still reached: each return used to start the count from nothing, and an input
+    // that kept flapping never had the machine looked at again.
     if (outageEndedAt_ >= 0.0 && now - outageEndedAt_ < kOutageCarrySeconds) {
         outage.tries = outageEndedTries_;
     }
@@ -1891,9 +1890,9 @@ void WindowController::publishDriverState() {
     }
     driverStuckShown_ = stuck;
     if (stuck) {
-        // **Said, and gone on from**: the window used to be frozen
-        // by now, PANIC and all. The stream was detached before it was handed over, so nothing
-        // the driver sends reaches the tracker; the outputs carry the last tempo on.
+        // **Said, and gone on from**: the window used to be frozen by now, PANIC and all. The
+        // stream was detached before it was handed over, so nothing the driver sends reaches the
+        // tracker; the outputs carry the last tempo on.
         const std::string asked = tracker_.stuckOn();
         report("The audio driver has stopped answering (it was asked to " + asked +
                    "). takt4 has let it go and carries on \xE2\x80\x94 the outputs keep the last "
@@ -1959,11 +1958,11 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
         case Outage::Asking::Nothing:
             break;
         }
-        // **Back when the reopened input sends something, not when it opens** (an earlier review of
-        // 2026-09-25, M8). A reopen that merely opened was announced as "Audio is back" and
-        // ended the outage before a single callback, so an input that opens and then sends
-        // nothing — a loopback of an idle output is exactly that — flipped between "No audio"
-        // and "Audio is back" every few seconds, restarting the tracker each time.
+        // **Back when the reopened input sends something, not when it opens.** A reopen that
+        // merely opened was announced as "Audio is back" and ended the outage before a single
+        // callback, so an input that opens and then sends nothing — a loopback of an idle output
+        // is exactly that — flipped between "No audio" and "Audio is back" every few seconds,
+        // restarting the tracker each time.
         if (outage_->reopened) {
             const audio::InputStream* stream = tracker_.stream();
             if (stream != nullptr && stream->counters().callbacks > 0) {
@@ -2027,14 +2026,14 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
         return;
     }
 
-    // The interface's overflows, and what the engine lost after them — an earlier review: the
-    // engine counted every hop, frame and beat it dropped and nothing showed one. All of them
-    // start again with the run, like the overflows.
+    // The interface's overflows, and what the engine lost after them: the engine counted every
+    // hop, frame and beat it dropped and nothing showed one. All of them start again with the
+    // run, like the overflows.
     const engine::BeatEngine& engine = tracker_.engine();
     InputTrouble trouble;
     trouble.overflows = reading.inputOverflows;
     // The driver's own word that it lost its place for a moment, kept "so it can be shown" and
-    // shown nowhere until an earlier review.
+    // shown nowhere until 2026-09-26.
     if (events.resync) {
         ++driverResyncs_;
     }
@@ -2089,12 +2088,11 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
 
     switch (reading.verdict) {
     case audio::InputWatchdog::Verdict::Silent:
-        // **A loopback's silence is nothing playing, not a dead input** (an earlier review,
-        // M8, and the operator's call on its Q4). Windows sends a loopback nothing at all while
-        // nothing plays on the output it captures — measured: 0 hops in 3 s from an idle output's
-        // loopback — so a paused player read as an unplugged interface, and was reopened every
-        // few seconds, the tracker restarting each time. Said once, and the stream left open for
-        // whatever plays next.
+        // **A loopback's silence is nothing playing, not a dead input** (the operator's call of
+        // 2026-09-26). Windows sends a loopback nothing at all while nothing plays on the output
+        // it captures — measured: 0 hops in 3 s from an idle output's loopback — so a paused
+        // player read as an unplugged interface, and was reopened every few seconds, the tracker
+        // restarting each time. Said once, and the stream left open for whatever plays next.
         if (input_ && input_->device.isLoopback) {
             if (!nothingPlaying_) {
                 nothingPlaying_ = true;
@@ -2419,12 +2417,12 @@ void WindowController::removeTarget(int index) {
     }
     const auto at = static_cast<std::size_t>(index);
     targetDrafts_.erase(targetDrafts_.begin() + index);
-    // **That row's element, and no other**. Left to `writeRows`,
-    // the list was rewritten in place and the *last* element went — so every element below this
-    // one was handed the output below it. A box being typed into on one of them commits when it
-    // loses the keyboard, a turn of the event loop after this click, by its index: into the next
-    // output down. Erased here, each element goes on holding its own output, its index moves up
-    // with it, and what it was typed for is what it commits to.
+    // **That row's element, and no other.** Left to `writeRows`, the list was rewritten in place
+    // and the *last* element went — so every element below this one was handed the output below
+    // it. A box being typed into on one of them commits when it loses the keyboard, a turn of the
+    // event loop after this click, by its index: into the next output down. Erased here, each
+    // element goes on holding its own output, its index moves up with it, and what it was typed
+    // for is what it commits to.
     if (at < targetModel_->row_count()) {
         targetModel_->erase(at);
     }
@@ -2546,7 +2544,7 @@ void WindowController::setOscTargets(const std::string& text) {
 }
 
 void WindowController::applyTargets() {
-    // the named targets. Each row is `host:port` or `midi Device` with the name in the
+    // The named targets. Each row is `host:port` or `midi Device` with the name in the
     // box beside it, and `output::parseOutputTarget` also takes the whole `name = address`
     // form — which is what a row holds when a line has been pasted into it.
     //
@@ -2923,7 +2921,7 @@ void WindowController::setRules(std::vector<trigger::Rule::Config> rules) {
     // over, however its ids match.
     runner_.post(output::OutputCommand::rules(rules_, /*fresh=*/true));
 
-    // the other policy: an invalid rule is *held* and refuses to fire, rather than being
+    // The rules' other policy: an invalid rule is *held* and refuses to fire, rather than being
     // refused on the way in. Nothing else would tell an operator, so this does — and it
     // counts rather than naming one, because a preset arriving with four broken rules
     // should not report only the first.
@@ -3020,10 +3018,10 @@ void WindowController::setOscControlPort(int port) {
     if (oscControl_.running() || !wasRunning) {
         return;
     }
-    // **The new port would not bind, so the old one comes back**. This
-    // closed the working socket first and then tried the new number, so a typo — or a port
-    // another program has — left a Stream Deck with no one listening, mid-show. What
-    // `setOscControlEnabled` said about the new port is kept; this adds where it still is.
+    // **The new port would not bind, so the old one comes back.** This closed the working socket
+    // first and then tried the new number, so a typo — or a port another program has — left a
+    // Stream Deck with no one listening, mid-show. What `setOscControlEnabled` said about the new
+    // port is kept; this adds where it still is.
     const std::string refusal(window_->get_status());
     config.port = previousPort;
     oscControl_.setConfig(config);
@@ -3240,7 +3238,7 @@ void WindowController::publishOscControl(bool force) {
         return;
     }
     // The address on the first line and where it came from beside it, in the secondary colour;
-    // the counts under them (the approved render, the design).
+    // the counts under them (the approved render).
     std::string address = oscControl_.lastMessage();
     std::string from;
     if (const std::size_t at = address.rfind("  from "); at != std::string::npos) {
@@ -3319,9 +3317,9 @@ void WindowController::tap(double seconds) {
     lastTapSeconds_ = seconds;
     if (tapped) {
         // A seed, not an override: the fold window moves onto the tapped octave and the
-        // tracker keeps tracking (the locked decisions). It moves `minBpm`/`maxBpm` under
-        // this window, which is why nothing here holds a copy of them — and why a settings
-        // change in flight is dropped, since the tap has just superseded it.
+        // tracker keeps tracking (the operator's call of 2026-09-04). It moves `minBpm`/`maxBpm`
+        // under this window, which is why nothing here holds a copy of them — and why a
+        // settings change in flight is dropped, since the tap has just superseded it.
         (void)source_.post(engine::Command::seedTempo(*tapped));
         posted_.reset();
     }
@@ -3389,11 +3387,11 @@ void WindowController::setKeepShift(bool keep) {
 }
 
 tracking::TempoTracker::Options WindowController::settings() const {
-    // the design deviation 8 says to edit from what the engine has and never from a copy kept
-    // since startup, because a tap moves the fold window underneath one. `posted_` is not
-    // that copy: it is a change made moments ago and not yet applied, it is cleared the
-    // moment the engine is seen to have it or a tap supersedes it, and editing from it is
-    // what stops two quick drags from undoing each other.
+    // Edit from what the engine has and never from a copy kept since startup, because a tap
+    // moves the fold window underneath one. `posted_` is not that copy: it is a change made
+    // moments ago and not yet applied, it is cleared the moment the engine is seen to have it
+    // or a tap supersedes it, and editing from it is what stops two quick drags from undoing
+    // each other.
     return posted_ ? *posted_ : tracker_.engine().tempoOptions();
 }
 
@@ -3406,7 +3404,7 @@ void WindowController::postOptions(const Options& options) {
     }
     // **And to the transports**, which is where the latency offset does anything at all: the
     // tracker applies it only to `BeatEvent::time`, which nothing in the application reads.
-    // Until an earlier review (C6) this was the one place it was sent, so dragging "latency" to pull
+    // Until 2026-09-23 this was the one place it was sent, so dragging "latency" to pull
     // the rig earlier moved nothing — and the value was saved, and took effect at the *next*
     // launch, offsetting a later show by an amount nobody chose that night. One atomic,
     // safe from this thread; every way a setting changes comes through here, the slider and
@@ -3456,17 +3454,17 @@ settings::Settings WindowController::currentSettings() const {
     // this way; this was the one place left that did not.
     const output::OutputRunner::Snapshot live = runner_.snapshot();
     // The MIDI clocks are outputs now, each keeping the device it asked for whether or not it
-    // opened — what a port unplugged at this launch needs to still be wanted at the next (the
-    // review's H11). `settings::toJson` writes the first one where an older build looks too.
+    // opened — what a port unplugged at this launch needs to still be wanted at the next.
+    // `settings::toJson` writes the first one where an older build looks too.
 
-    // the control surface, which is machine-local for the same reason and more so: what
+    // The MIDI control surface, which is machine-local for the same reason and more so: what
     // was learned describes the box of buttons on this desk.
     out.machine.midiControlPort = control_.config().port;
     for (const control::MidiBinding& binding : control_.bindings()) {
         out.machine.midiBindings.push_back(control::formatMidiBinding(binding));
     }
 
-    // the other surface: **what was asked for, not whether it bound**.
+    // The other surface, OSC: **what was asked for, not whether it bound**.
     // This used to save `running()`, on the reasoning that a port taken at startup should not
     // be claimed in the file — but a port that was only briefly busy (another copy of takt4
     // still closing, say) then switched OSC control off for every launch after, silently,
@@ -3499,10 +3497,10 @@ settings::Settings WindowController::currentSettings() const {
     patch_.layoutInto(out.machine);
 
     // `settings()`: the engine's own, or a change posted moments ago that it has not taken
-    // yet. **Not the engine's alone**, which is what this read until an earlier review: a
-    // stopped engine applies a posted change only at the next Start, so a slider moved and
-    // then saved — or autosaved — while stopped wrote the value from *before* the move. A tap
-    // still wins, because a tap clears what was in flight (the design deviation 8).
+    // yet. **Not the engine's alone**, which is what this read until 2026-09-23: a stopped
+    // engine applies a posted change only at the next Start, so a slider moved and then
+    // saved — or autosaved — while stopped wrote the value from *before* the move. A tap still
+    // wins, because a tap clears what was in flight.
     out.preset.tempo = settings();
     // What the next launch should use: an imported preset's, where it named one this run
     // cannot switch to — see `importFrom`.
@@ -3524,8 +3522,7 @@ settings::Settings WindowController::currentSettings() const {
 
 bool WindowController::saveNow() {
     // An output row still being typed in is what the operator means to save: SAVE reads the
-    // runner's list, and the row's own commit comes a turn of the event loop after this click
-    //.
+    // runner's list, and the row's own commit comes a turn of the event loop after this click.
     applyDrafts();
     const std::filesystem::path path = settings::settingsFile();
     if (path.empty()) {
@@ -3534,7 +3531,7 @@ bool WindowController::saveNow() {
     }
     // Every path shown through `io::pathText`, never `path.string()` — which converts through
     // the ANSI code page and either throws or produces bytes Slint aborts on for a folder
-    // called "Shows – 2026". an earlier review.
+    // called "Shows – 2026".
     const std::string text = settings::toJson(currentSettings());
     if (!settings::saveText(text, path)) {
         setStatus("Could not write " + io::pathText(path), true);
@@ -3604,10 +3601,9 @@ void WindowController::holdStartupMessage(const std::string& text) {
 
 void WindowController::report(const std::string& text, bool error) {
     // **What the window finds out on its own, in its first seconds, joins what it met starting
-    // rather than replacing it**. The first redraw said which
-    // outputs could not be reached — over a damaged settings file's notice, before anybody could
-    // have read that. Anything the operator does says what it did as usual (`setStatus`), and
-    // after the hold everything does.
+    // rather than replacing it.** The first redraw said which outputs could not be reached —
+    // over a damaged settings file's notice, before anybody could have read that. Anything the
+    // operator does says what it did as usual (`setStatus`), and after the hold everything does.
     if (!startupMessage_.empty() && nowSeconds() < startupHeldUntil_) {
         if (startupMessage_.find(text) == std::string::npos) {
             startupMessage_ += "  ·  " + text;
@@ -3679,9 +3675,9 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // `settings::load` is documented never to fail: anything it cannot read gives defaults.
     // That is right for startup and wrong here — importing a JPEG would silently wipe the
     // rules — so the file is checked for being *settings* before any of it is applied. And
-    // **said why, when it is not**: through `load`, a file
-    // damaged by a hand edit or held by another program was "no preset in it", which sends the
-    // operator looking for the wrong thing.
+    // **said why, when it is not**: through `load`, a file damaged by a hand edit or held by
+    // another program was "no preset in it", which sends the operator looking for the wrong
+    // thing.
     const settings::Loaded checked = settings::loadChecked(path);
     if (checked.status == settings::LoadStatus::Corrupt ||
         checked.status == settings::LoadStatus::Unreadable) {
@@ -3738,9 +3734,9 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // engine is built with one, and a receiver is configured for the other — so a preset that
     // carries different ones is kept for the next launch rather than dropped, and says so.
     //
-    // **This import's, not the one before's**: a second import
-    // with the running decoder and prefix left the first import's still pending, so the next
-    // launch came up with a decoder and a prefix from a file the operator had since replaced.
+    // **This import's, not the one before's**: a second import with the running decoder and
+    // prefix left the first import's still pending, so the next launch came up with a decoder
+    // and a prefix from a file the operator had since replaced.
     std::string restart;
     pendingDecoder_.reset();
     pendingPrefix_.reset();
@@ -3777,8 +3773,8 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     applyTargets();
 
     // **And this machine's half, when the file has one** (the operator, 2026-10-03: an import
-    // "should carry/restore EVERYTHING"). It used to be left alone by design — Q7 kept the input
-    // and the learned controls out of anything that travels — so a rig restored from its own
+    // "should carry/restore EVERYTHING"). It used to be left alone by design — the input and the
+    // learned controls were kept out of anything that travels — so a rig restored from its own
     // export came back without its input, its pads, its OSC control or its layout.
     const std::string input = loaded.machine.inFile ? applyMachine(loaded.machine) : std::string{};
 
@@ -4157,7 +4153,7 @@ void WindowController::setStatus(const std::string& text, bool error) {
     if (constructing_ && error) {
         startupErrors_.push_back(text); // shown together once the window is up; see there
     }
-    // Whatever the window says now is news the startup message gives way to (M13; see `report`).
+    // Whatever the window says now is news the startup message gives way to (see `report`).
     startupMessage_.clear();
     showStatus(text, error);
     // And to a show controller listening, as `/status/log` (`remote`).

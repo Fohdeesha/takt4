@@ -37,8 +37,8 @@ TEST_CASE("build info reports every dependency", "[build_info]") {
 }
 
 TEST_CASE("a build names the commit it came from", "[build_info]") {
-    // an earlier review: releases were built by hand from a working tree and `--version` carried no
-    // commit and no dirty flag, so a binary could not say what it was built from.
+    // Releases were built by hand from a working tree and `--version` carried no commit and no
+    // dirty flag, so a binary could not say what it was built from.
     const takt4::BuildInfo info = takt4::buildInfo();
     CHECK_FALSE(info.commit.empty());
     CHECK(info.commit != "unknown"); // this tree is a git checkout, and git is there to ask
@@ -56,7 +56,7 @@ TEST_CASE("a build names the commit it came from", "[build_info]") {
 }
 
 TEST_CASE("the build does not need the newest C++ runtime to lock a mutex", "[build_info]") {
-    // an earlier review: built with Visual Studio 2022 17.10 or later, std::mutex's constructor
+    // Built with Visual Studio 2022 17.10 or later, std::mutex's constructor
     // is constexpr, and an older msvcp140.dll on the machine crashes the program on its first
     // lock. The macro that turns that off has to be in every file built here (CMakeLists.txt).
     // Whether a machine with an old runtime then runs takt4 is not something a test here can
@@ -103,7 +103,7 @@ std::wstring widen(const std::string& text) {
 } // namespace
 
 TEST_CASE("the executables say which release and which commit they are", "[build_info]") {
-    // an earlier review: no version resource, so a crash report's module list and Explorer's
+    // There was no version resource, so a crash report's module list and Explorer's
     // Properties said nothing about which build it was. The real executables beside this
     // test binary, read the way Windows reads them.
     std::wstring self(32768, L'\0');

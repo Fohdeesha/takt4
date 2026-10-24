@@ -1,6 +1,6 @@
 // takt4-shot — render the main window to an image with no window system underneath it.
 //
-// the window is developed from a tool session that has a window station but no
+// The window is developed from a tool session that has a window station but no
 // display: `CreateDC("DISPLAY", …)` returns null, so `BitBlt` from a screen DC fails and
 // `PrintWindow` hands back a white client area whichever renderer is selected. Measured
 // both ways. That left nobody able to see the window without walking to the machine.
@@ -249,12 +249,11 @@ void fillPickers(MainWindow& window) {
     window.set_channel_index(0);
 }
 
-/// The lighting patch editor, with the rig the approved mockup of 2026-09-30 holds
-/// (`the approved design`): two washes, two heads — one left out of the show — and a
-/// blinder that runs off the end of its universe, which between them exercise every branch the
-/// list has. `state` is "" or "fit" (the 16-bit head picked), "par" (the LED par picked, which
-/// cannot move, so no C), "none" (nothing patched) or "message" (the head, with a line under the
-/// top row).
+/// The lighting patch editor, with a made-up rig: two washes,
+/// two heads — one left out of the show — and a blinder that runs off the end of its universe,
+/// which between them exercise every branch the list has. `state` is "" or "fit" (the 16-bit head
+/// picked), "par" (the LED par picked, which cannot move, so no C), "none" (nothing patched) or
+/// "message" (the head, with a line under the top row).
 void fillFixtures(FixturesWindow& window, const std::string& state) {
     auto roles = std::make_shared<slint::VectorModel<slint::SharedString>>();
     for (const dmx::Role role : dmx::kRoles) {
@@ -344,9 +343,8 @@ void fillFixtures(FixturesWindow& window, const std::string& state) {
     window.set_channels(channels);
 }
 
-/// the editor, holding exactly what the locked mockup of 2026-09-30 holds (the design,
-/// `the approved design`), so a render and the approved picture can be laid over
-/// each other — and, with `state`, the other states its pictures show.
+/// The rule editor, holding a fixed made-up set of rules, the same in every render so two can be
+/// laid over each other — and, with `state`, the editor's other states.
 ///
 /// Built here rather than through `RulesController`, because a controller needs an
 /// `OutputRunner` — a Link session and three sockets, none of which a picture of a layout has any
@@ -463,7 +461,7 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
     window.set_ramp_shapes(strings({"saw", "triangle", "sine", "square"}));
 
     // The list: one picked, one muted, one switched off, two with counts, and one that will not
-    // fire — every state a row has (the mockup's own six, and the lighting half's seventh).
+    // fire — every state a row has (six of them, and the lighting half's seventh).
     const auto rule = [](const char* name, bool enabled, const char* problem, int fires,
                          bool chosen, bool muted) {
         RuleRow row{};
@@ -490,7 +488,7 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
     window.set_selected(dmx ? 5 : 0);
     window.set_panicked(panicked);
 
-    // the rule subset: the rig's own outputs, one ticked, one it names that is gone.
+    // The rule's routing: the rig's own outputs, one ticked, one it names that is gone.
     const auto choice = [](const char* key, const char* name, bool chosen, bool missing) {
         OutputChoice row{};
         row.key = slint::SharedString(key);
@@ -814,10 +812,8 @@ int renderWindow(const std::filesystem::path& out, int width, int height, Build 
     return 0;
 }
 
-/// What the approved mockup of the Weltformat-dark redesign holds (the design,
-/// `the approved design` and `data.js`), over a window already filled as running —
-/// so that a render and the approved picture can be laid over each other. The trace is the
-/// synthetic run's, which is where the mockup's trace was lifted from.
+/// A fixed made-up set, over a window already filled as running, the same in every render so
+/// that two can be laid over each other. The trace is the synthetic run's.
 void fillAsMockup(MainWindow& window) {
     const auto strings = [](std::initializer_list<const char*> items) {
         auto model = std::make_shared<slint::VectorModel<slint::SharedString>>();
@@ -1203,7 +1199,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
     outputKinds->push_back(slint::SharedString("MIDI clock"));
     window->set_output_kinds(outputKinds);
 
-    // the control row, built the way WindowController builds it.
+    // The MIDI control row, built the way WindowController builds it.
     auto midiInputs = std::make_shared<slint::VectorModel<slint::SharedString>>();
     midiInputs->push_back(slint::SharedString("select input"));
     for (const std::string& port : output::listMidiInputPorts()) {
@@ -1264,12 +1260,12 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
             window->set_beat_divisor(halved ? 2 : 1);
             window->set_beats_bpm(0.0f);
         }
-        // the own example row, so the picture shows what a configured rig looks like
+        // An example row, so the picture shows what a configured rig looks like
         // rather than an empty one. There is no output thread behind a shot, so these are
         // illustrative in the way the status line below already is; the beat count is the
         // excerpt's real 21.
         window->set_link_peers(2);
-        // the named targets, which is what the list holds now: a media server and a
+        // Named targets, which is what the list holds now: a media server and a
         // lighting desk, each of which a rule can be aimed at by name, and one switched off
         // — the state a single field could only spell as "off " in front of an address.
         auto targets = std::make_shared<slint::VectorModel<OutputRow>>();
@@ -1320,7 +1316,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         };
         targets->push_back(target("deck", "192.168.1.40", "7000", true, 0.0f, true));
         // One of each sign, because a rig where every destination shares a lag is the case
-        // that never needed the per-target offset — and because the two directions do
+        // that never needed a per-target offset — and because the two directions do
         // different things underneath. The media server is nudged *early*, which for a
         // message about a beat already heard means "just before the next one"; the winch,
         // which has to physically move, is pushed late — and is left out of takt4's own
@@ -1354,14 +1350,14 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_control_on(true);
         window->set_learn_action_index(0);
         window->set_control_reading(slint::SharedString("note 36 ch 10"));
-        // the other surface, listening and being driven — the state worth looking at,
+        // The other control input, OSC, listening and being driven — the state worth looking at,
         // since "off" is two blank fields and says nothing about the layout.
         window->set_osc_control_on(true);
         window->set_osc_control_port(slint::SharedString("7001"));
         window->set_osc_control_reading(slint::SharedString("/takt4/ctl/tap"));
         window->set_osc_control_from(slint::SharedString("from 192.168.1.40"));
         window->set_osc_control_counts(slint::SharedString("9 acted, 0 ignored"));
-        // the TRIGGERS row, with a rule set behind it: what the main window says about
+        // The TRIGGERS row, with a rule set behind it: what the main window says about
         // the editor without the editor being open.
         window->set_rules_active(2);
         window->set_rules_total(3);
@@ -1414,14 +1410,13 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         }
     } else {
         // What the app looks like the moment it opens: no tempo, an empty trace, and
-        // every one of the manual controls disabled because there is nothing yet for
+        // every one of the manual tempo controls disabled because there is nothing yet for
         // them to correct.
         //
-        // **As a fresh install opens, not as the tracker's own defaults** (an earlier review of
-        // 2026-09-25, L34): the tempo options a settings file with nothing in it gives —
-        // "keep BPM in" off — and the one output such an app has, Link, switched off. This drew
-        // the fold on and no outputs at all: a table with no headings under a "nothing is being
-        // sent" line the app never shows.
+        // **As a fresh install opens, not as the tracker's own defaults**: the tempo options a
+        // settings file with nothing in it gives — "keep BPM in" off — and the one output such an
+        // app has, Link, switched off. This drew the fold on and no outputs at all: a table with
+        // no headings under a "nothing is being sent" line the app never shows.
         publishIdleReadouts(*window);
         publishTempoOptions(*window, settings::freshTempoOptions());
         {

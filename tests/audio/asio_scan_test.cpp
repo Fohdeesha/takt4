@@ -236,10 +236,10 @@ TEST_CASE("an ASIO driver that never answers is given up on in time", "[audio]")
 
 TEST_CASE("an ASIO scan is done when it has answered, though a process it started holds the pipe",
           "[audio]") {
-    // A driver that starts a helper process hands it the scan's
-    // output pipe with everything else inheritable, and the pipe stays whole while the helper
-    // runs — so the read loop found nothing to read, never found the pipe broken, and spun the
-    // UI thread until the limit, then threw the answer it had away as a timeout.
+    // A driver that starts a helper process hands it the scan's output pipe with everything else
+    // inheritable, and the pipe stays whole while the helper runs — so the read loop found nothing
+    // to read, never found the pipe broken, and spun the UI thread until the limit, then threw the
+    // answer it had away as a timeout.
     const ScopedVariable asio("TAKT4_NO_ASIO", nullptr);
     const ScopedVariable helper("TAKT4_TEST_ASIO_SCAN", "helper");
     const auto start = std::chrono::steady_clock::now();
@@ -252,8 +252,8 @@ TEST_CASE("an ASIO scan is done when it has answered, though a process it starte
 }
 
 TEST_CASE("an ASIO scan that answered and then hung keeps its answer", "[audio]") {
-    // L24's other half: the whole answer read, and then the limit reached because the process
-    // never went — the answer was thrown away with the process.
+    // The other half of the test above: the whole answer read, and then the limit reached because
+    // the process never went — the answer was thrown away with the process.
     const ScopedVariable asio("TAKT4_NO_ASIO", nullptr);
     const ScopedVariable hang("TAKT4_TEST_ASIO_SCAN", "answer-then-hang");
     const std::size_t childrenBefore = childrenRunning();

@@ -148,8 +148,8 @@ struct GeometryIndex {
     struct Entry {
         xml_node node;
         std::size_t top = 0;
-        /// Inside a `GeometryReference`, whose only children per the design are breaks — a geometry
-        /// here is the file's error, and nothing places a channel through it.
+        /// Inside a `GeometryReference`, whose only children per the spec's section 10.14 are
+        /// breaks — a geometry here is the file's error, and nothing places a channel through it.
         bool underReference = false;
     };
     std::vector<xml_node> tops;

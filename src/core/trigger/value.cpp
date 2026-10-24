@@ -19,7 +19,7 @@ namespace {
 /// lead byte with no continuation, and both of the things that then happen to it refuse
 /// invalid UTF-8:
 ///
-///   * **the editor kills the process.** Every string reaching the window goes through
+///   * **The rule editor kills the process.** Every string reaching the window goes through
 ///     `slint::SharedString`, and Slint's own `slint_shared_string_from_bytes` is
 ///     `core::str::from_utf8(..).unwrap()` — a Rust panic across the C ABI, which is an
 ///     abort. Measured: a settings file carrying one made takt4.exe die 1.1 seconds after

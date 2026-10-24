@@ -127,8 +127,8 @@ def main() -> int:
         print(f"embed_asset: {args.source} is empty", file=sys.stderr)
         return 1
 
-    # **The bytes built in are the bytes the sidecar describes**, or nothing is built (the
-    # review's build findings: this was never checked, though all six blobs happened to match).
+    # **The bytes built in are the bytes the sidecar describes**, or nothing is built (this
+    # used to go unchecked, though all six blobs happened to match).
     # A weight set swapped on disk without its sidecar — or the other way round — would ship a
     # model whose recorded provenance is someone else's.
     if args.manifest is not None:

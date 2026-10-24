@@ -55,8 +55,8 @@ takt4_patch_asiolist("new[] freed with delete" "delete lpdrv" "delete[] lpdrv")
 
 # The driver's description, up to 255 bytes from the registry, copied into a 128-byte name
 # with strcpy — a heap overflow for any driver that describes itself at length, at every
-# launch, before a window exists. Bounded, and the source
-# terminated first, since RegQueryValueEx does not promise to.
+# launch, before a window exists. Bounded, and the source terminated first, since
+# RegQueryValueEx does not promise to.
 takt4_patch_asiolist("the driver description copy"
   "strcpy(lpdrv->drvname,databuf);"
   "databuf[sizeof(databuf) - 1] = 0; strncpy(lpdrv->drvname,databuf,sizeof(lpdrv->drvname) - 1); lpdrv->drvname[sizeof(lpdrv->drvname) - 1] = 0; /* takt4: bounded */")
@@ -72,8 +72,8 @@ takt4_patch_asiolist("the key name copy"
 takt4_patch_asiolist("the missing-DLL check" "if (hfile) rc = 0;" "if (hfile != HFILE_ERROR) rc = 0; /* takt4 */")
 # And the question itself is asked of Windows rather than of OpenFile, which cannot answer it for
 # a path of 127 bytes or more, nor for the `%SystemRoot%\...` a REG_EXPAND_SZ holds: read the
-# right way round, OpenFile hid drivers that work. See
-# src/core/audio/asio_dll_check.hpp, which tests/audio/asio_dll_check_test.cpp holds to it.
+# right way round, OpenFile hid drivers that work. See src/core/audio/asio_dll_check.hpp, which
+# tests/audio/asio_dll_check_test.cpp holds to it.
 takt4_patch_asiolist("the missing-DLL check's question"
   "hfile = OpenFile(dllpath,&ofs,OF_EXIST);"
   "hfile = takt4::audio::asioDriverDllPresent(dllpath, (std::size_t)dllpathsize) ? 1 : HFILE_ERROR; /* takt4 */")

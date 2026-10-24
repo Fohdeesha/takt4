@@ -48,13 +48,13 @@ void MidiControl::start() {
 
 void MidiControl::stop() noexcept {
     // The flag first, so a message arriving from here on is turned away at `deliver`'s door —
-    // and **then every message already past it, waited for**.
-    // A message that had passed the flag when this began used to go on being handled after it — a
-    // tap or a PANIC acted on by a surface that had been switched off, and on the way out, a
-    // dispatch into an object being destroyed. Both sides are sequentially consistent: `deliver`
-    // raises the count and then reads the flag, this lowers the flag and then reads the count, and
-    // only with both orders total does one always see the other. Handling a message never waits on
-    // this thread, so the wait is one message's length.
+    // and **then every message already past it, waited for**. A message that had passed the
+    // flag when this began used to go on being handled after it — a tap or a PANIC acted on by
+    // a surface that had been switched off, and on the way out, a dispatch into an object being
+    // destroyed. Both sides are sequentially consistent: `deliver` raises the count and then
+    // reads the flag, this lowers the flag and then reads the count, and only with both orders
+    // total does one always see the other. Handling a message never waits on this thread, so
+    // the wait is one message's length.
     running_.store(false, std::memory_order_seq_cst);
     while (inFlight_.load(std::memory_order_seq_cst) != 0) {
         std::this_thread::yield();
@@ -184,8 +184,8 @@ bool MidiControl::dispatch(const MidiEvent& event) {
         // Learned, not acted on. The gesture that assigns a control should not also fire
         // it: an operator binding `tempo/halve` would otherwise halve the tempo to do it.
         // And nor should that gesture's release — a CC pad's, and since a note's release
-        // reaches the bindings, a note's: learning `lock` from a pad would
-        // otherwise pin nothing and then let go.
+        // reaches the bindings, a note's: learning `lock` from a pad would otherwise pin
+        // nothing and then let go.
         if (!isRelease(event)) {
             const std::lock_guard<std::mutex> lock(mutex_);
             learnedRelease_ = event;
@@ -200,11 +200,10 @@ bool MidiControl::dispatch(const MidiEvent& event) {
     // A table with two bindings for one control cannot happen through `bind`, but a
     // caller can build one; act on all of them rather than silently picking.
     for (const ControlTarget& target : matched) {
-        // **PANIC from a MIDI control only engages** — as the window's PANIC does since the
-        // review's H18. A CC reads below 64 as "off", which made a momentary CC pad
-        // hold-to-panic: the halt let go the moment the finger came up. Releasing is the
-        // window's RELEASE, or `panic/release`, never the end of a button press.
-        // A note's release, which reaches here since an earlier review, is the same.
+        // **PANIC from a MIDI control only engages** — as the window's PANIC does. A CC reads
+        // below 64 as "off", which made a momentary CC pad hold-to-panic: the halt let go the
+        // moment the finger came up. Releasing is the window's RELEASE, or `panic/release`,
+        // never the end of a button press. A note's release, which now reaches here, is the same.
         if (target.action == ControlAction::Panic && isRelease(event)) {
             continue;
         }

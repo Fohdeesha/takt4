@@ -7,12 +7,12 @@
 //
 // The SDK asks `OpenFile(path, ..., OF_EXIST)`, whose result it then read the wrong way round, so
 // every driver was offered — including one whose DLL is gone, which can take a process down as
-// it loads. Read the right way round, `OpenFile` hid drivers that work (an earlier review,
-// M9): it refuses a path of 127 bytes or more (its `OFSTRUCT` holds 128) and does not expand the
-// `%SystemRoot%\...` a `REG_EXPAND_SZ` value holds, and COM loads both kinds fine. So this
-// expands the path, takes off quotes an installer may have put round it, and asks
-// `GetFileAttributesA` — and calls a driver missing only when Windows says the file, or the
-// folder it would be in, is not there. Anything else it cannot tell, it offers.
+// it loads. Read the right way round, `OpenFile` hid drivers that work: it refuses a path of 127
+// bytes or more (its `OFSTRUCT` holds 128) and does not expand the `%SystemRoot%\...` a
+// `REG_EXPAND_SZ` value holds, and COM loads both kinds fine. So this expands the path, takes off
+// quotes an installer may have put round it, and asks `GetFileAttributesA` — and calls a driver
+// missing only when Windows says the file, or the folder it would be in, is not there. Anything
+// else it cannot tell, it offers.
 
 #include <windows.h>
 

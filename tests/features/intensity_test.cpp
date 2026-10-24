@@ -62,7 +62,7 @@ TEST_CASE("the flux is the difference half of the frame, summed", "[features][in
 
 TEST_CASE("nothing but normal is published until there is something to compare against",
           "[features][intensity]") {
-    // the rule throughout: what is not known is published as nothing rather than as a
+    // The rule throughout: what is not known is published as nothing rather than as a
     // guess. Calling a track calm because it has only just started is a guess.
     IntensityClassifier classifier;
     CHECK(classifier.intensity() == Intensity::Normal);
@@ -83,12 +83,11 @@ TEST_CASE("nothing but normal is published until there is something to compare a
 
 TEST_CASE("a steady track reads normal from its first seconds, not intense for forty",
           "[features][intensity]") {
-    // The first frame after Start has an all-zero difference half —
-    // there is no frame before it to differ from — and both followers started *at* it, so the
-    // long one spent its twenty-second time constant climbing from zero and a steady loop read
-    // INTENSE from about three seconds to about forty-three, firing every intensity-change rule
-    // twice. The state is checked on every frame here, not only at the end, which is what let it
-    // through before.
+    // The first frame after Start has an all-zero difference half — there is no frame before it to
+    // differ from — and both followers started *at* it, so the long one spent its twenty-second
+    // time constant climbing from zero and a steady loop read INTENSE from about three seconds to
+    // about forty-three, firing every intensity-change rule twice. The state is checked on every
+    // frame here, not only at the end, which is what let it through before.
     IntensityClassifier classifier;
     std::array<float, kFeatureDim> first = frameWithFlux(0.0);
     (void)classifier.push(first); // what FeatureExtractor's first frame always is
@@ -145,8 +144,8 @@ TEST_CASE("intensity is relative to the track, not to the gain", "[features][int
 
 TEST_CASE("the hysteresis is what stops a passage on the threshold from flickering",
           "[features][intensity]") {
-    // the design asks for it by name: "classified calm / normal / intense with hysteresis to stop
-    // it flickering between states".
+    // Intensity is classified calm / normal / intense, with hysteresis to stop it flickering
+    // between states.
     IntensityClassifier::Options options;
     options.settleFrames = 20;
     options.slowFrames = 400;
@@ -205,7 +204,7 @@ TEST_CASE("the hysteresis is what stops a passage on the threshold from flickeri
 }
 
 TEST_CASE("an onset is a flux peak, and not two of them in a row", "[features][intensity]") {
-    // the "on onset". A peak means: above the short average by the ratio, higher than
+    // The "on onset" trigger. A peak means: above the short average by the ratio, higher than
     // the frame before it, and not within the minimum gap of the last one.
     IntensityClassifier::Options options;
     options.fastFrames = 10;
@@ -256,9 +255,9 @@ TEST_CASE("reset puts the classifier back where it started", "[features][intensi
 }
 
 TEST_CASE("the wire numbers for intensity are fixed", "[features][intensity]") {
-    // the design gives "/<app>/intensity  int  0 | 1 | 2", so these are the format
-    // rather than an implementation detail — and trigger::Conditions indexes an array by
-    // them, so the two cannot be allowed to drift apart.
+    // The OSC namespace gives `/<app>/intensity` as an int, 0 | 1 | 2 (`output::OscPublisher`), so
+    // these are the format rather than an implementation detail — and trigger::Conditions indexes
+    // an array by them, so the two cannot be allowed to drift apart.
     CHECK(static_cast<int>(Intensity::Calm) == 0);
     CHECK(static_cast<int>(Intensity::Normal) == 1);
     CHECK(static_cast<int>(Intensity::Intense) == 2);

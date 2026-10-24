@@ -6,7 +6,7 @@ namespace takt4::audio {
 
 /// What an ASIO driver has told takt4 since the last time it was asked — the messages
 /// PortAudio's ASIO host acknowledges and drops, kept by the configure-time patch in
-/// cmake/pa_asio_patch.cmake of its Q9).
+/// cmake/pa_asio_patch.cmake.
 ///
 /// Each is answered the same way — by closing and reopening the stream — because each means
 /// the stream as opened no longer describes the hardware: the buffers were resized, the clock
@@ -21,8 +21,7 @@ struct AsioDriverEvents {
     bool resync = false;
     /// The rate the last sample-rate message named, when there was one; zero otherwise. Drivers
     /// send that message for things that are not a new rate — the SDK names S/PDIF status — and
-    /// one naming the rate the stream already runs at is not a reason to reopen (an earlier review of
-    /// 2026-09-25, L22).
+    /// one naming the rate the stream already runs at is not a reason to reopen.
     double reportedRate = 0.0;
 
     bool needsReopen() const noexcept { return resetRequest || bufferSizeChange || sampleRateChange; }

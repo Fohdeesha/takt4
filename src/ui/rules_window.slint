@@ -1,10 +1,8 @@
-// The rule editor — the second half and Phase 6's exit criterion — in the Weltformat-dark
-// look the operator locked on 2026-09-30 (the design, "The rule editor — locked"; the pictures
-// are the approved design and png/r17-*.png, and every size here is measured off
-// them).
+// The rule editor, in the Weltformat-dark look the operator locked on 2026-09-30 — every size here
+// is measured off the approved pictures.
 //
-// the design: "A rule that fires a non-repeating random clip on every fourth downbeat can be built
-// entirely by clicking, in under a minute, by someone who has not read the docs."
+// The bar it is built to: a rule that fires a non-repeating random clip on every fourth downbeat
+// can be built entirely by clicking, in under a minute, by someone who has not read the docs.
 //
 // **A window of its own**, by the user's call on 2026-09-06: the tracker and the rules are watched
 // at the same time, and one screen holding both means either can be on a second monitor.
@@ -30,22 +28,22 @@ export struct RuleRow {
   name: string,
   enabled: bool,
   /// Empty when the rule is fine; otherwise `Rule::problem()`, which is why it will not fire.
-  /// the policy is that an invalid rule is held and shown rather than refused.
+  /// An invalid rule is held and shown rather than refused.
   problem: string,
   fires: int,
   /// Whether this row is part of the selection — which is a *set*, so that duplicating and
   /// deleting can act on several rules at once (ctrl-click, shift-click). The editor shows one of
   /// them, `RulesWindow::selected`; this is all of them.
   chosen: bool,
-  /// the live per-rule mute, which the row's dot shows and switches: filled while the rule
+  /// The live per-rule mute, which the row's dot shows and switches: filled while the rule
   /// sends, a ring while it is muted.
   muted: bool,
 }
 
 /// One editable `{...}` of the address, or the rule's value, or its MIDI note number — whatever
-/// a `trigger::Generator` fills in. the design: "Template segments render as editable chips". Inline, as
-/// bands under the address, each labelled with the placeholder it fills: a popover would hide the
-/// one thing an operator is comparing against, the other segments of the same address.
+/// a `trigger::Generator` fills in. Template segments are editable chips, drawn inline, as bands
+/// under the address, each labelled with the placeholder it fills: a popover would hide the one
+/// thing an operator is comparing against, the other segments of the same address.
 export struct SlotRow {
   /// `{C}` for an address segment, "value" for the argument, "note" for MIDI.
   label: string,
@@ -846,8 +844,8 @@ export component RulesWindow inherits Window {
   default-font-weight: 500;
 
   // --- the shape of the window -----------------------------------------------------------------
-  /// How wide the rule list is: 260 to start, dragged at the gap between it and the
-  /// editor, which is not drawn — which of the two deserves the width changes during a set.
+  /// How wide the rule list is: 260 to start, dragged at the gap between it and the editor, which
+  /// is not drawn — which of the two deserves the width changes during a set.
   in-out property <length> list-width: 260px;
   /// The width the list was dragged to. `list-width` is this, given way to the editor.
   private property <length> list-wanted: 260px;
@@ -891,7 +889,7 @@ export component RulesWindow inherits Window {
   // --- the set ---------------------------------------------------------------------------------
   in-out property <[RuleRow]> rules;
   in-out property <int> selected: -1;
-  /// the PANIC, latched: lit while it is held, because a rig that has stopped firing and a rig
+  /// PANIC, latched: lit while it is held, because a rig that has stopped firing and a rig
   /// with no rules look identical otherwise.
   in-out property <bool> panicked;
 
@@ -918,7 +916,7 @@ export component RulesWindow inherits Window {
   callback panic-released();
   /// The M key: fires the rules whose trigger is "manual (M key)", as it does on the main window.
   callback manual-fired();
-  /// the presets at rig scale: a whole set of rules in one pick.
+  /// The host presets at rig scale: a whole set of rules in one pick.
   in-out property <[string]> rig-presets;
   callback rig-added(int);
 
@@ -955,7 +953,7 @@ export component RulesWindow inherits Window {
   callback liberation-bars-changed(int);
   callback liberation-added();
   callback liberation-cancelled();
-  /// the per-rule [test] button: fires past `enabled` and past the conditions, deliberately.
+  /// The per-rule TEST button: fires past `enabled` and past the conditions, deliberately.
   callback rule-tested();
 
   // --- A · when ----------------------------------------------------------------------------------
@@ -1027,7 +1025,7 @@ export component RulesWindow inherits Window {
   in-out property <bool> sends-dmx;
   in-out property <string> address;
   in-out property <int> channel: 1;
-  /// the host presets: a starting point that fills the address and its slots, and which of them
+  /// The host presets: a starting point that fills the address and its slots, and which of them
   /// the address in front of the operator *is* — 0, "custom", when none.
   in-out property <[string]> host-presets;
   in-out property <int> host-preset-index;
@@ -1050,7 +1048,7 @@ export component RulesWindow inherits Window {
   in-out property <[string]> ramp-shapes;
   in-out property <[SlotRow]> slots;
 
-  /// the "rule subset": which of the app's outputs this rule reaches.
+  /// The rule's routing: which of the app's outputs this rule reaches.
   in-out property <[OutputChoice]> output-choices;
   /// Whether the rule names none of them, which is reaching *every* one.
   in-out property <bool> outputs-all;
@@ -1186,7 +1184,7 @@ export component RulesWindow inherits Window {
   callback slot-ramp-float-changed(int, bool);
 
   // --- what it is doing ----------------------------------------------------------------------------
-  /// Phase 6's event log: every message that left, newest first.
+  /// The event log: every message that left, newest first.
   in-out property <[LogLine]> log;
   /// The editor's own message — "A BPM range is two numbers, like 120 - 140." — under the top row,
   /// amber when an entry could not be used and secondary when it only says what happened; gone at
@@ -1205,7 +1203,7 @@ export component RulesWindow inherits Window {
   in-out property <bool> rule-enabled;
   /// Why the selected rule will not fire — `Rule::problem()` — or empty.
   in property <string> rule-problem;
-  /// the per-rule mute — see the MUTE button for why it is not `rule-enabled`.
+  /// The per-rule mute — see the MUTE button for why it is not `rule-enabled`.
   in-out property <bool> rule-muted;
   /// How often this rule is firing against how often it was written to — "2× faster" — and
   /// **empty at the written rate**.
@@ -1230,11 +1228,11 @@ export component RulesWindow inherits Window {
   // The keyboard's resting place, so Escape works the moment the editor opens.
   forward-focus: keys;
 
-  // **PANIC from the keyboard** — an earlier review. Escape; in a text box it leaves the box, in an
-  // open list it closes the list, and neither panics anything. And **M**, which the trigger list
-  // offers as "manual (M key)": it only worked on the main window, so a manual rule built here
-  // could not be fired from here (found 2026-09-30). In a text box M is a letter, as Escape is
-  // leaving the box — the box has the keyboard, and this only hears what it passes on.
+  // **PANIC from the keyboard**: Escape; in a text box it leaves the box, in an open list it closes
+  // the list, and neither panics anything. And **M**, which the trigger list offers as
+  // "manual (M key)": it only worked on the main window, so a manual rule built here could not be
+  // fired from here (found 2026-09-30). In a text box M is a letter, as Escape is leaving the box —
+  // the box has the keyboard, and this only hears what it passes on.
   keys := FocusScope {
     focus-on-click: false;
     focus-on-tab-navigation: false;
@@ -1395,8 +1393,8 @@ export component RulesWindow inherits Window {
             // away. **PANIC never moves.** RELEASE appears between the menu and PANIC while PANIC
             // is held, and the menu moves up to make room (the operator, 2026-09-30) — the foot
             // grows upwards, so the second click of a double-click lands on PANIC again, which is
-            // already engaged. An explicit height: an `if` in a vertical layout
-            // takes a share of the spare height otherwise.
+            // already engaged. An explicit height: an `if` in a vertical layout takes a share of
+            // the spare height otherwise.
             VerticalLayout {
               padding: 10px;
               spacing: 10px;
@@ -2071,7 +2069,7 @@ export component RulesWindow inherits Window {
                   }
                 }
 
-                // the rule subset, ticked from the rig's own list. **Not for a lighting rule**,
+                // The rule's routing, ticked from the rig's own list. **Not for a lighting rule**,
                 // which is routed by fixture: a fixture names its universe already.
                 if !root.sends-dmx: HorizontalLayout {
                   height: 34px;
@@ -3028,10 +3026,10 @@ export component RulesWindow inherits Window {
               }
 
               // --- D · then send -----------------------------------------------------------------
-              // **A list, where there was a tick box.** the design: Resolume's connect takes 1 for press
-              // and 0 for release — and a rig needed more than that from one trigger: *"so each
-              // trigger can send multiple things, spaced by time or beats/bars"*. Every delay is
-              // counted from the fire, never from the row above (`trigger::FollowUp`).
+              // **A list, where there was a tick box.** Resolume's connect takes 1 for press and 0
+              // for release — and a rig needed more than that from one trigger: *"so each trigger
+              // can send multiple things, spaced by time or beats/bars"*. Every delay is counted
+              // from the fire, never from the row above (`trigger::FollowUp`).
               Section {
                 letter: "D";
                 title: "then send";
@@ -3179,8 +3177,7 @@ export component RulesWindow inherits Window {
                     pad: 0px;
                     clicked => {
                       // The keyboard back to the window first, as a button takes it: a box typed
-                      // into on a row below stayed lit over the row that moved up into its place
-                      //.
+                      // into on a row below stayed lit over the row that moved up into its place.
                       keys.focus();
                       root.follow-up-removed(index);
                     }

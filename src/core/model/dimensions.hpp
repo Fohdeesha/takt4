@@ -4,10 +4,9 @@
 
 #include <cstddef>
 
-// The shape of the BeatNet+ network. Every number here was read out of
-// the published weight files' state_dict rather than taken from the design's diagram;
-// tools/beatnet_model.py states the same shapes on the Python side and checks them
-// against each .pt it loads.
+// The shape of the BeatNet+ network. Every number here was read out of the published weight
+// files' state_dict rather than taken from a diagram of it; tools/beatnet_model.py states the
+// same shapes on the Python side and checks them against each .pt it loads.
 
 namespace takt4::model {
 
@@ -39,7 +38,7 @@ inline constexpr std::size_t kLstmLayerParameters =
 inline constexpr std::size_t kOutputParameters = kNumClasses * kHidden + kNumClasses;
 inline constexpr std::size_t kTotalParameters =
     kConvParameters + kDenseParameters + kLstmLayers * kLstmLayerParameters + kOutputParameters;
-static_assert(kTotalParameters == 767125, "the design, and the .pt files themselves");
-static_assert(kLstmLayers * kLstmLayerParameters == 724800, "the design");
+static_assert(kTotalParameters == 767125, "BeatNet+'s parameter count, as the .pt files hold it");
+static_assert(kLstmLayers * kLstmLayerParameters == 724800, "BeatNet+'s four LSTM layers");
 
 } // namespace takt4::model

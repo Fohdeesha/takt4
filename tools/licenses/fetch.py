@@ -35,8 +35,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 # The Skia tag rust-skia 0.153.3 builds (skia-bindings' Cargo.toml, [package.metadata] skia):
-# the skia-bindings Slint 1.18.1's Cargo.lock names. It said m150-0.98.1, 0.99.0's, until the
-# review of 2026-09-25.
+# the skia-bindings Slint 1.18.1's Cargo.lock names. It said m150-0.98.1, 0.99.0's, until
+# 2026-09-25.
 SKIA_TAG = "m153-0.101.2"
 SKIA_RAW = f"https://raw.githubusercontent.com/rust-skia/skia/{SKIA_TAG}"
 

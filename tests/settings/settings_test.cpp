@@ -194,8 +194,8 @@ TEST_CASE("a file with Link and the MIDI clock as settings of their own loads th
 }
 
 TEST_CASE("the two layers stay apart in the file", "[settings]") {
-    // the whole point: the portable half has to be liftable into a preset file without a
-    // migration, which means it cannot be mixed in with the machine's own business.
+    // The whole point of two layers: the portable half has to be liftable into a preset file
+    // without a migration, which means it cannot be mixed in with the machine's own business.
     const std::string text = takt4::settings::toJson(Settings{});
     const std::size_t machine = text.find("\"machine\"");
     const std::size_t preset = text.find("\"preset\"");
@@ -378,8 +378,8 @@ TEST_CASE("a setting a tracker could not honour is refused, not passed on", "[se
     const Settings latency =
         takt4::settings::fromJson(R"({"preset": {"tempo": {"latencyOffsetSeconds": 90}}})");
     CHECK_THAT(latency.preset.tempo.latencyOffsetSeconds, WithinAbs(0.0, 1e-9));
-    // And short of that, no further than the slider goes: 0.6 s
-    // ran 600 ms late behind a slider showing 250, which a touch then snapped to 250.
+    // And short of that, no further than the slider goes: 0.6 s ran 600 ms late behind a slider
+    // showing 250, which a touch then snapped to 250.
     const auto latencyOf = [](const char* seconds) {
         return takt4::settings::fromJson(std::string(R"({"preset": {"tempo": {"latencyOffsetSeconds": )") +
                                          seconds + "}}}")
@@ -403,9 +403,9 @@ TEST_CASE("a setting a tracker could not honour is refused, not passed on", "[se
 
 TEST_CASE("an OSC prefix that is not an address falls back rather than stopping takt4",
           "[settings]") {
-    // an earlier review, third way in: `OscPublisher` throws on a prefix it cannot build an
-    // address from, inside `Transports`' constructor, inside the window's — so a hand-edited
-    // "vj" stopped the app opening at all. The file is not a caller worth trusting.
+    // One more way a saved file could stop takt4 starting: `OscPublisher` throws on a prefix it
+    // cannot build an address from, inside `Transports`' constructor, inside the window's — so a
+    // hand-edited "vj" stopped the app opening at all. The file is not a caller worth trusting.
     const auto prefixOf = [](const std::string& value) {
         return takt4::settings::fromJson(R"({"preset": {"oscPrefix": )" + value + "}}")
             .preset.oscPrefix;
@@ -509,7 +509,7 @@ std::vector<std::filesystem::path> filesStarting(const std::filesystem::path& di
 } // namespace
 
 TEST_CASE("a damaged settings file is kept, never saved over", "[settings]") {
-    // an earlier review, as it happened: a file that would not parse — a trailing comma from a
+    // The failure as it happened: a file that would not parse — a trailing comma from a
     // hand edit, or half a file from a crash — loaded as the **defaults** with no message, and
     // the save on the way out then wrote those defaults over it. A rig that was one comma away
     // from loading was gone.
@@ -890,7 +890,7 @@ TEST_CASE("a save killed half way through leaves a whole file", "[settings]") {
     // with TerminateProcess at a random moment, twenty times — and after every one the file
     // must parse and be one of the two rigs, whole. The old truncate-and-rewrite save fails
     // this within the first few kills: a kill mid-write leaves a prefix of the JSON, which is
-    // exactly the "power cut while saving" an earlier review describes.
+    // exactly what a power cut while saving would do.
     const TempDir dir;
     const std::filesystem::path file = dir.path() / "settings.json";
     const std::filesystem::path started = dir.path() / "child-started";
@@ -1041,9 +1041,9 @@ TEST_CASE("a macOS app counts as being in the folder its bundle is in", "[settin
 TEST_CASE("a folder named for the settings holds them, and the texts ABOUT opens", "[settings]") {
     // What every test process relies on to keep off the show's settings.json — and set the way
     // a test sets a variable, through `ScopedVariable`, which used to write only the process's
-    // block: `_wdupenv_s` reads the C runtime's copy and went on seeing the old folder (the
-    // review of 2026-09-25, T16). And the texts ABOUT writes out go inside that folder rather
-    // than to the `%TEMP%\takt4` the real takt4 uses.
+    // block: `_wdupenv_s` reads the C runtime's copy and went on seeing the old folder. And the
+    // texts ABOUT writes out go inside that folder rather than to the `%TEMP%\takt4` the real
+    // takt4 uses.
     const TempDir folder;
     const takt4::test::ScopedVariable named("TAKT4_SETTINGS_DIR", folder.path().string().c_str());
     CHECK(takt4::settings::settingsDirectory() == folder.path());
@@ -1512,8 +1512,8 @@ TEST_CASE("a file from before the mono tick is heard as the stereo pair its inpu
 }
 
 TEST_CASE("the rule editor's folds and its log are remembered on this machine", "[settings]") {
-    // the design: which of A to D were folded, whether the event log was open and how tall it was
-    // dragged come back as they were left. The machine's, as the main window's folds are.
+    // Which of A to D were folded, whether the event log was open and how tall it was dragged come
+    // back as they were left. The machine's, as the main window's folds are.
     Settings in;
     in.machine.ruleSectionsFolded = {true, false, true, false};
     in.machine.ruleLogOpen = true;

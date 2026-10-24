@@ -1,6 +1,6 @@
 // The lighting patch — what fixtures there are, where they are addressed, and what each of
-// their channels does — in the Weltformat-dark look of the rule editor, as the operator approved it
-// on 2026-09-30 (the mockup is the approved design and png/p1-*.png).
+// their channels does — in the Weltformat-dark look of the rule editor, as the operator approved
+// it on 2026-09-30.
 //
 // **A window of its own, for the reason the rule editor is one.** A patch is set up once and
 // then not touched for the rest of the night, while the rules are edited during the set; one
@@ -434,7 +434,7 @@ export component FixturesWindow inherits Window {
   icon: @image-url("../../assets/icon/takt4-64.png");
   title: "takt4 — fixtures";
   // See `RulesWindow`: these do not decide what the window opens at. `ui::kFixturesWindowWidth`
-  // is the size actually used, set before the first show: 1000 x 800, the mockup's.
+  // is the size actually used, set before the first show: 1000 x 800.
   preferred-width: 1000px;
   preferred-height: 800px;
   min-width: 880px;
@@ -768,8 +768,7 @@ export component FixturesWindow inherits Window {
                 shown: index == root.selected;
                 pressed => {
                   // The keyboard back to the window first: a row took nothing, so a box being
-                  // typed in stayed lit over the next fixture, holding what was typed for this one
-                  //.
+                  // typed in stayed lit over the next fixture, holding what was typed for this one.
                   defocus.take();
                   root.picked(index);
                 }
@@ -1056,9 +1055,9 @@ export component FixturesWindow inherits Window {
                     Word {
                       text: "start address";
                     }
-                    // 1-based, because that is the number printed on the back of the fixture. Entered,
-                    // never per keystroke: typing 101 re-patched the fixture at 1, then 10, then 101
-                    //.
+                    // 1-based, because that is the number printed on the back of the fixture.
+                    // Entered, never per keystroke: typing 101 re-patched the fixture at 1, then
+                    // 10, then 101.
                     address-box := Count {
                       width: 72px;
                       value: root.address;
@@ -1242,8 +1241,8 @@ export component FixturesWindow inherits Window {
                     spacing: 6px;
                     for channel[index] in root.channels: Band {
                       // Taller by a line for a channel the import had something to say about: the
-                      // note goes under the band's controls, in the band (the mockup, approved
-                      // 2026-10-05), so it reads as the channel's and moves nothing beside it.
+                      // note goes under the band's controls, in the band, so it reads as the
+                      // channel's and moves nothing beside it.
                       height: channel.note == "" ? 44px : 66px;
 
                       HorizontalLayout {
@@ -1520,8 +1519,7 @@ export component FixturesWindow inherits Window {
 
             // --- the import -------------------------------------------------------------------------
             // In the editor's place while it is open, clipped away while it is not (as the editor's
-            // sheets are), drawn to the mockup the operator approved on 2026-10-05
-            // (the approved design).
+            // sheets are).
             Rectangle {
               height: root.importing ? import-sheets.preferred-height : 0px;
               min-width: root.importing ? import-sheets.min-width : 0px;

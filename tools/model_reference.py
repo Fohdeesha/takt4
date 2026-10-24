@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Record what PyTorch's BeatNet+ makes of every golden excerpt, once and for all.
 
-the design Phase 3's gate is "activation traces match PyTorch to tolerance on the
-Phase 2 test set". This runs the real network over the committed features of that test
+The model's gate is that its activation traces match PyTorch's to tolerance on the feature
+tests' golden excerpts. This runs the real network over the committed features of that test
 set and writes the answers into tests/data/model/, so tests/model/ can check the C++
 against them forever without torch, without the .pt files, and without Python.
 
@@ -17,8 +17,8 @@ runs; its sha256 is the `source_sha256` in assets/weights/<name>.json, and this 
         --name electronic
 
 The input is tests/data/features/<name>.npy — madmom's own (500, 288) features, not
-anything C++ produced. That keeps this a test of the model alone: a Phase 2 regression
-fails the feature test, not this one.
+anything C++ produced. That keeps this a test of the model alone: a regression in the
+feature front end fails the feature test, not this one.
 
 Per weight set, per excerpt, tests/data/model/<set>/<name>.npy holds (frames, 6)
 float32:

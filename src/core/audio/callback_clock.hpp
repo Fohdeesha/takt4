@@ -10,13 +10,13 @@ namespace takt4::audio {
 /// An input's account of its own clock, kept by its audio callback — which is the only place the
 /// time a buffer arrived can be known to within a buffer.
 ///
-/// **Why the callback keeps it**. The watchdog
-/// used to measure a device's rate from the frame counter as the window's redraw found it, and
-/// looks are 33 ms apart on a quiet machine and 160 ms on a busy one. A pair of looks had to be
-/// allowed to be as far apart as the redraw was, so audio a driver dropped inside that span —
-/// frames never delivered — read as a slower clock, and with 2048- to 4096-frame buffers a run of
-/// such dropouts could land on another standard rate and reopen a stream that had recovered. The
-/// callback knows exactly how long after the last one it came, and how many frames it brought.
+/// **Why the callback keeps it.** The watchdog used to measure a device's rate from the frame
+/// counter as the window's redraw found it, and looks are 33 ms apart on a quiet machine and
+/// 160 ms on a busy one. A pair of looks had to be allowed to be as far apart as the redraw was,
+/// so audio a driver dropped inside that span — frames never delivered — read as a slower clock,
+/// and with 2048- to 4096-frame buffers a run of such dropouts could land on another standard
+/// rate and reopen a stream that had recovered. The callback knows exactly how long after the
+/// last one it came, and how many frames it brought.
 ///
 /// So each callback that came **a normal distance after the one before** — at most two of its own
 /// buffers' length, for a driver whose callbacks are uneven, plus a few milliseconds — adds its

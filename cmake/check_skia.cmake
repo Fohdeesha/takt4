@@ -1,10 +1,10 @@
 # Checks that the Skia libraries in the build are the ones takt4 was checked against.
 #
 # Slint draws with Skia, and rust-skia's build script downloads Skia prebuilt, over HTTPS but
-# with no checksum of its own. So the
-# archive it unpacked is compared, library by library, with the sha256 recorded here, and a
-# difference fails. Run as a test (tests/CMakeLists.txt), because the archive only exists once
-# cargo has built Slint, and globbing the build tree on every build would slow every build.
+# with no checksum of its own. So the archive it unpacked is compared, library by library,
+# with the sha256 recorded here, and a difference fails. Run as a test (tests/CMakeLists.txt),
+# because the archive only exists once cargo has built Slint, and globbing the build tree on
+# every build would slow every build.
 #
 # Windows x64 only: that is the platform takt4 ships on, and the one these were recorded for.
 # When skia-bindings moves, record the new archive's hashes here in the same commit.

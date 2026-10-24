@@ -13,15 +13,15 @@
 
 namespace takt4::control {
 
-/// One thing a control surface can ask for — the table, minus the one entry Q7
-/// still owes (`preset` needs presets to be files).
+/// One thing a control surface can ask for — every control action but the one still owed
+/// (`preset` needs presets to be files).
 ///
-/// An *action* rather than an address string, because the design says "every one of these is
-/// also bindable to a MIDI note or CC through a learn mode". A MIDI binding names what it
-/// does; it has no address. Having the MIDI side synthesise `"/takt4/ctl/tap"` so it
-/// could reach the OSC handler would be manufacturing a string for one surface out of a
-/// naming convention that belongs to another, and the prefix is configurable, so the
-/// string it had to manufacture would not even be constant.
+/// An *action* rather than an address string, because every one of these is also bindable
+/// to a MIDI note or CC through a learn mode. A MIDI binding names what it does; it has no
+/// address. Having the MIDI side synthesise `"/takt4/ctl/tap"` so it could reach the OSC
+/// handler would be manufacturing a string for one surface out of a naming convention that
+/// belongs to another, and the prefix is configurable, so the string it had to manufacture
+/// would not even be constant.
 ///
 /// **Five of these ask the tracker and the rest ask the rules.** That is the whole of why a
 /// surface has two destinations: `engine::BeatSource::post` for the first five, and
@@ -37,12 +37,12 @@ enum class ControlAction : std::uint8_t {
     TempoHalve,
     TempoDouble,
     Lock,
-    /// the `/ctl/panic` — the *"global halt that stops every rule instantly"*. It only
-    /// ever engages, whatever it is sent: letting go is `PanicRelease`, or the window's RELEASE
-    /// (the operator's answer to an earlier review).
+    /// `/ctl/panic` — a global halt that stops every rule instantly. It only ever engages,
+    /// whatever it is sent: letting go is `PanicRelease`, or the window's RELEASE (the
+    /// operator's call of 2026-09-26).
     Panic,
-    /// the `/ctl/rule/<id>/enable <0|1>`. The first action that **names** something as
-    /// well as doing it; see `ControlTarget`.
+    /// `/ctl/rule/<id>/enable <0|1>`. The first action that **names** something as well as
+    /// doing it; see `ControlTarget`.
     RuleEnable,
     /// `/ctl/rule/<id>/mute <0|1>` — the rule keeps running and stops sending. Added on the
     /// operator's ask of 2026-09-16. Not a second spelling of `RuleEnable`: see
@@ -64,8 +64,8 @@ enum class ControlAction : std::uint8_t {
     Manual,
     /// `/ctl/panic/release` — lets go of a PANIC. Its own address, because a push button sends
     /// 1 on the press and 0 on the release, so a `panic 0` that released lasted only while the
-    /// finger was down. A
-    /// button, bare, like the window's RELEASE.
+    /// finger was down (the operator's call of 2026-09-26). A button, bare, like the window's
+    /// RELEASE.
     PanicRelease,
 };
 
@@ -81,7 +81,7 @@ inline constexpr std::array<ControlAction, 14> kControlActions{
 ///
 /// Worth a predicate rather than a comparison at each site, because what it really marks is
 /// "a learn mode cannot bind this from a gesture alone": pressing a pad says *which button*,
-/// never *which rule*. the editor is where that second half gets asked for.
+/// never *which rule*. The rule editor is where that second half gets asked for.
 inline constexpr bool takesRuleId(ControlAction action) noexcept {
     return action == ControlAction::RuleEnable || action == ControlAction::RuleMute ||
            action == ControlAction::RuleDouble || action == ControlAction::RuleHalve ||
@@ -110,7 +110,7 @@ struct ControlTarget {
     friend bool operator==(const ControlTarget&, const ControlTarget&) = default;
 };
 
-/// The verb the design spells the target with, after `<prefix>/ctl/` — `"tap"`, `"tempo/halve"`,
+/// The verb an address spells the target with, after `<prefix>/ctl/` — `"tap"`, `"tempo/halve"`,
 /// `"rule/intro/enable"`. A saved binding is written with the same word, so a settings file
 /// reads the way the OSC address does and an operator who knows one knows the other.
 std::string verbFor(const ControlTarget& target);
@@ -118,17 +118,17 @@ std::string verbFor(const ControlTarget& target);
 /// The target a verb names, or nothing when it names none of them. Round-trips `verbFor`.
 std::optional<ControlTarget> targetOf(std::string_view verb);
 
-/// True where the design gives the action an argument it cannot do without — `lock <0|1>` and
+/// True where the action takes an argument it cannot do without — `lock <0|1>` and
 /// `rule/<id>/enable <0|1>`. Those refuse to act without one rather than treating the
 /// message as a toggle: a toggle depends on a state the sender cannot see, so a control
 /// surface that missed a single message would be inverted from then on.
 ///
-/// **`Panic` is deliberately not one of them.** the design writes the other two with `<0|1>` and
-/// writes panic bare, and a panic button panics: it engages whatever it is sent, a 0
+/// **`Panic` is deliberately not one of them.** The other two are written with `<0|1>` and
+/// panic is written bare, and a panic button panics: it engages whatever it is sent, a 0
 /// included. It used to read a 0 as "let go", so a push button — 1 on the press, 0 on the
-/// release — held PANIC only while the finger was down. the design
-/// makes panic a latch, and an operator who hit it from a Stream Deck lets go of it from the
-/// same Stream Deck with `panic/release` (`PanicRelease`), a button of its own.
+/// release — held PANIC only while the finger was down. Panic is a latch, and an operator who
+/// hit it from a Stream Deck lets go of it from the same Stream Deck with `panic/release`
+/// (`PanicRelease`), a button of its own.
 bool takesArgument(ControlAction action) noexcept;
 
 /// A short label for a UI list or a console listing.
@@ -136,7 +136,7 @@ std::string_view labelOf(ControlAction action) noexcept;
 
 /// One control surface's route in: the actions it can ask for, and nothing else.
 ///
-/// the five tracker actions reach the beat source's `post`, so they are applied by its own
+/// The five tracker actions reach the beat source's `post`, so they are applied by its own
 /// thread exactly as the window's buttons and the console's keys are. Its
 /// two rule actions reach `RuleControl`, which is the output thread's queue for the same
 /// reason. Neither destination is touched directly; that is what makes a surface safe to run
@@ -155,11 +155,11 @@ public:
     /// It must outlive this too where it is not.
     explicit ControlSurface(engine::BeatSource& beats, RuleControl* rules = nullptr) noexcept;
 
-    /// Where the `panic` and `rule/<id>/enable` go, or null for nowhere.
+    /// Where `panic` and `rule/<id>/enable` go, or null for nowhere.
     ///
     /// A setter as well as a constructor argument because an owner often builds the surface
     /// before the output runner exists — `ui::WindowController` did until the two swapped
-    /// places, and the headless mode will have the same ordering problem.
+    /// places, and a headless mode will have the same ordering problem.
     void setRuleControl(RuleControl* rules) noexcept { rules_ = rules; }
     RuleControl* ruleControl() const noexcept { return rules_; }
 

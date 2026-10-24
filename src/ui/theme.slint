@@ -1,4 +1,4 @@
-// The vocabulary both of takt4's windows are built from — the design.
+// The vocabulary both of takt4's windows are built from.
 //
 // Extracted from main_window.slint when the rule editor became a second window: a Slint
 // `global` and a component are file-scoped unless they are exported, so two windows that
@@ -22,7 +22,7 @@ import { LineEdit, Slider } from "std-widgets.slint";
 /// which it did not until 2026-09-23: this used to `clear-focus()` straight after, so that no
 /// invisible element held the keyboard — and with nothing holding it, Slint delivers a key
 /// press to nothing at all. That was harmless while no window had a keyboard shortcut. The
-/// main window has three now,
+/// main window has three now (PANIC, TAP and DOWNBEAT from the keyboard),
 /// and a key only reaches the window's shortcut scope by bubbling up from whatever holds the
 /// focus — so after a click on a button the shortcuts went dead until the operator clicked
 /// the background. A sink that keeps the focus passes every key it does not want straight up
@@ -135,10 +135,9 @@ export component Field inherits Rectangle {
 /// drops a binding when the property is assigned, and typing assigns it. The rule editor made up
 /// for that by building a row again whenever the controller changed it, and that destroyed
 /// whatever on the row had the keyboard — Tab from a follow-up's value into its delay landed in a
-/// box that was already on its way out. This one needs no
-/// rebuilding. It shows `value` whenever it is not being typed in, and puts `value` back the
-/// moment an edit is finished, so a range the controller turned round ("8 - 1" held as 1 to 8)
-/// is what the box then says.
+/// box that was already on its way out. This one needs no rebuilding. It shows `value` whenever
+/// it is not being typed in, and puts `value` back the moment an edit is finished, so a range the
+/// controller turned round ("8 - 1" held as 1 to 8) is what the box then says.
 ///
 /// `typed` is every keystroke, for an owner that keeps what is half-typed
 /// (`RulesController::typing_`). `committed` is the edit finished — Enter, Escape or a click
@@ -267,7 +266,8 @@ export component Press inherits Rectangle {
   /// window — the choice is a smaller label or no label, and a smaller one still reads.
   in property <length> font: 17px;
   /// The key that does the same thing, drawn small and dim after the label — "Esc", "T". A
-  /// shortcut nobody can see is one nobody uses, and an earlier review made three of these.
+  /// shortcut nobody can see is one nobody uses, and the keyboard shortcuts for PANIC, TAP and
+  /// DOWNBEAT made three of these.
   in property <string> hint;
   callback clicked;
 
@@ -330,7 +330,7 @@ export component Press inherits Rectangle {
     clicked => {
       // Focus first, action second — but that is not the order they are sure to finish in.
       // Taking the focus makes the box let go, and its `changed has-focus` commit can run a
-      // turn of the event loop later, after the action. So the
+      // turn of the event loop later, after the action (it was caught doing exactly that). So the
       // controllers do not lean on this order: they keep what is typed as it is typed and
       // commit it themselves at the start of an action that depends on it
       // (`RulesController::commitTyping`, `FixturesController::commitDrafts`).
@@ -463,8 +463,7 @@ export component NumberEntry inherits Rectangle {
 }
 
 /// A whole number, typed or stepped — every number box in takt4, in place of std-widgets'
-/// `SpinBox`. That one did four things wrong for a
-/// booth:
+/// `SpinBox`. That one did four things wrong for a booth:
 ///
 /// - **Escape went through it to the window**, where Escape is PANIC. Its text input takes no
 ///   control key, so an operator backing out of "every" or a note number halted every rule and
@@ -664,7 +663,7 @@ export component Bar inherits HorizontalLayout {
 ///
 /// `value` is two-way bound all the way down to the Slider, which is what lets the C++
 /// side move the control when something other than a drag changes the setting — a tap
-/// moves the fold window, and the window has to follow it (the design deviation 8).
+/// moves the fold window, and the window has to follow it.
 export component Setting inherits HorizontalLayout {
   in property <string> label;
   in-out property <float> value;

@@ -48,9 +48,8 @@ private:
 ///
 /// This is what lets takt4's window be *worked on* from a machine with no display — and
 /// there is no display in the sessions takt4 is developed from, nor on a CI runner. It
-/// backs two things: `takt4-shot`, which renders the window to an image, and
-/// `takt4_ui_tests`, which drives the window's callbacks and its redraw timer without one
-/// ever reaching a screen.
+/// backs two things: `takt4-shot`, which renders the window to an image, and `takt4_ui_tests`,
+/// which drives the window's callbacks and its redraw timer without one ever reaching a screen.
 ///
 /// Slint's own `slint::testing::init()` would also do this, and would additionally let a test
 /// *find* an element by name. It is behind `SLINT_FEATURE_EXPERIMENTAL`, which this build

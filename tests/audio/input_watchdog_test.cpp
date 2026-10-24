@@ -228,7 +228,7 @@ TEST_CASE("an interface moved to another rate underneath the stream is noticed",
 
 TEST_CASE("a moved clock is noticed whatever the buffer size, 64 to 8192 frames",
           "[audio][watchdog]") {
-    // an earlier review, L21: limits set for 256-frame buffers left out nearly every pair
+    // Limits set for 256-frame buffers left out nearly every pair
     // of looks at 2048, where a callback comes every 46 ms, and a clock moved underneath the
     // stream was never noticed — 0 detections in 30 s, and every tempo 8.8 % off. Every buffer
     // an ASIO panel offers, at the rates a set runs at, moving each way and by an octave. At
@@ -270,12 +270,12 @@ TEST_CASE("a healthy input with large buffers reads healthy, and its dropouts ar
 
 TEST_CASE("a redraw 160 ms apart with 2048- to 4096-frame buffers makes no clock of a dropout",
           "[audio][watchdog]") {
-    // The last of an earlier review watchdog residue: measured from the looks, a pair of them
-    // had to be allowed as far apart as the redraw, so audio a driver lost inside that span read
-    // as a slower clock — two false "rate changed" in the worst simulated case, each reopening a
-    // stream that had recovered. Timed by the callbacks themselves, a dropout is left out with
-    // the time it lasted, however seldom the window looks. Dropouts shorter than a callback
-    // period among them, at every buffer and rate the case named, with looks 20 to 160 ms apart.
+    // Measured from the looks, a pair of them had to be allowed as far apart as the redraw, so
+    // audio a driver lost inside that span read as a slower clock — two false "rate changed" in the
+    // worst simulated case, each reopening a stream that had recovered. Timed by the callbacks
+    // themselves, a dropout is left out with the time it lasted, however seldom the window looks.
+    // Dropouts shorter than a callback period among them, at every buffer and rate the case named,
+    // with looks 20 to 160 ms apart.
     for (const std::uint64_t buffer : {2048U, 4096U}) {
         for (const double rate : {44100.0, 48000.0, 96000.0}) {
             INFO(rate << " Hz in " << buffer << "-frame buffers, looks 20 to 160 ms apart");
@@ -336,7 +336,7 @@ TEST_CASE("a busy redraw neither hides a moved clock nor makes one of a dropout"
     // The window looks on its redraw timer, and a busy machine spaces the looks out. With looks
     // up to 80 ms apart the fixed limits never measured at all, and limits that only let the
     // pairs of looks be further apart took the audio a dropout lost inside a pair for a slower
-    // clock — which the window answers by reopening the stream (L21, found by simulation).
+    // clock — which the window answers by reopening the stream (found by simulation).
     for (const std::uint64_t buffer : {256U, 2048U}) {
         INFO(buffer << "-frame buffers, looks 20 to 80 ms apart");
         const double took = secondsToNotice(44100.0, 48000.0, buffer, 0.020, 0.080);

@@ -58,7 +58,7 @@ TEST_CASE("every byte Slint would refuse is replaced, and only those", "[io][utf
 
 #if defined(_WIN32)
 TEST_CASE("a path is shown as UTF-8 whatever the code page", "[io][utf8]") {
-    // an earlier review names, built from UTF-16 so the test means the same on every machine.
+    // Three non-ASCII names, built from UTF-16 so the test means the same on every machine.
     // The en dash and the curly apostrophe are both in code page 1252, so `path.string()`
     // turned them into single bytes that are not UTF-8; the Japanese name is in no Western code
     // page at all, and `path.string()` threw on it. Both paths went straight into a status line.

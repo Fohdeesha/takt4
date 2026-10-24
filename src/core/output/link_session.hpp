@@ -10,8 +10,8 @@
 
 namespace takt4::output {
 
-/// Owns takt4's one Ableton Link instance: the session the outputs lead, and
-/// the session a Link follower reads. One instance, because two in one process are two peers.
+/// Owns takt4's one Ableton Link instance: the session the outputs lead, and the session a
+/// Link follower reads. One instance, because two in one process are two peers.
 ///
 /// Construction starts Link's service thread but does not touch the network; nothing is
 /// visible to peers until the session is enabled.
@@ -19,8 +19,8 @@ namespace takt4::output {
 /// **Leading or following, never both.** Leading — the Link output switched on, the beats the
 /// tracker's or a source's other than Link — `Transports` writes: `snap` (the tempo and a forced
 /// beat in one commit) on the first locked beat and on a DOWNBEAT, and after that `setTempo`,
-/// nudged by how far `phaseAtTime` says the session has drifted. Following
-/// Link — this as the `timing::LinkReader` a `timing::LinkFollower` reads — it is only ever read,
+/// nudged by how far `phaseAtTime` says the session has drifted. Following Link — this as
+/// the `timing::LinkReader` a `timing::LinkFollower` reads — it is only ever read,
 /// and the outputs commit nothing: they hand it over switched off, the follower switches it on to
 /// join a session and off again, and the outputs put it back to the Link row's own switch when the
 /// following ends (`Transports::setLinkFollowing`). `requestBeat`, `forceBeat`, `beatAtTime` and
@@ -47,7 +47,7 @@ public:
     void enable(bool on) override;
     bool enabled() const override;
 
-    /// the design: start/stop sync off by default, because a VJ rig's transport is not the
+    /// Start/stop sync is off by default, because a VJ rig's transport is not the
     /// tracker's business.
     void enableStartStopSync(bool on);
     bool startStopSyncEnabled() const;
@@ -81,9 +81,9 @@ public:
     void requestBeat(double beat, std::chrono::microseconds at, double quantum);
 
     /// Moves the timeline so `beat` lands on `at` regardless of what peers think.
-    /// the design: "use forceBeatAtTime() only for the manual downbeat snap — it is disruptive
-    /// to peers by design." The application's snap is `snap`, which forces the beat and sets
-    /// the tempo in one commit; this is a peer's move, for the tests.
+    /// `forceBeatAtTime()` was meant for the manual downbeat snap only — it is disruptive to
+    /// peers by design. The application's snap is `snap`, which forces the beat and sets the
+    /// tempo in one commit; this is a peer's move, for the tests.
     void forceBeat(double beat, std::chrono::microseconds at, double quantum);
 
     /// The tempo and a forced beat **in one commit** — the snap `Transports` makes on the first

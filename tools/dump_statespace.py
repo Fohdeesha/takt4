@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Precompute madmom's bar-pointer state space and transition models into one blob.
 
-the design: `BarStateSpace`, `BarTransitionModel`, `TransitionModel` and
-`ObservationModel` "depend only on configuration, never on audio", so the C++ tracker
-does not have to reimplement any of madmom — it reads the finished tables and only ports
-the runtime loop. This writes them.
+`BarStateSpace`, `BarTransitionModel`, `TransitionModel` and `ObservationModel` depend
+only on configuration, never on audio, so the C++ tracker does not have to reimplement any
+of madmom — it reads the finished tables and only ports the runtime loop. This writes them.
 
     python tools/dump_statespace.py
 

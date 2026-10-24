@@ -29,18 +29,18 @@ namespace takt4::ui {
 ///
 /// Only the first show. Whatever the operator drags a window to afterwards is theirs.
 ///
-/// 800 wide since the Weltformat-dark redesign (the design, 2026-09-29): the operator cut the
-/// width by a fifth, and every row of the outputs table is laid out to read whole at it.
+/// 800 wide since the Weltformat-dark redesign of 2026-09-29: the operator cut the width by a
+/// fifth, and every row of the outputs table is laid out to read whole at it.
 inline constexpr float kMainWindowWidth = 800.0f;
 /// It opens at this with a scroll bar rather than sized to its content (1146 px with five
-/// outputs and their peers): the design kept today's height, which opens whole on a 1080-line screen
-/// under a title bar and a taskbar.
+/// outputs and their peers): the redesign kept the height it had, which opens whole on a
+/// 1080-line screen under a title bar and a taskbar.
 inline constexpr float kMainWindowHeight = 934.0f;
 /// The markup's `min-height` — what folding a section never shrinks the window below.
 inline constexpr float kMainWindowMinHeight = 420.0f;
-/// The rule editor as the operator locked it on 2026-09-30: 1000 wide — the log
-/// left its column for a sheet along the bottom, and the list took 46 px of that room — and the
-/// 872 a rig measured and asked to open at.
+/// The rule editor as the operator locked it on 2026-09-30: 1000 wide — the log left its column
+/// for a sheet along the bottom, and the list took 46 px of that room — and the 872 a rig
+/// measured and asked to open at.
 inline constexpr float kRulesWindowWidth = 1000.0f;
 inline constexpr float kRulesWindowHeight = 872.0f;
 /// And the patch editor, which had no size of its own at all and so opened at its markup
@@ -50,8 +50,8 @@ inline constexpr float kRulesWindowHeight = 872.0f;
 /// the rule editor's width, as the approved mockup has it.
 inline constexpr float kFixturesWindowWidth = 1000.0f;
 inline constexpr float kFixturesWindowHeight = 800.0f;
-/// The About box, as its approved mockup of 2026-09-30 (`the approved design`):
-/// three sheets and CLOSE, whole at this size.
+/// The About box, as its approved mockup of 2026-09-30: three sheets and CLOSE, whole at this
+/// size.
 inline constexpr float kAboutWindowWidth = 580.0f;
 inline constexpr float kAboutWindowHeight = 640.0f;
 
@@ -73,7 +73,7 @@ inline constexpr double kFoldFloorBpm = 40.0;
 inline constexpr double kFoldCeilingBpm = 220.0;
 inline constexpr double kFoldLeastSpanBpm = 5.0;
 
-/// the latency offset, in milliseconds either side of zero: `settings::
+/// The latency offset, in milliseconds either side of zero: `settings::
 /// kMaxLatencyOffsetSeconds`, which is also as far as a settings file is taken at its word.
 inline constexpr double kLatencyLimitMs = settings::kMaxLatencyOffsetSeconds * 1000.0;
 
@@ -90,9 +90,9 @@ TracePoint tracePoint(const engine::EngineFrame& frame);
 /// The BPM readout, lock and confidence, and the bar.
 void publishTempoState(MainWindow& window, const tracking::TempoState& state);
 
-/// the settings. Read these from `BeatEngine::tempoOptions()` every time and never
-/// from a copy: a tap moves the octave-fold window (the design deviation 8). While a source is followed
-/// the latency slider is that source's own (`followedLatency`, in seconds), not the tracker's.
+/// The tempo tracker's settings. Read these from `BeatEngine::tempoOptions()` every time and
+/// never from a copy: a tap moves the octave-fold window. While a source is followed the
+/// latency slider is that source's own (`followedLatency`, in seconds), not the tracker's.
 void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Options& options,
                          std::optional<double> followedLatency = std::nullopt);
 
@@ -279,8 +279,8 @@ void publishInput(MainWindow& window, float rms, float peak);
 void publishGlobalMessages(MainWindow& window, const std::vector<OutputRow>& rows);
 
 /// What the device picker shows. The host API leads, because on Windows one interface
-/// appears under both ASIO and WASAPI and the two are not interchangeable: only
-/// the ASIO entry picks channels natively, and only the WASAPI one offers loopback.
+/// appears under both ASIO and WASAPI and the two are not interchangeable: only the ASIO entry
+/// picks channels natively, and only the WASAPI one offers loopback.
 std::string describeDevice(const audio::InputDevice& device);
 
 /// What the channel picker shows, numbered from 1 as it is printed on the interface.

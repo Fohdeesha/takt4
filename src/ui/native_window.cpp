@@ -370,13 +370,13 @@ LogicalExtent fitToScreen(LogicalExtent wanted) noexcept {
     if (monitor == nullptr || GetMonitorInfoW(monitor, &info) == 0) {
         return wanted;
     }
-    // **The monitor's own scale, as it is now**. `GetDpiForSystem`
-    // is the scale the machine was signed in at: a laptop moved to 125 % since, or a primary
-    // screen scaled unlike the one Windows started on, gave a work area converted at the wrong
-    // ratio — at 125 % read as 100 %, a window 25 % taller than the screen, which is exactly the
-    // PANIC-under-the-taskbar this exists to prevent. The effective DPI of the monitor is what
-    // winit, and so Slint, sizes the window by. From shcore at run time rather than linked, and
-    // the system's DPI where it cannot be had.
+    // **The monitor's own scale, as it is now.** `GetDpiForSystem` is the scale the machine was
+    // signed in at: a laptop moved to 125 % since, or a primary screen scaled unlike the one
+    // Windows started on, gave a work area converted at the wrong ratio — at 125 % read as
+    // 100 %, a window 25 % taller than the screen, which is exactly the PANIC-under-the-taskbar
+    // this exists to prevent. The effective DPI of the monitor is what winit, and so Slint,
+    // sizes the window by. From shcore at run time rather than linked, and the system's DPI where
+    // it cannot be had.
     UINT dpi = 0;
     if (const HMODULE shcore = LoadLibraryW(L"shcore.dll"); shcore != nullptr) {
         using GetDpiForMonitorFn = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);

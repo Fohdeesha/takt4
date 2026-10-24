@@ -12,7 +12,7 @@
 
 namespace takt4::control {
 
-/// A UDP socket listening for the control messages.
+/// A UDP socket listening for control messages.
 ///
 /// The mirror of `output::OscSender`: a datagram socket and nothing more, no library and
 /// no event loop. It blocks with a timeout rather than spinning, so the thread that owns
@@ -26,7 +26,7 @@ namespace takt4::control {
 /// control, and it defaults to true.
 class OscReceiver {
 public:
-    /// Bigger than anything the design sends and small enough to sit on the stack of the thread
+    /// Bigger than any control message and small enough to sit on the stack of the thread
     /// draining it. A datagram longer than this is not reassembled: on Windows `recvfrom` fails
     /// it with WSAEMSGSIZE and it is dropped, not counted in `datagrams`; elsewhere it arrives
     /// cut to this length.

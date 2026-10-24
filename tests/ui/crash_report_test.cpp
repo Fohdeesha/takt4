@@ -67,9 +67,9 @@ std::uint32_t u32(const std::vector<unsigned char>& bytes, std::size_t at) {
     return value;
 }
 
-/// What a person reading the dump without a debugger checks first — what to look for when
-/// reading one: the signature, the exception stream's code, and whether the module list names
-/// the executable that fell over. Parsed by hand so the test depends on nothing but the format.
+/// What a person reading the dump without a debugger checks first: the signature, the exception
+/// stream's code, and whether the module list names the executable that fell over. Parsed by
+/// hand so the test depends on nothing but the format.
 struct Dump {
     bool valid = false;
     std::optional<std::uint32_t> exceptionCode;
@@ -396,8 +396,7 @@ TEST_CASE("crash report child", "[.child]") {
         worker.join();
     } else if (how == "abort-while-reporting") {
         // A second abort while the first is being reported, on another thread: it waits until
-        // the dump has been begun, so it lands in the middle of the report (an earlier review of
-        // 2026-09-25, L44).
+        // the dump has been begun, so it lands in the middle of the report.
         const std::filesystem::path where(dir);
         std::thread second([where] {
             while (filesIn(where, L".dmp").empty()) {
@@ -431,10 +430,10 @@ TEST_CASE("crash notice child", "[.child]") {
 }
 
 TEST_CASE("a crash leaves a minidump that names what happened", "[ui][crash]") {
-    // an earlier review: nothing in takt4 wrote a dump, so a crash on any machine without WER's
-    // LocalDumps configured was a window that vanished and nothing to read afterwards. Each way
-    // a C++ process can die that *can* be caught, run for real in a child process, and the dump
-    // it leaves read back the way a minidump is read without a debugger.
+    // Nothing in takt4 wrote a dump, so a crash on any machine without WER's LocalDumps
+    // configured was a window that vanished and nothing to read afterwards. Each way a C++
+    // process can die that *can* be caught, run for real in a child process, and the dump it
+    // leaves read back by hand, the way one is read without a debugger.
     struct Case {
         const char* how;
         std::uint32_t code;

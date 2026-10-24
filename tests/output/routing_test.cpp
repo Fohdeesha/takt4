@@ -196,9 +196,9 @@ TEST_CASE("a target's name and id survive being written down and read back", "[o
     }
 
     SECTION("any name at all, however it would read unquoted") {
-        // an earlier review, L28, and the operator's answer to its Q5: "off stage" came
-        // back switched off and called "stage", and "a=b" came back mangled. A name like that
-        // is written in quotes; every other name is written as it always was.
+        // "off stage" came back switched off and called "stage", and "a=b" came back mangled.
+        // The operator's call: a name like that is written in quotes; every other name is
+        // written as it always was.
         for (const bool enabled : {true, false}) {
             for (const char* name : {"off stage", "off", "a=b", " spaced ", "say \"hi\"",
                                      "back\\slash", "comma, here", "\"quoted\"", "line\nbreak"}) {
@@ -228,7 +228,7 @@ TEST_CASE("a target's name and id survive being written down and read back", "[o
 TEST_CASE("a rule's output ids become the bits its messages carry", "[output][routing]") {
     std::vector<OutputTarget> targets{osc("main", 7000), osc("wall", 7001), osc("spare", 7002)};
 
-    // the own default: a rule that names nothing goes everywhere. That is what every rule
+    // The default: a rule that names nothing goes everywhere. That is what every rule
     // meant before routing existed, so no preset changes behaviour by being loaded.
     CHECK(takt4::output::resolveOutputs({}, targets) == kAllOutputs);
 
@@ -343,10 +343,10 @@ TEST_CASE("two rules, two targets, and each goes where it was sent", "[output][r
 
 TEST_CASE("the generic namespace goes to every output that asks for it, routed or not",
           "[output][routing]") {
-    // the design had it go everywhere, "so anything can consume it with zero configuration"; since
-    // 2026-10-02 it goes to the outputs ticked for it (`OutputTarget::sendsNamespace`) and no
-    // others, the operator's call after a receiver complained of them. Which of those a *rule*
-    // reaches has nothing to do with it.
+    // The namespace used to go everywhere, so that anything could consume it with zero
+    // configuration; since 2026-10-02 it goes to the outputs ticked for it
+    // (`OutputTarget::sendsNamespace`) and no others, the operator's call after a receiver
+    // complained of them. Which of those a *rule* reaches has nothing to do with it.
     LoopbackReceiver deck;
     LoopbackReceiver wall;
     LoopbackReceiver winch; // not ticked, as no output is until it is

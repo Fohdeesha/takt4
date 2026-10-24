@@ -321,8 +321,7 @@ void ForwardFilter::transition(bool keepTempo) noexcept {
             } else {
                 // Along a row of the transposed matrix: the same terms in the same order as
                 // walking down a column of `tempoTransition_`, so the same sum to the bit, and
-                // read from consecutive memory rather than one element a row apart (the
-                // review's Low items).
+                // read from consecutive memory rather than one element a row apart.
                 for (std::size_t to = 0; to < n; ++to) {
                     const double* const into = tempoTransposed_.data() + to * n;
                     double sum = 0.0;
@@ -375,8 +374,8 @@ void ForwardFilter::weigh(const double* density) noexcept {
     // does the window**. The window is a preference argued against the music, and with no music
     // to argue with it wins by default: a tempo the music had held outside it slid to the
     // window's nearest edge, 0.97 a frame — measured, 128 under a 50-100 window was 99.8 after
-    // twenty seconds of silence, a tempo nobody was playing. The
-    // hold is an instruction, and still holds.
+    // twenty seconds of silence, a tempo nobody was playing. The hold is an instruction, and
+    // still holds.
     const bool coasting = density == nullptr;
     const std::vector<double>& weights = coasting ? holdWeight_ : intervalWeight_;
     const bool weighed = coasting ? anyHold_ : anyWeight_;
@@ -556,8 +555,8 @@ TrackedFrame ForwardFilter::process(float beatActivation, float downbeatActivati
     std::size_t map = chainBegin;
     double best = -1.0;
     // The circular mean of the phase is `Emission::MeanPhase`'s alone. Summed on every frame
-    // whatever the rule, it was two multiplies a state for nothing under the default (the
-    // review's Low items); what else this loop adds up is summed in the same order either way.
+    // whatever the rule, it was two multiplies a state for nothing under the default; what else
+    // this loop adds up is summed in the same order either way.
     const bool meanWanted = options_.emission == Emission::MeanPhase;
     double cosSum = 0.0;
     double sinSum = 0.0;

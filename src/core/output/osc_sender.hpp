@@ -12,8 +12,8 @@ namespace takt4::output {
 ///
 /// A datagram socket, nothing more: no library, no event loop. Sending is a single
 /// non-blocking `sendto`, so a target that has gone away costs an error return rather than a
-/// stall — which matters, because the design puts this on the output thread alongside Link
-/// and MIDI, and a blocked socket there would stop the beat.
+/// stall — which matters, because this runs on the output thread alongside Link and MIDI,
+/// and a blocked socket there would stop the beat.
 ///
 /// **Opening one never blocks either.** A literal address is used at once; a name is looked up
 /// on a thread of its own (`net::AsyncAddress`) and the socket opens on the first send after it

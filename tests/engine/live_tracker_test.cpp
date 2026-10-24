@@ -38,7 +38,7 @@ const std::filesystem::path kStateSpace =
 
 // The same ranking as the input stream's own test: a host API with native channel
 // selection first, then the most inputs, then the platform's default. Loopback captures
-// are not inputs in the sense.
+// do not count as inputs.
 std::optional<InputDevice> bestInputDevice(const LiveTracker& tracker) {
     std::optional<InputDevice> best;
     const auto rank = [](const InputDevice& d) {
@@ -228,7 +228,7 @@ TEST_CASE("LiveTracker holds a host time source without installing it yet", "[au
 }
 
 TEST_CASE("LiveTracker installs the host time source around a run", "[audio][hardware]") {
-    // the design: the stamp is taken on the audio thread, so the clock has to be in
+    // The stamp is taken on the audio thread, so the clock has to be in
     // place before the stream is opened — which is why the tracker does it rather than
     // leaving the ordering to a caller to remember. And a restarted stream counts samples
     // from zero again, so a regression fitted to the last run has to be forgotten with it.
@@ -256,10 +256,10 @@ TEST_CASE("LiveTracker installs the host time source around a run", "[audio][har
 
 TEST_CASE("LiveTracker looks for devices again only while stopped, and opens them after",
           "[audio][hardware]") {
-    // an earlier review, coverage gap 16. RESCAN makes PortAudio enumerate the machine
-    // again, which renumbers every device — so it is refused while a stream is open, doing
-    // nothing, and afterwards the interface has to be found again and open as it did. That is
-    // `LiveTracker::rescan` and the `PortAudioSession::restart` under it, on the real interface.
+    // RESCAN makes PortAudio enumerate the machine again, which renumbers every device — so it is
+    // refused while a stream is open, doing nothing, and afterwards the interface has to be found
+    // again and open as it did. That is `LiveTracker::rescan` and the `PortAudioSession::restart`
+    // under it, on the real interface.
     LiveTracker tracker(kWeights, kStateSpace);
     const std::optional<InputDevice> device = bestInputDevice(tracker);
     if (!device) {
@@ -334,9 +334,9 @@ LiveTracker::Limits shortLimits() {
 TEST_CASE("a driver that does not answer costs the caller its limit, and is asked nothing more "
           "until it does",
           "[audio]") {
-    // an earlier review, L23: a driver wedged in PortAudio held whichever thread had asked,
-    // which was the window's. Here the drivers are asked to look for devices again and do not
-    // answer — a hook on the audio thread that waits until the test lets it go.
+    // A driver wedged in PortAudio held whichever thread had asked, which was the window's. Here
+    // the drivers are asked to look for devices again and do not answer — a hook on the audio
+    // thread that waits until the test lets it go.
     LiveTracker tracker(kWeights, kStateSpace);
     tracker.setLimits(shortLimits());
     std::promise<void> release;

@@ -146,8 +146,8 @@ std::uint64_t waitForFires(const OutputRunner& runner, std::uint64_t fires) {
 
 /// Waits until the output thread has made `count` more whole rounds from now — each of which
 /// reads what the engine has published — rather than for a length of time, which is a guess
-/// about how busy the machine is. The first round counted may
-/// be one already under way, so the round after it is the first known to start afterwards.
+/// about how busy the machine is. The first round counted may be one already under way, so the
+/// round after it is the first known to start afterwards.
 void waitForRounds(const OutputRunner& runner, std::uint64_t count) {
     const std::uint64_t target = runner.rounds() + count + 1;
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{10};
@@ -160,10 +160,10 @@ void waitForRounds(const OutputRunner& runner, std::uint64_t count) {
 } // namespace
 
 TEST_CASE("starting the engine leaves the beat ring to its one consumer", "[output]") {
-    // `BeatEngine::start` drained the beat ring from the UI thread
-    // while the output thread — the ring's one consumer, draining it all the time — could be
-    // doing the same, and two threads taking from a single-consumer ring race on its read
-    // position. Now what a run leaves there stays for the consumer, stamped with its run.
+    // `BeatEngine::start` drained the beat ring from the UI thread while the output thread — the
+    // ring's one consumer, draining it all the time — could be doing the same, and two threads
+    // taking from a single-consumer ring race on its read position. Now what a run leaves there
+    // stays for the consumer, stamped with its run.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     feedExcerpt(*engine);
     const std::uint64_t before = engine->runNumber();
@@ -182,8 +182,8 @@ TEST_CASE("starting the engine leaves the beat ring to its one consumer", "[outp
 }
 
 TEST_CASE("a beat the last run left in the ring is not sent in the next", "[output]") {
-    // The other half of L42: the consumer drops what a run that is over left behind — a
-    // flash or a clip for a beat of the track before the STOP.
+    // The other half of leaving the ring to its consumer: the consumer drops what a run that is
+    // over left behind — a flash or a clip for a beat of the track before the STOP.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     feedExcerpt(*engine);
     engine->start(); // a new run, with the last one's beats still on the ring
@@ -486,9 +486,9 @@ TEST_CASE("a MIDI port that is not there is reported rather than thrown away", "
 }
 
 TEST_CASE("a rule fires from the real beats, on the output thread", "[output][trigger]") {
-    // 5.8: "Rules are evaluated on the output thread, never the audio thread." This is that
-    // claim end to end — the real excerpt through the real tracker, the beats it really
-    // called, a rule the runner was handed by command, and a socket that really receives.
+    // Rules are evaluated on the output thread, never the audio thread. This is that claim end
+    // to end — the real excerpt through the real tracker, the beats it really called, a rule
+    // the runner was handed by command, and a socket that really receives.
     LoopbackReceiver receiver;
     Transports::Config config;
     config.outputs = takt4::output::oscOutputs({{"127.0.0.1", receiver.port()}});
@@ -524,7 +524,7 @@ TEST_CASE("a rule fires from the real beats, on the output thread", "[output][tr
 
     // And the addresses really left the machine, with the segment filled in.
     //
-    // Counted out of everything that arrived rather than taken as the first five: the design's
+    // Counted out of everything that arrived rather than taken as the first five: the
     // generic namespace is going to the same target on the same socket, so a rule's
     // datagrams are interleaved with `/takt4/bpm` and the rest. That interleaving is the
     // design — one OSC target, both namespaces — and a test that assumed otherwise would be
@@ -544,11 +544,11 @@ TEST_CASE("a rule fires from the real beats, on the output thread", "[output][tr
 
 TEST_CASE("a stage of a round that throws is counted and named, and the round carries on",
           "[output][trigger]") {
-    // an earlier review. One try block held the whole round, so a stage that threw took every
-    // stage after it down with it for that round — every round, if it threw every time — and
-    // all anybody could have seen was a count that nothing displayed. Here a stage throws on
-    // every beat, and every beat still reaches the rules and the transports, and the window's
-    // copy says which stage it was and what it said.
+    // One try block held the whole round, so a stage that threw took every stage after it down
+    // with it for that round — every round, if it threw every time — and all anybody could have
+    // seen was a count that nothing displayed. Here a stage throws on every beat, and every beat
+    // still reaches the rules and the transports, and the window's copy says which stage it was
+    // and what it said.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
     runner.setBeatObserver(
@@ -587,8 +587,8 @@ TEST_CASE("a stage of a round that throws is counted and named, and the round ca
 TEST_CASE("the fired log keeps the newest messages, in order, when nobody drains it",
           "[output][trigger]") {
     // It holds `kFiredCapacity` and drops the oldest past that — which it did by erasing the
-    // front of a vector, every message once it was full. Six hundred
-    // fired with nothing reading: the last 512, oldest first.
+    // front of a vector, every message once it was full. Six hundred fired with nothing
+    // reading: the last 512, oldest first.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
     Rule::Config rule;
@@ -677,7 +677,7 @@ TEST_CASE("rules still fire after a stop and a start", "[output][trigger]") {
     //
     // `elapsed()` — which is `Context::now` — used to be taken from `start()`, so it went
     // back to zero on every Start while `Rule::lastFired_` kept the time of the last fire of
-    // the previous run. the cooldown test then read `now - lastFired` as a large
+    // the previous run. The cooldown test then read `now - lastFired` as a large
     // *negative* number, which is below even a zero cooldown, and every rule that had ever
     // fired was blocked until the clock climbed back past where it had been.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
@@ -717,7 +717,7 @@ TEST_CASE("rules still fire after a stop and a start", "[output][trigger]") {
 
 TEST_CASE("a DOWNBEAT pressed just after a beat fires that bar's downbeat rules",
           "[output][trigger]") {
-    // an earlier review, as the operator meets it: they press DOWNBEAT on the downbeat they hear,
+    // A late DOWNBEAT, as the operator meets it: they press DOWNBEAT on the downbeat they hear,
     // a moment after the tracker called that beat as beat 3. The beat becomes the bar's first
     // — but it has gone out already, so a downbeat rule (a laser on the one) used to skip that
     // bar altogether. It fires on the press now, late by the press.
@@ -737,7 +737,7 @@ TEST_CASE("a DOWNBEAT pressed just after a beat fires that bar's downbeat rules"
     runner.start();
 
     // The excerpt a hop at a time, pressing on the first frame after a beat that is not a
-    // bar's first — the press the operator makes, and the one M4 is about.
+    // bar's first — the press the operator makes, and the one this test is about.
     const std::vector<float>& samples = excerpt();
     const std::size_t hops = samples.size() / kHopSize;
     std::uint64_t beatsSeen = 0;
@@ -759,9 +759,9 @@ TEST_CASE("a DOWNBEAT pressed just after a beat fires that bar's downbeat rules"
     REQUIRE(pressed);
     REQUIRE(engine->state().barsDeclared == 1);
     waitForBeats(runner, kSentBeats);
-    // **Never `firesOf` under `mutex`**: the observer takes
-    // `mutex` inside the runner's own lock, and `firesOf` takes the runner's lock — so holding
-    // this one while asking was the other order, and a beat arriving between them hung the test.
+    // **Never `firesOf` under `mutex`**: the observer takes `mutex` inside the runner's own lock,
+    // and `firesOf` takes the runner's lock — so holding this one while asking was the other
+    // order, and a beat arriving between them hung the test.
     const auto published = [&mutex, &publishedDownbeats] {
         const std::lock_guard<std::mutex> lock(mutex);
         return publishedDownbeats;
@@ -836,9 +836,9 @@ TEST_CASE("a DOWNBEAT pressed before the first lock fires nothing until there is
 }
 
 TEST_CASE("starting the tracker again does not fire the onset rules", "[output][trigger]") {
-    // The runner keeps going across a Stop and a Start; the engine zeroes its
-    // onset count on every start. Compared for plain inequality, the first round of every run
-    // after the first saw the old count "move" to zero and fired every onset rule once.
+    // The runner keeps going across a Stop and a Start; the engine zeroes its onset count on
+    // every start. Compared for plain inequality, the first round of every run after the first
+    // saw the old count "move" to zero and fired every onset rule once.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
     Rule::Config rule;
@@ -944,7 +944,7 @@ TEST_CASE("stopping sends the releases it still owes", "[output][trigger]") {
     //
     // **To a port, not only to the log.** This test used to have no outputs at all and read
     // the runner's record of what it fired, which says the release was *owed* and nothing
-    // about whether it left — and leaving is what an earlier review found it did not do.
+    // about whether it left — and leaving is what it turned out not to do.
     auto sent = std::make_shared<std::vector<std::vector<unsigned char>>>();
     Transports::Config config;
     takt4::output::OutputTarget desk;
@@ -1150,8 +1150,8 @@ TEST_CASE("an output switched off or deleted is sent what it is owed first", "[o
 
 TEST_CASE("panic reaches the rules through the same queue as everything else",
           "[output][trigger]") {
-    // 5.8 calls PANIC "non-negotiable for live use", and 5.7 gives it an address. Both of
-    // those land here, on the thread that owns the rules.
+    // PANIC is non-negotiable for live use, and it has a control address as well as a button.
+    // Both of those land here, on the thread that owns the rules.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
 
@@ -1169,7 +1169,7 @@ TEST_CASE("panic reaches the rules through the same queue as everything else",
     runner.stop();
     CHECK(runner.triggers().rule(0).fires() == 0);
 
-    // And 5.7's `/ctl/rule/<id>/enable` takes the same road.
+    // And `/ctl/rule/<id>/enable` takes the same road.
     runner.post(OutputCommand::ruleEnabled("every-beat", false));
     CHECK_FALSE(runner.triggers().rule(0).enabled());
     runner.post(OutputCommand::ruleEnabled("every-beat", true));
@@ -1182,7 +1182,7 @@ TEST_CASE("panic reaches the rules through the same queue as everything else",
 // test's name back to the binary as a filter through the command line, so anything that does
 // not survive that round trip "fails" by matching nothing at all.
 TEST_CASE("the rule id all means every rule", "[output][trigger][control]") {
-    // the `/ctl/rule/all/mute`. The *surface* does not know what rules exist — only the
+    // `/ctl/rule/all/mute`. The *surface* does not know what rules exist — only the
     // thing behind `RuleControl` does — so "all" travels as a name and is expanded here.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
@@ -1223,7 +1223,7 @@ TEST_CASE("the rule id all means every rule", "[output][trigger][control]") {
     }
 
     SECTION("an edit to one rule does not undo the gestures made to the others") {
-        // the editor replaces the whole set on every keystroke, and the live gestures are
+        // The rule editor replaces the whole set on every keystroke, and the live gestures are
         // not part of what it hands over — so without `setRules` carrying them by id, renaming
         // one rule would unmute the rig.
         rules[1].name = "renamed mid-set";
@@ -1248,9 +1248,9 @@ TEST_CASE("the rule id all means every rule", "[output][trigger][control]") {
 
 TEST_CASE("a control surface reaches the rules without knowing what a runner is",
           "[output][trigger][control]") {
-    // The far end of 5.7's two remaining addresses. `control::ControlSurface` is written
-    // against `RuleControl` and this is the only implementation an app has: the runner owns
-    // the rules, so there is nowhere else for the route to end.
+    // The far end of the two addresses that reach the rules. `control::ControlSurface` is
+    // written against `RuleControl` and this is the only implementation an app has: the runner
+    // owns the rules, so there is nowhere else for the route to end.
     //
     // Driven through the *interface* deliberately, rather than through `post`. A surface
     // holds a `RuleControl*` and never sees an OutputRunner, so what has to be checked is
@@ -1355,9 +1355,9 @@ TEST_CASE("a target list that would not open still moves the routing with it",
 TEST_CASE("two control surfaces can post to a stopped runner at once", "[output][trigger]") {
     // `post` applies on the *caller's* thread while the runner is stopped — which is what
     // lets an app be configured before it is started, and is the state an operator binding
-    // buttons before a set is in. the `panic` and `rule/<id>/enable` are documented safe
-    // from RtMidi's callback and from the OSC receiver's loop, so two of them really can be
-    // inside `apply` at once, and the rules editor commits the whole set on every keystroke
+    // buttons before a set is in. The `panic` and `rule/<id>/enable` addresses are documented
+    // safe from RtMidi's callback and from the OSC receiver's loop, so two of them really can
+    // be inside `apply` at once, and the rules editor commits the whole set on every keystroke
     // from a third. All of it mutates one vector of rules.
     //
     // A soak rather than a proof: a race is not something a test can observe directly, so
@@ -1457,7 +1457,7 @@ void playInRealTime(BeatEngine& engine, const std::vector<float>& samples, std::
 
 TEST_CASE("a negative offset lands a beat's cue before that beat from live audio",
           "[output][trigger][slow]") {
-    // an earlier review at the far end of the chain, where an operator meets it: the excerpt fed
+    // A negative offset at the far end of the chain, where an operator meets it: the excerpt fed
     // in real time through the real engine and the real output thread, stamped on Link's clock
     // as a sound card's audio is, and a rule sending each beat's place in the bar to a media
     // server set 200 ms early.
@@ -1985,9 +1985,9 @@ private:
 } // namespace
 
 TEST_CASE("the outputs run with the tracker stopped", "[output][dmx]") {
-    // an earlier review. The runner started and stopped with the tracker, so before Start nothing
-    // was transmitted at all: IDENTIFY and a colour preview changed a buffer nobody sent. It
-    // runs for the application's life now, and the tracker's Start and Stop are `setTracking`.
+    // The runner started and stopped with the tracker, so before Start nothing was transmitted
+    // at all: IDENTIFY and a colour preview changed a buffer nobody sent. It runs for the
+    // application's life now, and the tracker's Start and Stop are `setTracking`.
     LoopbackReceiver node;
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, parOnNode(node.port()));
@@ -2035,9 +2035,9 @@ TEST_CASE("the outputs run with the tracker stopped", "[output][dmx]") {
 
 TEST_CASE("a node whose only fixture is switched off is sent dark frames, then left alone",
           "[output][dmx][slow]") {
-    // an earlier review, H4, on the wire. One par on a node: switching it off took its
-    // universe out of the patch, nothing was ever sent there again, and the node held the lamp
-    // lit. The operator's answer to an earlier review: zeros for a few seconds, then leave it.
+    // One par on a node, on the wire: switching it off took its universe out of the patch,
+    // nothing was ever sent there again, and the node held the lamp lit. The operator's call:
+    // zeros for a few seconds, then leave it.
     LoopbackReceiver node;
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     Transports::Config config = parOnNode(node.port());
@@ -2080,9 +2080,9 @@ TEST_CASE("a node whose only fixture is switched off is sent dark frames, then l
 }
 
 TEST_CASE("quitting sends the blackout frame itself", "[output][dmx]") {
-    // The way out of the application: the lights out, and that frame actually sent. Art-Net
-    // only went out in `advance`, paced at 44 Hz, so a change made a moment before quitting was
-    // never transmitted and the node held the rig lit after takt4 had gone.
+    // The way out of the application: the lights out, and that frame actually sent. Art-Net only
+    // went out in `advance`, paced at 44 Hz, so a change made a moment before quitting was never
+    // transmitted and the node held the rig lit after takt4 had gone.
     LoopbackReceiver node;
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, parOnNode(node.port()));
@@ -2104,10 +2104,10 @@ TEST_CASE("quitting sends the blackout frame itself", "[output][dmx]") {
 }
 
 TEST_CASE("the frame sent on quitting keeps the 44 Hz spacing", "[output][dmx]") {
-    // an earlier review: the blackout on the way out went straight after the round's own frame, a
-    // millisecond apart, and a node that drops frames arriving faster than 44 Hz dropped it and
-    // kept the look. So a change is posted and the runner stopped at once — the change's frame
-    // and the blackout are then as close as they can be — and every frame's arrival is stamped.
+    // The blackout on the way out went straight after the round's own frame, a millisecond
+    // apart, and a node that drops frames arriving faster than 44 Hz dropped it and kept the
+    // look. So a change is posted and the runner stopped at once — the change's frame and the
+    // blackout are then as close as they can be — and every frame's arrival is stamped.
     LoopbackReceiver node;
     const auto origin = std::chrono::steady_clock::now();
     std::vector<std::pair<double, std::vector<std::uint8_t>>> frames;
@@ -2188,8 +2188,8 @@ TEST_CASE("quitting sends the dark frame three times, a frame apart", "[output][
 }
 
 TEST_CASE("quitting sends a release held for a delayed output", "[output][trigger]") {
-    // an earlier review: a release parked for an OSC target's delay went out at the *next* Start,
-    // so a Resolume clip stayed latched until then.
+    // A release parked for an OSC target's delay went out at the *next* Start, so a Resolume
+    // clip stayed latched until then.
     LoopbackReceiver server;
     Transports::Config config;
     takt4::output::OutputTarget media;
@@ -2227,12 +2227,12 @@ TEST_CASE("quitting sends a release held for a delayed output", "[output][trigge
 
 TEST_CASE("STOP leaves the lights out, fires nothing after it and lets go of what is held",
           "[output][dmx][slow]") {
-    // an earlier review, H3, and the operator's answer to its Q3. STOP blacked the lights
-    // out once — and then up to two predicted beats still fired their rules, because nothing
-    // reset the scheduler and the engine's last locked state stays published after it stops; and
-    // a lighting release owed went on to relight a lamp at its release level. The lights have to
-    // go out and stay out. What is owed to a media server or a laser — a clip's release — goes out
-    // at once, as it does on quit, so nothing is left latched.
+    // STOP blacked the lights out once — and then up to two predicted beats still fired their
+    // rules, because nothing reset the scheduler and the engine's last locked state stays
+    // published after it stops; and a lighting release owed went on to relight a lamp at its
+    // release level. The operator's call: the lights have to go out and stay out; what is owed
+    // to a media server or a laser — a clip's release — goes out at once, as it does on quit, so
+    // nothing is left latched.
     //
     // Fed in real time, on the runner's own clock, so there is a lock to predict from: offline,
     // with no timeline, nothing is ever predicted and the bug cannot happen.
@@ -2409,8 +2409,8 @@ TEST_CASE("the MIDI clock starts and stops with the tracker, not with the output
     CHECK(count(takt4::output::MidiClock::kTick) == 0);
 
     // Ticking from the press, so a receiver has a tempo; but not started, because nothing has
-    // been heard to say where a bar begins (an earlier review — see "a MIDI receiver's bar 1 is a
-    // downbeat of the music").
+    // been heard to say where a bar begins (see "a MIDI receiver's bar 1 is a downbeat of the
+    // music").
     runner.setTracking(true);
     std::this_thread::sleep_for(std::chrono::milliseconds{200});
     CHECK(count(takt4::output::MidiClock::kStart) == 0);
@@ -2481,7 +2481,7 @@ TEST_CASE("the output thread makes a round every millisecond", "[output][timing]
 
 TEST_CASE("the model, the tracker and the output thread each ask to run ahead",
           "[output][engine]") {
-    // an earlier review, read off the threads themselves: each asks for its own priority as it
+    // Thread priority, read off the threads themselves: each asks for its own priority as it
     // starts, and the model's also reads denormals as zero. What that does is the next test's.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
@@ -2507,7 +2507,7 @@ TEST_CASE("the model, the tracker and the output thread each ask to run ahead",
 
 TEST_CASE("the MIDI clock keeps its time while every core is busy",
           "[output][midi][hardware][realtime]") {
-    // an earlier review as a receiver meets it. The output thread ran at the priority every
+    // Thread priority as a receiver meets it. The output thread ran at the priority every
     // thread starts at, the window's included, so on a machine with its cores busy — Skia
     // drawing, a video server, another program — a tick waited its turn behind them. Here
     // every core is kept busy at that ordinary priority for three seconds, and the gaps between
@@ -2568,11 +2568,11 @@ TEST_CASE("the MIDI clock keeps its time while every core is busy",
 
 TEST_CASE("PANIC leaves a lamp where it is, whatever its release would have done",
           "[output][dmx]") {
-    // an earlier review. PANIC pays out every release it owes, so that a clip or a laser note lets
-    // go, and then freezes the lights (the operator's call, 2026-09-16). A lighting release is
-    // the fired effect again at the release level over the rule's own fade time, so paying it
-    // could turn off a lamp whose rule snapped while leaving one whose rule faded. Here the
-    // rule snaps to full with a release owed, and an OSC rule owes one too.
+    // PANIC pays out every release it owes, so that a clip or a laser note lets go, and then
+    // freezes the lights (the operator's call, 2026-09-16). A lighting release is the fired
+    // effect again at the release level over the rule's own fade time, so paying it could turn
+    // off a lamp whose rule snapped while leaving one whose rule faded. Here the rule snaps to
+    // full with a release owed, and an OSC rule owes one too.
     //
     // Two ways the release can stand at the moment of the PANIC. Owed well ahead, the sink
     // holds it until its moment and the PANIC drops what is held. But owed a little ahead on
@@ -2670,9 +2670,9 @@ TEST_CASE("PANIC drops held lighting rather than starting it frozen", "[output][
 
 TEST_CASE("a hand-fired effect or channel test sends nothing while PANIC is engaged",
           "[output][dmx]") {
-    // an earlier review. The color-picker preview, IDENTIFY and a channel TEST go to the lights
-    // past the rules — and so past the halt too: a drag on the picker lit fixtures in the
-    // middle of a panic. Run on stopped runners, where a post applies at once.
+    // The color-picker preview, IDENTIFY and a channel TEST go to the lights past the rules —
+    // and so past the halt too: a drag on the picker lit fixtures in the middle of a panic. Run
+    // on stopped runners, where a post applies at once.
     Transports::Config config;
     config.patch = {takt4::dmx::fixtureFromMode("par", 1, 0, 1)};
     takt4::dmx::Payload white;
@@ -2711,10 +2711,10 @@ TEST_CASE("a hand-fired effect or channel test sends nothing while PANIC is enga
 
 TEST_CASE("a name server that does not answer does not stop the output thread",
           "[output][network][realtime]") {
-    // an earlier review. An output typed as a host name was resolved on the output thread — the
-    // one with the MIDI clock, Link, Art-Net's keep-alive and every rule on it — so a name the
-    // network could not answer stopped all of that for the resolver's timeout. A missing
-    // ".local" name takes about nine seconds to fail on the machine this was written on.
+    // An output typed as a host name was resolved on the output thread — the one with the MIDI
+    // clock, Link, Art-Net's keep-alive and every rule on it — so a name the network could not
+    // answer stopped all of that for the resolver's timeout. A missing ".local" name takes
+    // about nine seconds to fail on the machine this was written on.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, Transports::Config{});
     runner.start();
@@ -2823,8 +2823,8 @@ TEST_CASE("a run of whole rule sets, patches or previews is applied once, as the
 }
 
 TEST_CASE("a delay slider moves one output's delay and drops nothing held", "[output][osc]") {
-    // an earlier review, the other half: the slider posted the whole target list on every pixel
-    // of a drag, and every one of those cleared what was queued for a delayed target.
+    // The slider posted the whole target list on every pixel of a drag, and every one of those
+    // cleared what was queued for a delayed target.
     LoopbackReceiver server;
     Transports::Config config;
     takt4::output::OutputTarget media;
@@ -2857,10 +2857,10 @@ TEST_CASE("a delay slider moves one output's delay and drops nothing held", "[ou
 
 TEST_CASE("a release owed to an output follows it when another is added above it",
           "[output][trigger]") {
-    // an earlier review, and the operator's rule that nothing hangs off something editable: a
-    // follow-up carries its routing as a bit, and the bit is the output's place in the list.
-    // An output added above it moved every place below — so a release owed to the deck went
-    // to whatever took the deck's place.
+    // The operator's rule that nothing hangs off something editable: a follow-up carries its
+    // routing as a bit, and the bit is the output's place in the list. An output added above it
+    // moved every place below — so a release owed to the deck went to whatever took the
+    // deck's place.
     LoopbackReceiver deck;
     LoopbackReceiver fresh;
     takt4::output::OutputTarget deckTarget;
@@ -3641,8 +3641,9 @@ TEST_CASE("an input outage drops the clip and the note still on their way, and l
 
 TEST_CASE("the input going quiet drops a note owed as a gesture of its own",
           "[output][trigger][release]") {
-    // S1's second path. A follow-up with a kind of its own — a second note a beat after the press
-    // — went out into the silence after the rig had been let go of, a note held on.
+    // A second way past `letGoOfTheRig`. A follow-up with a kind of its own — a second note a
+    // beat after the press — went out into the silence after the rig had been let go of, a note
+    // held on.
     auto cable = std::make_shared<Bytes>();
     takt4::testing::FakeBeatSource source;
     OutputRunner runner(source, heldRig(cable));

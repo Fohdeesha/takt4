@@ -90,9 +90,9 @@ std::vector<std::filesystem::path> goldenExcerpts() {
 
 } // namespace
 
-// the design Phase 2, the gate: the same audio through madmom (tools/make_golden.py,
-// the .npy next to each .wav) and through this code, within floating-point tolerance,
-// on at least ten varied excerpts.
+// The feature gate: the same audio through madmom (tools/make_golden.py, the .npy next to
+// each .wav) and through this code, within floating-point tolerance, on at least ten varied
+// excerpts.
 TEST_CASE("the C++ features match madmom's on every golden excerpt", "[features][golden]") {
     constexpr double kTolerance = 1e-5; // madmom's pipeline is float32 from the FFT on; this one is double
     constexpr std::size_t kRequiredExcerpts = 10;
@@ -100,7 +100,7 @@ TEST_CASE("the C++ features match madmom's on every golden excerpt", "[features]
     const std::vector<std::filesystem::path> wavs = goldenExcerpts();
     REQUIRE_FALSE(wavs.empty());
     if (wavs.size() < kRequiredExcerpts) {
-        WARN("only " << wavs.size() << " golden excerpt(s) in tests/data/features; the Phase 2 exit "
+        WARN("only " << wavs.size() << " golden excerpt(s) in tests/data/features; the gate's "
                      << "criterion needs at least " << kRequiredExcerpts << " varied ones (tools/make_golden.py)");
     }
 

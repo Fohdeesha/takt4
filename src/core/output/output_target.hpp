@@ -8,8 +8,8 @@
 
 namespace takt4::output {
 
-/// One place messages go — the *"Multiple simultaneous targets, each with its own
-/// host, port, enabled state and rule subset."*
+/// One place messages go — one of any number at once, each with its own host, port, enabled
+/// state and rule subset.
 ///
 /// The rule subset is the half that had never been built: every rule went to every target,
 /// so a rig with a media server and a lighting desk on it could not send a clip to one and a
@@ -20,8 +20,8 @@ namespace takt4::output {
 /// what they want is a struct that copies and serialises rather than a hierarchy.
 struct OutputTarget {
     enum class Kind : std::uint8_t {
-        /// A UDP host and port. the generic namespace goes to every enabled one of these
-        /// as well as whatever rules aim at it.
+        /// A UDP host and port. Rules aimed at it send here, and takt4's generic namespace
+        /// too where `sendsNamespace` says so.
         Osc,
         /// A MIDI device, by the name `output::listMidiOutputPorts()` gives it. Rules send
         /// notes and CCs; a `MidiClock` output may name the same device — `Transports` opens
@@ -37,7 +37,7 @@ struct OutputTarget {
         /// nothing needed it, and it was one more box to misread. A list in an older settings
         /// file is read and left out.)
         ArtNet,
-        /// the 24 PPQN MIDI clock, to `device` — as many as there are devices to clock, a
+        /// The 24 PPQN MIDI clock, to `device` — as many as there are devices to clock, a
         /// DAW and a drum machine each on its own. Nothing routes to one by name: it sends the
         /// clock and nothing else. Until 2026-09-25 the clock was one setting of its own, not
         /// an output with a delay.
@@ -65,16 +65,16 @@ struct OutputTarget {
     /// `Midi` and `MidiClock`: which device. Ignored for the rest.
     std::string device;
 
-    /// Switched off sends nothing at all — neither the namespace nor a rule's message.
+    /// Switched off sends nothing at all — neither takt4's namespace nor a rule's message.
     /// A switch rather than deleting it, because an operator killing one feed mid-set wants
     /// it back afterwards with its addresses intact.
     bool enabled = true;
 
-    /// `Osc`: whether takt4's own messages go here as well as the rules aimed at it — the design's
+    /// `Osc`: whether takt4's own messages go here as well as the rules aimed at it — the
     /// generic namespace, `/takt4/bpm`, `/beat`, `/beat/bar`, `/downbeat`, `/confidence`,
     /// `/locked`, `/meter` and `/resync` (`OscPublisher`), several on every beat.
     ///
-    /// **Off unless asked for** (the operator, 2026-10-02), which the "always publish" was not:
+    /// **Off unless asked for** (the operator, 2026-10-02), where it used to be always on:
     /// a receiver that takes only what a rule sends it complains about the rest, logging each
     /// address it does not handle, and every output a rig had got them
     /// whether it wanted them or not. The main window's "/takt4 global messages to" picks the
@@ -89,8 +89,8 @@ struct OutputTarget {
     /// takt4: it belongs to the thing on the end of each cable. A media server keying a clip
     /// is a frame or two behind; a winch that has to physically *move* is a great deal more,
     /// and it is behind by an amount that has nothing to do with what the lighting desk on
-    /// the next output is doing. the single slider moves all of them together, which is
-    /// the one adjustment that cannot help a rig with two different lags in it.
+    /// the next output is doing. The rig-wide latency slider moves all of them together, which
+    /// is the one adjustment that cannot help a rig with two different lags in it.
     ///
     /// **Positive is later, negative is earlier, and both are real**: a target at −300 ms has
     /// a beat's messages 300 ms before the beat is in the music. It is the number an operator
@@ -101,8 +101,8 @@ struct OutputTarget {
     /// hear it: while the tracker is locked it fires each beat ahead of time on a prediction,
     /// by as much as the earliest target needs (`BeatScheduler`, `Transports::leadSeconds`),
     /// and each target is then held until the beat's moment plus the rig-wide offset plus
-    /// this. Until an earlier review a negative offset instead held every message for what was
-    /// left of a beat — so a bar-1 cue landed just before beat 2, and a message about nothing
+    /// this. A negative offset used instead to hold every message for what was left of a
+    /// beat — so a bar-1 cue landed just before beat 2, and a message about nothing
     /// in particular waited most of a beat. Two things a prediction cannot do: a beat heard
     /// while the tracker is hunting goes the moment it is heard, which is as early as it can;
     /// and a message about *now* — a manual fire, a lock change — goes now plus whatever of the
@@ -167,7 +167,7 @@ bool ensureLinkOutput(std::vector<OutputTarget>& targets, bool enabledIfAdded);
 /// rule an operator has not routed still means.
 ///
 /// An id that matches nothing contributes no bit. That is deliberate and is not an error
-/// here: the output may have been deleted, and the editor is where an operator is told the
+/// here: the output may have been deleted, and the rule editor is where an operator is told the
 /// routing reaches nothing.
 std::uint64_t resolveOutputs(const std::vector<std::string>& ids,
                              const std::vector<OutputTarget>& targets) noexcept;
@@ -216,7 +216,7 @@ std::string formatOutputTarget(const OutputTarget& target);
 /// Just the destination half: "127.0.0.1:7000", "midi MOTU Pro Audio Midi Out 1",
 /// "artnet 10.0.0.20:6454", "midiclock TR-8S", or "link".
 ///
-/// What the outputs list puts in the address box, the name having a box of its own. It is
+/// What the window's outputs list keeps as a row's whole destination, the name kept apart. It is
 /// also what `formatOutputTarget` writes after the `=`, and `parseOutputTarget` takes it back
 /// on its own — the name is optional there for exactly this reason.
 std::string formatOutputAddress(const OutputTarget& target);

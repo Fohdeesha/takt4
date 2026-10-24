@@ -28,9 +28,9 @@ namespace takt4::engine {
 /// One frame of the decoder's clock: what the network said, what the decoder made of it,
 /// and what the tempo state machine was publishing when it did.
 ///
-/// This is what the activation trace draws — "the CRNN hands you a 50 Hz probability
-/// signal, and scrolling it live makes the app feel diagnostic rather than magical" — so
-/// a consumer gets every frame rather than a snapshot.
+/// This is what the window's activation trace draws — the network's 50 Hz probability signal,
+/// scrolled live so that the app reads as diagnostic rather than magical — so a consumer gets
+/// every frame rather than a snapshot.
 struct EngineFrame {
     model::FrameActivation activation;
     tracking::TrackedFrame tracked;
@@ -44,7 +44,7 @@ struct EngineFrame {
     bool interpolated = false;
 };
 
-/// the inference thread, and the thing both the UI and the console drive.
+/// The inference thread, and the thing both the UI and the console drive.
 ///
 /// The chain from a hop of audio to a beat, in one object:
 ///
@@ -53,10 +53,10 @@ struct EngineFrame {
 ///     inference      the decoder, the tempo state machine        (this class owns it)
 ///     consumers      popFrame for the trace, popBeat for output  (lock-free rings)
 ///
-/// the design wants the particle filter off the audio thread because "the particle filter's
-/// resampling step is data-dependent in cost", and off the caller's loop because a UI
-/// timer or a console print must not decide when a beat is noticed. It allocates on
-/// construction and on reset, and nothing on either thread after that.
+/// The particle filter is kept off the audio thread because its resampling step is
+/// data-dependent in cost, and off the caller's loop because a UI timer or a console print
+/// must not decide when a beat is noticed. It allocates on construction and on reset, and
+/// nothing on either thread after that.
 ///
 /// **The decoder is one of two** (`tracking::Decoder`): the particle filter, which is
 /// upstream's algorithm and runs on the network's 50 Hz frames, or the exact forward
@@ -67,7 +67,7 @@ struct EngineFrame {
 /// `EngineFrame::interpolated`.
 ///
 /// **What this deliberately does not own: the transports.** Link, OSC and MIDI are the
-/// output thread's business (the design again), and keeping them out means `core/engine` does
+/// output thread's business, and keeping them out means `core/engine` does
 /// not depend on `core/output` and can be tested without a socket. Whoever wants them
 /// drains popBeat.
 ///
@@ -126,8 +126,8 @@ public:
     BeatEngine(const BeatEngine&) = delete;
     BeatEngine& operator=(const BeatEngine&) = delete;
 
-    /// Installs the clock that stamps each frame with the host time of its audio
-    ///. Set before start(), cleared after stop(); see ActivationEngine.
+    /// Installs the clock that stamps each frame with the host time of its audio. Set before
+    /// start(), cleared after stop(); see ActivationEngine.
     void setHostTimeSource(audio::HostTimeSource* source) noexcept;
 
     /// Clears everything, reseeds the filter, and starts both worker threads. Call
@@ -160,7 +160,7 @@ public:
     /// a status line or a UI that redraws on its own clock.
     tracking::TempoState state() const noexcept override { return state_.load(); }
 
-    /// the intensity and onset count, for the output thread's rules and the design's
+    /// The intensity and onset count, for the output thread's rules and the OSC address
     /// `/takt4/intensity`. See `EngineIntensity` for why it is published separately.
     EngineIntensity intensity() const noexcept override { return intensity_.load(); }
 
@@ -228,8 +228,8 @@ public:
         return worstFrameMicros_.load(std::memory_order_relaxed);
     }
     double meanFrameMicros() const noexcept;
-    /// Whether the inference thread got a raised priority when it started (an earlier review;
-    /// see rt/thread_priority.hpp), as the thread itself saw it. False before it has started.
+    /// Whether the inference thread got a raised priority when it started (see
+    /// rt/thread_priority.hpp), as the thread itself saw it. False before it has started.
     bool workerRaised() const noexcept { return workerRaised_.load(std::memory_order_acquire); }
 
 private:

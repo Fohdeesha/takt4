@@ -79,10 +79,10 @@ public:
     void addTarget(const TargetConfig& config);
 
     /// Replaces the nodes with `configs`, **keeping a node's sender and its pacing while its id
-    /// and its host and port are the same**. Rebuilding them all on every
-    /// output edit reset every clock and sequence number, so a dragged slider on another row
-    /// sent frames faster than the 44 Hz a node takes. Returns, for each config whose sender
-    /// could not be made, its bit and why.
+    /// and its host and port are the same**. Rebuilding them all on every output edit reset every
+    /// clock and sequence number, so a dragged slider on another row sent frames faster than the
+    /// 44 Hz a node takes. Returns, for each config whose sender could not be made, its bit and
+    /// why.
     ///
     /// **A node that goes — switched off, deleted, or pointed somewhere else — is sent every
     /// universe all zeros before it is let go**: its lights dark and its laser zones disarmed (the
@@ -126,12 +126,12 @@ public:
     double lagOf(std::size_t index) const noexcept;
 
     /// PANIC: the history is forgotten, so every node — delayed or not — is sent the lighting as
-    /// it is now, frozen. A node sent the lighting a second late
-    /// went on replaying the second of strobe and movement before the freeze, out of the
-    /// operator's reach, while the node beside it had stopped. From here the history holds the
-    /// frozen frame and nothing older, which the oldest-frame rule of `publish` sends a delayed
-    /// node until its delay has run on past the freeze — after RELEASE too, so what it is sent
-    /// then is the stillness and not what came before it.
+    /// it is now, frozen. A node sent the lighting a second late went on replaying the second of
+    /// strobe and movement before the freeze, out of the operator's reach, while the node beside
+    /// it had stopped. From here the history holds the frozen frame and nothing older, which the
+    /// oldest-frame rule of `publish` sends a delayed node until its delay has run on past the
+    /// freeze — after RELEASE too, so what it is sent then is the stillness and not what came
+    /// before it.
     void forgetHistory() noexcept;
 
     /// How finely the history is kept: a frame at most this often while a universe changes. A

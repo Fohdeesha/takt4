@@ -48,9 +48,9 @@ namespace takt4::ui {
 /// Everything the window needs that is not the window: the tracker behind it, the model
 /// behind its trace, and the one timer that drains the engine's rings.
 ///
-/// Nothing here is ever reached from the audio thread, which is the whole of the design
-/// the rule. The engine writes into lock-free rings from its own threads; this reads
-/// them on the UI thread, on a timer, and touches a Slint property nowhere else.
+/// Nothing here is ever reached from the audio thread, which is the whole of the threading rule
+/// for Slint. The engine writes into lock-free rings from its own threads; this reads them on
+/// the UI thread, on a timer, and touches a Slint property nowhere else.
 ///
 /// It is a header of its own rather than a class hidden in `app.cpp` so that
 /// `takt4_ui_tests` can drive it under Slint's testing backend: press the real button,
@@ -58,11 +58,11 @@ namespace takt4::ui {
 /// between a click and the tracker could only be checked by a person at the machine.
 class WindowController {
 public:
-    /// How often the window drains the engine's rings and redraws. the design: "Push audio-side
-    /// results through a lock-free ring and drain on a UI timer — do not queue one closure
-    /// per audio callback." 30 Hz is slower than the 50 Hz the frames arrive at, so every
-    /// tick finds one or two waiting and none is ever missed; the ring holds ten seconds
-    /// of them, so even a stalled event loop loses nothing.
+    /// How often the window drains the engine's rings and redraws. Audio-side results come
+    /// through a lock-free ring drained on a UI timer, never as one closure queued per audio
+    /// callback. 30 Hz is slower than the 50 Hz the frames arrive at, so every tick finds one
+    /// or two waiting and none is ever missed; the ring holds ten seconds of them, so even a
+    /// stalled event loop loses nothing.
     static constexpr std::chrono::milliseconds kRedrawInterval{33};
 
     /// How far the peak indicator falls back each tick — slow enough that a moment of
@@ -87,8 +87,8 @@ public:
     /// The tracker must outlive this. Builds the window, fills the pickers from the
     /// tracker's device list, and starts the redraw timer.
     ///
-    /// It also builds the output thread and hands the tracker Link's clock, which is
-    /// why nothing outside has to know the ordering the design needs: `LiveTracker::start`
+    /// It also builds the output thread and hands the tracker Link's clock, which is why
+    /// nothing outside has to know the ordering the clock needs: `LiveTracker::start`
     /// installs the clock before it opens the stream.
     ///
     /// `settings` is what the last run left behind: the interface and channel to
@@ -96,8 +96,8 @@ public:
     /// own tuning is not applied here — it belongs to the engine, and whoever built the
     /// `LiveTracker` passes it in `Options::engine::tempo`.
     ///
-    /// Two constructors rather than a default argument: the design records that
-    /// `const Settings& = {}` in a declaration compiles on MSVC and on nothing else.
+    /// Two constructors rather than a default argument: `const Settings& = {}` in a
+    /// declaration compiles on MSVC and on nothing else.
     WindowController(engine::LiveTracker& tracker, const settings::Settings& settings);
     explicit WindowController(engine::LiveTracker& tracker);
     /// Stops the tracker and takes Link's clock back off it — the clock is the runner's, and
@@ -150,9 +150,8 @@ public:
     void publishBeatDots(const tracking::TempoState& state);
     void toggleRun();
     /// START or STOP as the button presses it: says so on the button, lets the window draw
-    /// that, and then `toggleRun` — refusing another press until a moment after it is done
-    ///. `toggleRun` is the same thing at once, for a caller that is not a
-    /// hand on a button.
+    /// that, and then `toggleRun` — refusing another press until a moment after it is done.
+    /// `toggleRun` is the same thing at once, for a caller that is not a hand on a button.
     void requestToggleRun();
 
     /// Looks for input devices and MIDI ports again — the RESCAN button. Only while stopped:
@@ -173,7 +172,7 @@ public:
     /// stopped between attempts. It is what the START/STOP button shows.
     bool wantsRunning() const noexcept { return wantRunning_; }
 
-    /// the supervision of a running input, one look — what the redraw timer does each round.
+    /// The supervision of a running input, one look — what the redraw timer does each round.
     /// `reading` is the watchdog's and `events` the ASIO driver's, both handed in rather than
     /// read here so a test can deliver a dead input or a driver reset that nothing on this
     /// machine can produce. `now` is on `nowSeconds()`'s clock.
@@ -210,8 +209,8 @@ public:
     /// For the tests: the state `input` opening and then going silent at `now` leaves — running
     /// as far as the operator is concerned, the tracker stopped, an outage begun. Nothing on a
     /// test machine can be unplugged, and the tests' sandbox opens no device to go silent, so
-    /// this is the only way the outage's own path can be driven there (an earlier review,
-    /// H1). Every reopen it then tries fails the way a dead interface's does.
+    /// this is the only way the outage's own path can be driven there. Every reopen it then
+    /// tries fails the way a dead interface's does.
     void beginOutageOn(const engine::LiveTracker::Running& input, double now);
 
     /// Keeps the input supervised while a dialog, a menu or a message box holds this thread in
@@ -221,14 +220,14 @@ public:
     /// The clock every `now` here is on: seconds since the window was made.
     double secondsNow() const { return nowSeconds(); }
 
-    /// the manual controls. Each one posts on the engine's control queue and returns;
+    /// The manual controls. Each one posts on the engine's control queue and returns;
     /// the inference thread applies it before the next frame it tracks, so none of them
     /// blocks a redraw and none of them touches the tracker from this thread.
     void halve();
     void redouble();
     void snapDownbeat();
 
-    /// the lock, pinned rather than set. Takes the state being asked for rather than
+    /// The lock, pinned rather than set. Takes the state being asked for rather than
     /// toggling: the button already shows the current one, so sending the intention is
     /// what makes two quick presses land as two changes instead of reading the same
     /// not-yet-updated value twice.
@@ -240,7 +239,7 @@ public:
     void tap();
     void tap(double seconds);
 
-    /// the settings. Clamped to what the sliders offer, then posted whole — a slider
+    /// The tempo settings. Clamped to what the sliders offer, then posted whole — a slider
     /// sends an absolute value, so two arriving in one round cannot lose a step the way
     /// a relative nudge can.
     void setFoldEnabled(bool on);
@@ -312,15 +311,15 @@ public:
     bool linkPeersShown() const noexcept { return linkPeersShown_; }
 
     /// Folds a section of the window down to its heading, or opens it again — 0 is Inputs, 1 is
-    /// Outputs. **A fold takes the section's height off the window**, and the
-    /// trace keeps its height: the window gets shorter by what was folded — but never so short
-    /// that a folded heading, with the arrow that opens it again, is scrolled out of sight, nor
-    /// below the window's 420 px minimum. Opening the section gives back what its fold took. A
-    /// maximised or full-screen window is left the size it is. Folds are remembered in the
-    /// settings file, and a window opens folded as it was left, shorter by the same rule.
+    /// Outputs. **A fold takes the section's height off the window**, and the trace keeps its
+    /// height: the window gets shorter by what was folded — but never so short that a folded
+    /// heading, with the arrow that opens it again, is scrolled out of sight, nor below the
+    /// window's 420 px minimum. Opening the section gives back what its fold took. A maximised or
+    /// full-screen window is left the size it is. Folds are remembered in the settings file, and
+    /// a window opens folded as it was left, shorter by the same rule.
     void toggleFold(int section);
 
-    /// the targets, one row each — see `OutputRow`.
+    /// The output targets, one row each — see `OutputRow`.
     ///
     /// A row is two boxes and a switch, and the two boxes are edited a character at a time,
     /// so the two halves are separate: `editTarget` remembers what has been typed and
@@ -386,14 +385,14 @@ public:
     /// stays, first, as it was.
     void setOscTargets(const std::string& text);
 
-    /// the control input. The port is opened at once rather than at Start: an operator
+    /// The MIDI control input. The port is opened at once rather than at Start: an operator
     /// binding buttons is doing it *before* the set, and a learn mode that needs the
     /// tracker running would be a worse tool than a pen and paper.
     void setMidiControlPort(const std::string& name);
     /// The same, as an index into `midi-in-ports` — 0 being its "select input" entry.
     void pickMidiControlPort(int index);
 
-    /// the *other* control input: the OSC listening socket, so a Stream Deck or Bitfocus
+    /// The *other* control input: the OSC listening socket, so a Stream Deck or Bitfocus
     /// Companion can drive this without touching the laptop.
     ///
     /// Off until asked, like the MIDI port and for a stronger reason — a listening socket is
@@ -464,7 +463,7 @@ public:
     /// Unbinds every control bound to the selected action.
     void forgetLearned();
 
-    /// the rules, as this window has them.
+    /// The trigger rules, as this window has them.
     ///
     /// **The window's copy is the editable one and the runner's is the live one.** They are
     /// separate on purpose: the rules belong to the output thread, so reading them back
@@ -476,7 +475,7 @@ public:
     /// Replaces the set, hands it to the output thread, and reports what will not fire.
     void setRules(std::vector<trigger::Rule::Config> rules);
 
-    /// the rule editor, in its own window. Built with this one and shown on demand: an
+    /// The rule editor, in its own window. Built with this one and shown on demand: an
     /// operator who never writes a rule never sees it, and one who does keeps their place
     /// in it across opening and closing.
     RulesController& editor() noexcept { return editor_; }
@@ -502,12 +501,12 @@ public:
     /// Writes `text` to `name` under the temp directory and opens it: what the About box's two
     /// buttons do, the licence and the notices being built in. The file written, or empty.
     std::filesystem::path openEmbeddedText(const std::string& name, std::string_view text);
-    /// the PANIC from the main window's own row, so a halt never waits on a window.
+    /// PANIC from the main window's own row, so a halt never waits on a window.
     ///
-    /// **Engage only, and release is separate** — an earlier review. This was `togglePanic`, so a
-    /// double-click on PANIC, which is how a button gets hit in a hurry, halted the rig and let
-    /// it go again before anybody saw it light. Pressing PANIC while panicked does nothing now;
-    /// RELEASE, which appears beside it, is the only way back.
+    /// **Engage only, and release is separate.** This was `togglePanic`, so a double-click on
+    /// PANIC, which is how a button gets hit in a hurry, halted the rig and let it go again
+    /// before anybody saw it light. Pressing PANIC while panicked does nothing now; RELEASE,
+    /// which appears beside it, is the only way back.
     void engagePanic();
     void releasePanic();
 
@@ -540,10 +539,10 @@ public:
     ///
     /// **Because a crash, a power cut or Windows shutting down used to lose the whole
     /// session.** The file was written on a clean exit and on SAVE and at no other time, so a
-    /// rig built that afternoon lived only in memory until somebody remembered the button. The
-    /// review's C8. This checks about twice a second whether what would be written has changed,
-    /// and writes once it has stopped changing — so a slider drag is one save when it ends, not
-    /// sixty while it moves, and the file is never more than a few seconds behind the window.
+    /// rig built that afternoon lived only in memory until somebody remembered the button. This
+    /// checks about twice a second whether what would be written has changed, and writes once
+    /// it has stopped changing — so a slider drag is one save when it ends, not sixty while it
+    /// moves, and the file is never more than a few seconds behind the window.
     ///
     /// Off until called. `ui::run` switches it on for the real settings file, and nothing else
     /// does, so a test never writes beside its own executable.
@@ -561,12 +560,13 @@ public:
     /// damaged and what was done about it. On the status line, as an error.
     void showNotice(const std::string& text);
 
-    /// Load a file and apply **all of it** — the operator's call of 2026-10-03, over Q7: the
-    /// preset (the rules, the outputs with Link and the MIDI clocks among them, the lighting patch,
-    /// the fold window and the rest of `TempoTracker::Options`, the meters and the OSC prefix) and
-    /// the machine half (`applyMachine`: the input, the MIDI and OSC control, the folds). The
-    /// machine half only from a file that has one (`MachineSettings::inFile`). An input that is
-    /// not on this machine is still the one wanted, as at a launch that cannot find it.
+    /// Load a file and apply **all of it** — the operator's call of 2026-10-03, over the earlier
+    /// rule that the machine half does not travel: the preset (the rules, the outputs with Link
+    /// and the MIDI clocks among them, the lighting patch, the fold window and the rest of
+    /// `TempoTracker::Options`, the meters and the OSC prefix) and the machine half
+    /// (`applyMachine`: the input, the MIDI and OSC control, the folds). The machine half only
+    /// from a file that has one (`MachineSettings::inFile`). An input that is not on this machine
+    /// is still the one wanted, as at a launch that cannot find it.
     ///
     /// False only when the file could not be read as settings at all. Note that
     /// `settings::load` never fails, so this reports on the file existing and parsing rather
@@ -715,7 +715,7 @@ private:
     /// The drafts into the window's model. Never called from `editTarget`: replacing a row
     /// re-evaluates the `text:` binding of the box being typed into.
     void publishTargetRows();
-    /// Both of the surfaces. Each half publishes independently, because the MIDI half
+    /// Both control surfaces. Each half publishes independently, because the MIDI half
     /// returns early when no port is open and anything written after that return would
     /// never run on a window that has only the OSC socket.
     void publishTriggers();
@@ -794,8 +794,7 @@ private:
     /// The status line itself, and nothing else.
     void showStatus(const std::string& text, bool error);
     /// Puts `text` on the status line as what the window met starting, and holds it there for
-    /// `kStartupHoldSeconds` against what the window finds out on its own (an earlier review of
-    /// 2026-09-25, M13).
+    /// `kStartupHoldSeconds` against what the window finds out on its own.
     void holdStartupMessage(const std::string& text);
     /// What the window finds out on its own — an output that cannot be reached, a MIDI device
     /// gone. Joins the startup message while that is held, rather than replacing it.
@@ -814,8 +813,8 @@ private:
     /// The MIDI outputs this machine has.
     std::vector<std::string> midiPorts_;
     /// What a row's device dropdown lists after its "select" entry: `midiPorts_`, then every
-    /// device a row names that this machine has not, shown as not plugged in (an earlier review of
-    /// 2026-09-25, L32). What a row's `device_index` indexes, less one.
+    /// device a row names that this machine has not, shown as not plugged in. What a row's
+    /// `device_index` indexes, less one.
     std::vector<std::string> deviceNames_;
     /// An output row's ×: a double-click on it is one deletion (`DeleteGuard`).
     DeleteGuard outputMarks_;
@@ -851,9 +850,8 @@ private:
     settings::MachineSettings remembered_;
     /// The remembered interface was not on the machine when the list was read, so another was
     /// selected. **Saving that one as if it had been chosen** meant a launch before the MOTU
-    /// was powered on made the next show open on the wrong device at channel 1 (an earlier review
-    /// H11). While this holds and the operator has not picked anything, the remembered one is
-    /// what gets saved.
+    /// was powered on made the next show open on the wrong device at channel 1. While this
+    /// holds and the operator has not picked anything, the remembered one is what gets saved.
     bool deviceFallback_ = false;
     /// The operator picked a device or a channel from the pickers this session.
     bool deviceChosen_ = false;
@@ -876,9 +874,8 @@ private:
     timing::GridSource* runningSource_ = nullptr;
     /// The followed beats of the last four seconds, newest last — what the timing plot draws.
     std::deque<timing::ExternalBeats::DisplayBeat> shownBeats_;
-    /// OSC control asked for — by the settings or by its switch — whether or not its port
-    /// bound. Saved as it is, so a port that was taken at one launch is still wanted at the
-    /// next.
+    /// OSC control asked for — by the settings or by its switch — whether or not its port bound.
+    /// Saved as it is, so a port that was taken at one launch is still wanted at the next.
     bool oscControlWanted_ = false;
     /// Why OSC control, asked for, is not listening — the port's own reason, in words — or
     /// empty. Shown on its line for as long as it is true, and tried again every
@@ -918,7 +915,7 @@ private:
     output::OutputRunner::Snapshot snapshot_;
     std::uint64_t snapshotShown_ = 0;
 
-    /// the watch on the running input. See `superviseInput`.
+    /// The watch on the running input. See `superviseInput`.
     audio::InputWatchdog watchdog_;
     bool wantRunning_ = false;
     /// What was opened, for reopening the same device and channel by name.
@@ -929,8 +926,7 @@ private:
         double nextTry = 0.0;
         int tries = 0;
         std::string why;
-        /// The input is open again and has not yet sent anything. It is not back until it has
-        ///.
+        /// The input is open again and has not yet sent anything. It is not back until it has.
         bool reopened = false;
         /// What is with the driver now — a rescan, then an open — asked after at each tick,
         /// never waited for.
@@ -952,8 +948,8 @@ private:
     std::string startupMessage_;
     double startupHeldUntil_ = -1.0;
     /// A loopback input that has gone quiet: nothing is playing on the output it captures, which
-    /// is not a fault to reopen (the operator's call on an earlier review, Q4). Said once,
-    /// and cleared when sound comes back.
+    /// is not a fault to reopen (the operator's call of 2026-09-26). Said once, and cleared when
+    /// sound comes back.
     bool nothingPlaying_ = false;
     /// When PortAudio last looked for devices during an outage; negative before that.
     double rescannedAt_ = -1.0;
@@ -1014,7 +1010,7 @@ private:
     /// network's frames to be drawn on. See `EngineFrame::interpolated`.
     bool traceBeatPending_ = false;
 
-    /// the targets **as they are being typed**, which is not the same list as the one
+    /// The output targets **as they are being typed**, which is not the same list as the one
     /// behind `Transports`: a row half-way through an address is not a target yet, and an
     /// empty row is a place to type rather than an output that sends nowhere. This is the
     /// window's copy and the one the rows are drawn from; `applyTargets` is what turns it
@@ -1024,9 +1020,9 @@ private:
     // redesign (2026-09-29) the rows were std widgets, and a std LineEdit typed into, a ComboBox
     // picked from and a CheckBox clicked each set their own value, dropping their binding to the
     // row — so this class kept what each row showed and rebuilt any row that had drifted from its
-    // data. The rows are weltformat.slint's own widgets
-    // now, none of which ever sets its own value: each shows its row whatever happens to the
-    // rows, and a rebuild would only take away the element somebody is holding.
+    // data. The rows are weltformat.slint's own widgets now, none of which ever sets its own
+    // value: each shows its row whatever happens to the rows, and a rebuild would only take away
+    // the element somebody is holding.
     /// A row's boxes have keystrokes in them that `applyTargets` has not applied yet — kept in
     /// `targetDrafts_` as they are typed, and applied on Enter, on a click away, or at the start
     /// of anything that reads or reshapes the list (`applyDrafts`).
@@ -1167,12 +1163,12 @@ private:
     std::chrono::steady_clock::time_point startedAt_ = std::chrono::steady_clock::now();
 
     /// The tracker's beat count when a downbeat snap was posted, while one is still in
-    /// flight. the snap lands on the *next* beat called, so the count moving is what
+    /// flight. The snap lands on the *next* beat called, so the count moving is what
     /// says it has arrived — and until then the DOWNBEAT button stays lit, because a
     /// control that does nothing visible for the best part of a second reads as broken.
     std::optional<std::uint64_t> snapAwaitingBeat_;
 
-    /// the rules as this window has them; see `rules()`.
+    /// The rules as this window has them; see `rules()`.
     std::vector<trigger::Rule::Config> rules_;
     /// How many of them are active, counted whenever they or where the beats come from change; and
     /// how many, switched on, need the audio and will not fire while a source is followed. See
@@ -1194,7 +1190,7 @@ private:
     std::optional<tracking::Decoder> pendingDecoder_;
     std::optional<std::string> pendingPrefix_;
 
-    /// the control input. Which action LEARN would bind, as an index into
+    /// The MIDI control input. Which action LEARN would bind, as an index into
     /// `learnActions_`; the binding table itself lives in `control_`.
     int learnAction_ = 0;
     /// The actions this window offers for binding: `control::kControlActions` minus the
@@ -1221,7 +1217,7 @@ private:
     remote::CommandQueue remoteCommands_;
     remote::LogQueue remoteLog_;
 
-    /// the output thread, and the single consumer of the source's beat ring — which is
+    /// The output thread, and the single consumer of the source's beat ring — which is
     /// why `tick()` no longer drains it.
     ///
     /// Its destructor joins the thread, and that has to happen before anything the thread
@@ -1271,8 +1267,8 @@ private:
     std::vector<std::uint8_t> cdjFollowNumbers_;
     std::vector<std::string> cdjFollowWords_;
 
-    /// the two control surfaces. **Both after `runner_`, so both are destroyed first**,
-    /// and that ordering is load-bearing rather than a preference: since the `panic` and
+    /// The two control surfaces. **Both after `runner_`, so both are destroyed first**,
+    /// and that ordering is load-bearing rather than a preference: since their `panic` and
     /// `rule/<id>/enable` landed, each of these posts to the *runner* as well as to the
     /// engine — MIDI on RtMidi's callback thread, OSC on its own receive loop. Destroying
     /// the runner first would leave either thread with a queue that has gone. The engine
@@ -1285,7 +1281,7 @@ private:
     control::MidiControl control_;
     control::OscControl oscControl_;
 
-    /// the editor. **After the two surfaces**, so it is destroyed before them and long
+    /// The rule editor. **After the two surfaces**, so it is destroyed before them and long
     /// before `runner_` — it posts to the runner like they do, though only from this thread.
     RulesController editor_;
     /// The lighting patch editor, built with the window and shown on demand — the same shape

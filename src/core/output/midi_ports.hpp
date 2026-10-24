@@ -51,7 +51,7 @@ std::vector<MidiApiInfo> compiledMidiApis();
 /// that case is indistinguishable here from "no ports", which is acceptable for a listing.
 std::vector<std::string> listMidiOutputPorts();
 
-/// The same for input ports, which the learn mode needs. Same caveat: empty means
+/// The same for input ports, which the MIDI learn mode needs. Same caveat: empty means
 /// either no ports or no usable API, and a listing cannot tell those apart.
 std::vector<std::string> listMidiInputPorts();
 
@@ -62,8 +62,7 @@ std::vector<std::string> listMidiInputPorts();
 std::string_view midiPortBaseName(std::string_view name) noexcept;
 
 /// Which of `names` a port specification means — how an output, a MIDI clock and the control
-/// input all find their port, first time and every reconnect after (an earlier review,
-/// C1). In order:
+/// input all find their port, first time and every reconnect after. In order:
 ///
 /// 1. A number is an index into the list.
 /// 2. The exact name.

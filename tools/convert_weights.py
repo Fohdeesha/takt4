@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Turn BeatNet+'s published .pt weight sets into the blobs takt4 loads.
 
-the design Phase 3. The three weight files live in the BeatNet+ repository, which is
-not vendored here — clone it somewhere outside git (references/ is excluded for exactly
-this) and point the script at the models directory:
+The three weight files live in the BeatNet+ repository, which is not vendored here —
+clone it somewhere outside git (references/ is excluded for exactly this) and point the
+script at the models directory:
 
     git clone https://github.com/mjhydri/BeatNet-Plus references/beatnet-plus
     git -C references/beatnet-plus checkout bb90eb0a9065b101a4b4c4cb2b2061950266cb4b
@@ -13,12 +13,12 @@ For each of the three it writes assets/weights/<name>.bin — the parameters, fl
 little-endian, in the order src/core/model/weights.cpp reads them — and <name>.json
 recording where they came from. Both are committed; the .pt files are not.
 
-The deliberate deviation from the design, which asks for "3 x RTNeural JSON": these are flat
-binary. RTNeural's JSON for one 767,125-parameter set is about 15 MB of text that has
-to be parsed at startup, and a generated C++ table of the same numbers is about 11 MB
-of source per set. The blob is 3.07 MB, is read once when a model is created — never on
-the audio path, which is what the design actually requires — and carries a header the loader
-checks, so a mismatched or truncated file is a clean error rather than a wrong model.
+Deliberately not RTNeural's JSON: these are flat binary. RTNeural's JSON for one
+767,125-parameter set is about 15 MB of text that has to be parsed at startup, and a
+generated C++ table of the same numbers is about 11 MB of source per set. The blob is
+3.07 MB, is read once when a model is created — never on the audio path, which is what
+is actually required — and carries a header the loader checks, so a mismatched or
+truncated file is a clean error rather than a wrong model.
 
 Nothing is rewritten on the way through: the numbers land in the file exactly as
 PyTorch stores them, gate order included, and src/core/model/ does the transposing

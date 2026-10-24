@@ -63,7 +63,7 @@ def run(cli: Path, wav: Path, tag: str, extra):
     trace = TAKT4 / f"{wav.stem}.{tag}.trace"
     beats = TAKT4 / f"{wav.stem}.{tag}.beats"
     # Gone before the run, not overwritten by it: a run that fails partway, or never starts,
-    # must leave nothing that gate.py could score as this build's. an earlier review found exactly
+    # must leave nothing that gate.py could score as this build's. It used to do exactly
     # that — a failed run left the last build's files in place, the script exited 0, and the
     # gate reported every value identical.
     trace.unlink(missing_ok=True)

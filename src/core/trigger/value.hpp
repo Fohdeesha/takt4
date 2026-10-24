@@ -8,16 +8,16 @@
 
 namespace takt4::trigger {
 
-/// One value a rule sends — the *"Fixed | Literal int, float, string or bool"*,
-/// and what every other generator produces too.
+/// One value a rule sends — what the `Fixed` generator holds, a literal int, float, string or
+/// bool, and what every other generator produces too.
 ///
 /// Four kinds, because that is what the two transports underneath can carry between them:
 /// OSC 1.0 as `output::OscMessage` encodes it (int32, float32, string) and MIDI note and CC
-/// numbers (int). A bool is carried as an int by both and kept separate here only so a UI
-/// can offer a checkbox and a settings file can say `true` — the design lists it, so it exists.
+/// numbers (int). A bool is carried as an int by both and kept separate here only so a UI can
+/// offer a checkbox and a settings file can say `true` — a literal may be a bool, so it exists.
 ///
 /// **Nothing here allocates**, which is why the text case is a fixed buffer rather than a
-/// `std::string`. The output thread is allowed to allocate (the design forbids it only on the
+/// `std::string`. The output thread is allowed to allocate (it is forbidden only on the
 /// audio thread), so this is not a correctness requirement — but a value is copied for
 /// every segment of every address of every rule that fires, and a rule firing on every beat
 /// at 214 BPM is 3.6 of these a second per segment. Text longer than `kTextCapacity` is

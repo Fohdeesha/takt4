@@ -93,10 +93,10 @@ void RulesController::pickSlotKind(int slot, int kind) {
 
     // **A color switched to shuffle gets a palette, not a range.**
     //
-    // `Generator::Config` draws from the integers 1 to 8 by default, which is the own
-    // reading and right for a clip index. On a color it is nonsense in both directions: the
-    // draws are numbers `dmx::parseColor` cannot read, so every fire fell back to white, and
-    // the editor drew a box saying "1 - 8" over a generator whose values are `#ff2040`.
+    // `Generator::Config` draws from the integers 1 to 8 by default, which is right for a clip
+    // index. On a color it is nonsense in both directions: the draws are numbers `dmx::parseColor`
+    // cannot read, so every fire fell back to white, and the editor drew a box saying "1 - 8" over
+    // a generator whose values are `#ff2040`.
     // Reported from a rig on 2026-09-16: *"I define a range 1-9 which maps to what!? it just
     // stays the same #ffff color code"*.
     //
@@ -130,7 +130,7 @@ void RulesController::pickSlotKind(int slot, int kind) {
     }
     // **A kind is not a number.** Picking "shuffle" on a MIDI number nobody had chosen marked it
     // chosen and armed the rule over the generator's default range, so it fired CC 1 to 8 at
-    // 100 before a range was typed — C7 through another door. The
+    // 100 before a range was typed — a number nobody chose, going out through another door. The
     // number is chosen when its numbers are entered; a live value's are its source's.
     if (picked == GeneratorKind::Live) {
         choseSlot(slot);
@@ -156,8 +156,8 @@ void RulesController::setSlotPool(int slot, bool list) {
             }
         }
     }
-    // Nor is the tick a number: a list seeded from the default range is not one anybody chose
-    //. Entering it is.
+    // Nor is the tick a number: a list seeded from the default range is not one anybody chose.
+    // Entering it is.
     commit();
 }
 
@@ -374,8 +374,7 @@ void RulesController::setSlotFixed(int slot, const std::string& text) {
     config->fixed = value;
     // Typed, so a color's sliders follow what was typed, as the palette's do (`setPaletteHex`):
     // held, they kept the saturation and brightness the picker was last left at, and a hex
-    // typed under them came back on the next drag as something else (an earlier review,
-    // L14).
+    // typed under them came back on the next drag as something else.
     pickedColors_.erase(slot);
     choseSlot(slot);
     commit();
@@ -434,8 +433,8 @@ void RulesController::previewColor(dmx::Color color) {
     if (rule == nullptr || rule->sendKind != trigger::Message::Kind::Dmx) {
         return;
     }
-    // And none while PANIC is engaged — the runner drops it then, so the
-    // editor says why the fixtures are not following the picker.
+    // And none while PANIC is engaged — the runner drops it then, so the editor says why the
+    // fixtures are not following the picker.
     if (runner_.panicked()) {
         setStatus("PANIC is engaged, so the preview is not sent to the lights. Press RELEASE, "
                   "above the preset menu, first.",
@@ -556,8 +555,7 @@ void RulesController::removePaletteColor(int index) {
     // **No picker is open now**, whichever swatch this was. REMOVE is inside the picker and
     // closes it first, and any other click would have closed an open one on its way in. The
     // swatch's own watcher says so for every swatch but the last: the last one's element goes
-    // at once, the watcher with it, and the editor held every rebuild for good (an earlier review of
-    // 2026-09-25, M20).
+    // at once, the watcher with it, and the editor held every rebuild for good.
     pickerOpen_ = false;
     commit();
     publishSelected();
