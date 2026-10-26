@@ -70,9 +70,9 @@ struct Status {
     bool locked = false;
     /// Running, and no lock: the tracker searching, or the source not there yet.
     bool hunting = false;
-    /// The word the window's tempo panel says the state in: "stopped", "hunting", "locked",
-    /// "holding", "no signal", "no audio"; following, "following", "coasting", "waiting" or what
-    /// the source is waiting for.
+    /// The word the window's tempo panel says the state in: "stopped", "no beat" (heard nothing
+    /// with a beat in it yet, so no lock is taken), "hunting", "locked", "holding", "no signal",
+    /// "no audio"; following, "following", "coasting", "waiting" or what the source is waiting for.
     std::string state;
     double confidence = 0.0;
     double bpm = 0.0;

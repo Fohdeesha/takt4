@@ -226,6 +226,8 @@ add_library(takt4_core STATIC
   tracking/forward_filter.hpp
   tracking/particle_filter.cpp
   tracking/particle_filter.hpp
+  tracking/pulse_gate.cpp
+  tracking/pulse_gate.hpp
   tracking/random.hpp
   tracking/state_space.cpp
   tracking/state_space.hpp

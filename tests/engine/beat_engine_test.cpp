@@ -74,6 +74,15 @@ std::unique_ptr<BeatEngine> makeParticleEngine(BeatEngine::Options options = {})
     return makeEngine(options);
 }
 
+/// Whether `bpm` is synthetic.wav's 128.4 as the tracker counts a tempo the same
+/// (`TempoTracker::Options::sameTempoTolerance`). The number a first lock shows is what the hunt
+/// agreed on at that moment, a whole-frame interval or so either side of the music's — 130.9 when
+/// the lock came at 1.9 s, 123.5 since it waits for a beat to be heard, at 2.8 — and the beats'
+/// own spacing takes it to 128.4 a beat or two later.
+bool onTheDrumMachine(double bpm) {
+    return std::abs(bpm / 128.4 - 1.0) <= takt4::tracking::TempoTracker::Options{}.sameTempoTolerance;
+}
+
 } // namespace
 
 TEST_CASE("presses made while the tracker is stopped do not land on the next run",
@@ -359,14 +368,21 @@ TEST_CASE("the engine gives what composing the parts by hand gives", "[engine]")
     }
     REQUIRE(viaEngine.size() == hops - 1);
 
-    // The same activations through a filter and a tracker built the same way.
+    // The same activations through a filter, a pulse gate and a tracker built the same way. The
+    // particle filter runs at the network's rate, so every frame is a real one and its period is
+    // in the gate's frames already.
     takt4::tracking::ParticleFilter filter(stateSpace());
+    takt4::tracking::PulseGate pulse;
     takt4::tracking::TempoTracker tempo(stateSpace().secondsPerFrame());
     for (const EngineFrame& frame : viaEngine) {
         const takt4::tracking::TrackedFrame tracked =
             filter.process(frame.activation.beat, frame.activation.downbeat);
+        pulse.push(frame.activation.beat, frame.activation.downbeat,
+                   static_cast<double>(tracked.intervalFrames));
+        tempo.setWaitingForPulse(!pulse.open());
         const std::optional<takt4::tracking::BeatEvent> event = tempo.process(tracked);
         INFO("frame " << frame.activation.frameIndex);
+        REQUIRE(pulse.open() == frame.pulseHeard);
         REQUIRE(tracked.gathering == frame.tracked.gathering);
         REQUIRE(tracked.downMax == frame.tracked.downMax);
         REQUIRE(tracked.emitted == frame.tracked.emitted);
@@ -615,7 +631,7 @@ TEST_CASE("halving and doubling reach a tracking engine without dropping the loc
     REQUIRE(h < hops);
     const std::uint64_t beatsBefore = engine->state().beats;
     const double shown = engine->state().bpm;
-    CHECK(shown == Approx(128.0).margin(4.0));
+    CHECK(onTheDrumMachine(shown));
 
     // Nothing is pending, so this step tracks no frame at all — it only applies the
     // command, which is how a button pressed during a silence still does something.
@@ -769,7 +785,7 @@ TEST_CASE("under the forward filter a tap is a prior, and the number stays with 
         (void)engine->step();
     }
     REQUIRE(engine->state().locked);
-    REQUIRE(engine->state().bpm == Approx(128.0).margin(4.0));
+    REQUIRE(onTheDrumMachine(engine->state().bpm));
 
     REQUIRE(engine->post(Command::seedTempo(64.0)));
     CHECK(engine->step() == 0);
@@ -1075,10 +1091,10 @@ TEST_CASE("a pin pressed before the lock holds nothing until the lock arrives",
         }
     }
     CHECK(heldAtLock);
-    // The first lock on this track is a whole-frame interval, 130.9 — the hold keeps one
-    // interval either side of it, which still has 128 in it, so the tracker stays on the music
-    // under the pin rather than being dragged off it.
-    CHECK(forward->heldBpm() == Approx(128.0).margin(4.0));
+    // The first lock on this track is the hunt's number of that moment (`onTheDrumMachine`), and
+    // the hold taken on it still lets the decoder reach the music's 128.4: the tracker stays on
+    // the music under the pin rather than being dragged off it.
+    CHECK(onTheDrumMachine(forward->heldBpm()));
     CHECK(engine->state().bpm == Approx(128.0).margin(2.0));
     CHECK(engine->state().locked);
 }
@@ -1105,7 +1121,7 @@ TEST_CASE("a window moved out from under a pinned lock lets the decoder's hold g
     REQUIRE(engine->state().locked);
     REQUIRE(engine->post(Command::setLockPinned(true)));
     (void)engine->step();
-    REQUIRE(forward->heldBpm() == Approx(128.0).margin(4.0));
+    REQUIRE(onTheDrumMachine(forward->heldBpm()));
 
     // A window an octave up: 128 is outside it.
     takt4::tracking::TempoTracker::Options moved = engine->tempoOptions();
@@ -1408,9 +1424,183 @@ TEST_CASE("digital silence and a noise floor call no beat and earn no lock", "[e
     CHECK(state.noSignal);   // twelve seconds is past the four that say so
 }
 
+namespace {
+
+/// `seconds` of sound with no beat in it, at -12 dBFS RMS: loud, as an intro, a pad or a crowd is
+/// through a mixer. Deterministic, from a fixed seed, the same on every compiler.
+enum class Beatless { PinkNoise, HeldChord, SwellingPad, RandomKnocks };
+
+std::vector<float> beatless(Beatless kind, double seconds) {
+    const double rate = takt4::audio::kInternalSampleRate;
+    std::vector<double> out(static_cast<std::size_t>(seconds * rate));
+    std::uint32_t state = 2463534242U;
+    const auto uniform = [&state] {
+        state ^= state << 13U;
+        state ^= state >> 17U;
+        state ^= state << 5U;
+        return static_cast<double>(state) / 4294967295.0 * 2.0 - 1.0;
+    };
+    // A saw chord: C, E, G and the octave, each a sum of its first dozen partials.
+    const auto chord = [&](std::size_t i) {
+        const double t = static_cast<double>(i) / rate;
+        double sum = 0.0;
+        for (const double f : {130.81, 164.81, 196.0, 261.63}) {
+            for (int k = 1; k <= 12; ++k) {
+                sum += std::sin(2.0 * 3.141592653589793 * f * k * t) / k;
+            }
+        }
+        return sum;
+    };
+    switch (kind) {
+    case Beatless::PinkNoise: {
+        // Paul Kellet's economy filter: white noise to within a decibel of pink.
+        double b0 = 0.0;
+        double b1 = 0.0;
+        double b2 = 0.0;
+        for (double& sample : out) {
+            const double white = uniform();
+            b0 = 0.99765 * b0 + white * 0.0990460;
+            b1 = 0.96300 * b1 + white * 0.2965164;
+            b2 = 0.57000 * b2 + white * 1.0526913;
+            sample = b0 + b1 + b2 + white * 0.1848;
+        }
+        break;
+    }
+    case Beatless::HeldChord:
+        for (std::size_t i = 0; i < out.size(); ++i) {
+            out[i] = chord(i);
+        }
+        break;
+    case Beatless::SwellingPad:
+        for (std::size_t i = 0; i < out.size(); ++i) {
+            const double t = static_cast<double>(i) / rate;
+            out[i] = chord(i) * (0.6 + 0.4 * std::sin(2.0 * 3.141592653589793 * 0.2 * t));
+        }
+        break;
+    case Beatless::RandomKnocks: {
+        // Bursts of noise two a second on average, at times nothing predicts.
+        const auto decay = static_cast<std::size_t>(0.08 * rate);
+        for (std::size_t i = 0; i < out.size(); ++i) {
+            if ((uniform() + 1.0) / 2.0 < 2.0 / rate) {
+                const double gain = 0.5 + 0.25 * (uniform() + 1.0);
+                for (std::size_t k = 0; k < 6 * decay && i + k < out.size(); ++k) {
+                    out[i + k] += gain * uniform() *
+                                  std::exp(-static_cast<double>(k) / static_cast<double>(decay));
+                }
+            }
+        }
+        break;
+    }
+    }
+    double mean = 0.0;
+    for (const double sample : out) {
+        mean += sample;
+    }
+    mean /= static_cast<double>(out.size());
+    double power = 0.0;
+    for (const double sample : out) {
+        power += (sample - mean) * (sample - mean);
+    }
+    const double gain = std::pow(10.0, -12.0 / 20.0) / std::sqrt(power / static_cast<double>(out.size()));
+    std::vector<float> signal(out.size());
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        signal[i] = static_cast<float>(std::clamp((out[i] - mean) * gain, -1.0, 1.0));
+    }
+    // Whole hops, as the engine is fed.
+    signal.resize(signal.size() / kHopSize * kHopSize);
+    return signal;
+}
+
+const char* nameOf(Beatless kind) {
+    switch (kind) {
+    case Beatless::PinkNoise:
+        return "pink noise";
+    case Beatless::HeldChord:
+        return "a held chord";
+    case Beatless::SwellingPad:
+        return "a swelling pad";
+    case Beatless::RandomKnocks:
+        return "knocks at random times";
+    }
+    return "";
+}
+
+} // namespace
+
+TEST_CASE("loud sound with no beat in it earns no lock, and fires nothing", "[engine][shipped]") {
+    // The network answers "beat" to anything with movement in it, and the tracker used to lock on
+    // noise and knocks within seconds — and a lock fires the rig. Now a first lock waits for a beat
+    // (`tracking::PulseGate`). With the wait switched off the noise and the knocks do lock, which
+    // is what says the wait is what holds them; the chord and the pad are not locked on by the
+    // settings that ship even then (measured), and are here to keep it that way.
+    const Beatless kind = GENERATE(Beatless::PinkNoise, Beatless::HeldChord, Beatless::SwellingPad,
+                                   Beatless::RandomKnocks);
+    INFO(nameOf(kind));
+    const std::vector<float> sound = beatless(kind, 20.0);
+
+    const std::unique_ptr<BeatEngine> engine = makeShippedEngine();
+    const std::vector<EngineBeat> beats = trackShipped(*engine, sound);
+    takt4::tracking::TempoState state = engine->state();
+    CHECK_FALSE(state.locked);
+    CHECK_FALSE(state.acquired);
+    CHECK(state.waitingForPulse);
+    CHECK_FALSE(state.noSignal); // loud, so not mistaken for no signal
+    // Beats are called — the decoder hears plenty — but none would have fired anything.
+    std::size_t fired = 0;
+    for (const EngineBeat& beat : beats) {
+        fired += beat.event.acquired ? 1U : 0U;
+    }
+    CHECK(fired == 0);
+
+    BeatEngine::Options eager;
+    const takt4::settings::Settings fresh;
+    eager.tempo = fresh.preset.tempo;
+    eager.decoder = fresh.preset.decoder;
+    eager.forward.meters = fresh.preset.meters;
+    eager.waitForPulse = false;
+    static const ModelWeights electronic = ModelWeights::fromFile(kWeightsDir / "electronic.bin");
+    BeatEngine unwaiting(electronic, stateSpace(), eager);
+    (void)trackShipped(unwaiting, sound);
+    state = unwaiting.state();
+    CHECK_FALSE(state.waitingForPulse);
+    if (kind == Beatless::PinkNoise || kind == Beatless::RandomKnocks) {
+        CHECK(state.acquired);
+    }
+}
+
+TEST_CASE("a tap or a DOWNBEAT press says there is a beat, and the lock no longer waits for one",
+          "[engine][shipped]") {
+    // A person can hear a beat the gate has not found yet — a busy record whose activation never
+    // falls between its beats — and has no other way to say so. On knocks, which the tracker
+    // locks on as soon as nothing holds it.
+    const bool tap = GENERATE(true, false);
+    INFO((tap ? "a tap" : "a DOWNBEAT press"));
+    const std::vector<float> sound = beatless(Beatless::RandomKnocks, 20.0);
+    const std::unique_ptr<BeatEngine> engine = makeShippedEngine();
+    const std::size_t hops = sound.size() / kHopSize;
+    EngineFrame frame;
+    EngineBeat beat;
+    for (std::size_t h = 0; h < hops; ++h) {
+        if (h == hops / 2) {
+            REQUIRE(engine->state().waitingForPulse);
+            REQUIRE_FALSE(engine->state().acquired);
+            REQUIRE(engine->post(tap ? Command::seedTempo(120.0) : Command::snapDownbeat()));
+        }
+        engine->processHop(sound.data() + h * kHopSize, h);
+        (void)engine->step();
+        while (engine->popFrame(frame)) {
+        }
+        while (engine->popBeat(beat)) {
+        }
+    }
+    const takt4::tracking::TempoState state = engine->state();
+    CHECK_FALSE(state.waitingForPulse);
+    CHECK(state.acquired);
+}
+
 TEST_CASE("when the music stops the beat carries on, then stops, and the lock goes",
           "[engine][shipped]") {
-    // The operator's call of 2026-10-03: beats go on through any breakdown that has sound, and
+    // Beats go on through any breakdown that has sound, and
     // stop after a few seconds of none. Before, they went on for as long as the silence lasted,
     // locked, at the tempo of a deck that had stopped.
     const std::vector<float> music = excerpt("pirates.wav");

@@ -93,6 +93,7 @@ add_executable(takt4_tests
   tracking/annotation_test.cpp
   tracking/forward_filter_test.cpp
   tracking/particle_filter_test.cpp
+  tracking/pulse_gate_test.cpp
   tracking/state_space_test.cpp
   tracking/tap_tempo_test.cpp
   tracking/tempo_tracker_test.cpp

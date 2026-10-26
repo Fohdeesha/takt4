@@ -991,14 +991,15 @@ void TempoTracker::updateLock(double folded) noexcept {
         needed = std::clamp(lockHeld_ / kDefenceShare, lockAfter_, relockAfter_);
     }
     // And whatever the agreement, only a tempo the decoder is calling beats at: Options::lockBeats.
-    if (agreeing_ >= needed && beatsAtTempo()) {
+    // And only once something with a pulse has been heard: see `setWaitingForPulse`.
+    if (agreeing_ >= needed && beatsAtTempo() && !state_.waitingForPulse) {
         takeLock(replacing, nextRecord);
     }
 }
 
 void TempoTracker::takeLock(bool replacing, bool nextRecord) noexcept {
     // The operator's octave shift goes with the record it was for, unless they asked for it to
-    // stay — the operator's call on 2026-09-23. A different tempo taking the lock is the next
+    // stay. A different tempo taking the lock is the next
     // record of the set, and a ÷2 that fitted the last one halved this one with its beats
     // divided until somebody pressed ×2. A tap's shift always goes: it named the last record's
     // tempo, not an octave for the rest of the night. The candidate was agreed with under the

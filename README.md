@@ -18,7 +18,7 @@ From the **[latest release](https://github.com/Fohdeesha/takt4/releases/latest)*
 ## Quick start
 
 1. Pick your device and input channels at the top (a stereo pair; tick **mono** if you have one input). Click **start**
-2. Give it a few bars. It says **locked** when it's sure, and nothing goes out to the rig until then
+2. Give it a few bars. It says **locked** when it's sure, and nothing goes out to the rig until then. Until it hears a beat it says **no beat**, so an intro, a pad, a crowd or someone talking doesn't set anything off. A busy track can keep it there a few seconds longer: **tap** or **downbeat** tells it there is a beat
 3. Under **outputs**, tick **Link**, or click **add output** and pick its **protocol**: OSC, MIDI, MIDI clock or Art-Net (DMX)
 4. In the **triggers** row, click **add a rule**. Pick a ready-made set from **select a preset**, or build your own.
 

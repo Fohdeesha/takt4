@@ -11,6 +11,7 @@
 #include "core/tracking/beat_decoder.hpp"
 #include "core/tracking/forward_filter.hpp"
 #include "core/tracking/particle_filter.hpp"
+#include "core/tracking/pulse_gate.hpp"
 #include "core/tracking/state_space.hpp"
 #include "core/tracking/tempo_tracker.hpp"
 
@@ -42,6 +43,14 @@ struct EngineFrame {
     /// trace drawn at the network's rate skips these — and carries `beat` forward if one
     /// landed here, because the beat is real even though the activation is interpolated.
     bool interpolated = false;
+    /// The pulse gate's (`tracking::PulseGate`): whether it has heard a beat, and its last
+    /// judgement's numbers, for a trace.
+    bool pulseHeard = false;
+    double pulseSpread = 0.0;
+    double pulseRepeat = -1.0;
+    double pulseFloor = 0.0;
+    double pulseTwice = 0.0;
+    double pulseBar = 0.0;
 };
 
 /// The inference thread, and the thing both the UI and the console drive.
@@ -115,6 +124,12 @@ public:
         /// does through a breakdown.
         double noSignalBelowDb = -60.0;
         double noSignalSeconds = 4.0;
+
+        /// **A first lock waits for a beat** (`tracking::PulseGate`): after START, and after no
+        /// signal, the tracker takes no lock until the network's activation shows one — or a tap
+        /// or a DOWNBEAT press says there is one. Off, it locks on whatever the decoder agrees
+        /// with itself about, noise and a voice included — for measuring what the wait costs.
+        bool waitForPulse = true;
     };
 
     /// The weights are copied in; the state space is not, and must outlive the engine.
@@ -262,6 +277,11 @@ private:
     /// Only the inference thread touches these.
     std::uint64_t quietFrames_ = 0;
     bool noSignal_ = false;
+    /// Whether a pulse has been heard; fed the network's frames only. See `Options::waitForPulse`.
+    tracking::PulseGate pulse_;
+    bool waitForPulse_ = true;
+    /// The decoder's beat period is in its own frames; the gate's in the network's.
+    double networkFramesPerDecoderFrame_ = 1.0;
     /// The activation before this one, to interpolate from. Only the inference thread
     /// touches these.
     model::FrameActivation previous_;

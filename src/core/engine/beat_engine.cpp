@@ -42,14 +42,20 @@ tracking::TempoTracker::Options forDecoder(tracking::TempoTracker::Options optio
     return options;
 }
 
-/// How many decoder frames one network activation is worth. The network's hop is 20 ms;
-/// a decoder at 100 Hz takes two steps for it, the first on an activation interpolated
-/// between the last two.
+/// The network's hop: one activation every 20 ms.
+constexpr double kActivationPeriod = static_cast<double>(audio::kHopSize) / audio::kInternalSampleRate;
+
+/// How many decoder frames one network activation is worth. A decoder at 100 Hz takes two
+/// steps for each, the first on an activation interpolated between the last two.
 std::size_t stepsFor(const tracking::BeatDecoder& decoder) noexcept {
-    const double activationPeriod =
-        static_cast<double>(audio::kHopSize) / audio::kInternalSampleRate;
-    const double steps = activationPeriod / decoder.secondsPerFrame();
+    const double steps = kActivationPeriod / decoder.secondsPerFrame();
     return static_cast<std::size_t>(std::max(1.0, std::round(steps)));
+}
+
+tracking::PulseGate::Options pulseOptions() noexcept {
+    tracking::PulseGate::Options options;
+    options.framesPerSecond = 1.0 / kActivationPeriod;
+    return options;
 }
 
 } // namespace
@@ -63,7 +69,9 @@ BeatEngine::BeatEngine(const model::ModelWeights& weights, const tracking::State
       stepsPerActivation_(stepsFor(*decoder_)),
       noSignalRms_(static_cast<float>(std::pow(10.0, options.noSignalBelowDb / 20.0))),
       noSignalFrames_(static_cast<std::uint64_t>(
-          std::max(1.0, std::ceil(options.noSignalSeconds / decoder_->secondsPerFrame())))) {
+          std::max(1.0, std::ceil(options.noSignalSeconds / decoder_->secondsPerFrame())))),
+      pulse_(pulseOptions()), waitForPulse_(options.waitForPulse),
+      networkFramesPerDecoderFrame_(decoder_->secondsPerFrame() / kActivationPeriod) {
     // Sized now, so the first drain allocates nothing: `drain` swaps this buffer into the queue
     // and sizes whatever it gets back, which for a buffer that had never held anything was an
     // allocation on the inference thread.
@@ -104,6 +112,8 @@ void BeatEngine::start() {
     run_.fetch_add(1, std::memory_order_acq_rel);
     decoder_->reset();
     tempo_.reset();
+    pulse_.reset();
+    tempo_.setWaitingForPulse(waitForPulse_);
     // The tempo hold goes with the pin. `reset()` keeps a decoder's hold by design — it is a
     // setting, not tracking state — and the tracker's reset lets go of the pin, so a stop and
     // start while pinned left the window showing no pin while the decoder went on penalising
@@ -217,9 +227,13 @@ void BeatEngine::applyCommands() noexcept {
             break;
         case Command::Kind::SnapDownbeat:
             tempo_.snapDownbeat();
+            // A person saying there is a beat, which the pulse gate takes as one: see
+            // `tracking::PulseGate::markHeard`. A tap the same.
+            pulse_.markHeard();
             break;
         case Command::Kind::SeedTempo:
             tempo_.seedTempo(command.bpm);
+            pulse_.markHeard();
             break;
         case Command::Kind::SetLockPinned:
             tempo_.setLockPinned(command.pinned);
@@ -325,6 +339,8 @@ void BeatEngine::trackOne(const model::FrameActivation& activation, bool interpo
         noSignal_ = noSignal;
         if (noSignal) {
             decoder_->silence();
+            // What comes back after it has to show its own pulse before it locks.
+            pulse_.reset();
         }
         tempo_.setNoSignal(noSignal);
     }
@@ -334,6 +350,19 @@ void BeatEngine::trackOne(const model::FrameActivation& activation, bool interpo
     // again. So the decoder hears nothing; the trace and the window still show the network.
     frame.tracked = noSignal_ ? decoder_->process(0.0f, 0.0f)
                               : decoder_->process(activation.beat, activation.downbeat);
+    // Before a first lock, a pulse: see `Options::waitForPulse`. The network's own frames, and
+    // none while there is no signal — the network ringing on, as above.
+    if (!interpolated && !noSignal_) {
+        pulse_.push(activation.beat, activation.downbeat,
+                    static_cast<double>(frame.tracked.intervalFrames) * networkFramesPerDecoderFrame_);
+    }
+    tempo_.setWaitingForPulse(waitForPulse_ && !pulse_.open());
+    frame.pulseHeard = pulse_.open();
+    frame.pulseSpread = pulse_.spread();
+    frame.pulseRepeat = pulse_.repeat();
+    frame.pulseFloor = pulse_.floor();
+    frame.pulseTwice = pulse_.twice();
+    frame.pulseBar = pulse_.bar();
     const std::optional<tracking::BeatEvent> event = tempo_.process(frame.tracked);
     frame.state = tempo_.state();
     frame.beat = event.has_value();

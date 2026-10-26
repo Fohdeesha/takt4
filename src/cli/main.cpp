@@ -157,6 +157,9 @@ void printUsage(std::ostream& out) {
         << "                      frames ahead the mean-phase rule commits a beat\n"
         << "      --hold BPM      pin the decoder to this tempo and track phase only\n"
         << "                      (forward only; the particle filter cannot)\n"
+        << "      --no-pulse-wait lock without first hearing a beat: noise, a pad or a\n"
+        << "                      voice can then lock, as they always could. For\n"
+        << "                      measuring what the wait costs\n"
         << "      --trace FILE    write every decoder frame as a TSV: the activations, the\n"
         << "                      cloud's tempo and agreement, and what was published. A\n"
         << "                      diagnostic for \"the tempo moved and I want to know\n"
@@ -740,6 +743,8 @@ struct TrackArgs {
     std::string stateSpace = "default";
     /// A tempo to pin the decoder to from the first frame; zero for none.
     double holdBpm = 0.0;
+    /// `BeatEngine::Options::waitForPulse`.
+    bool waitForPulse = true;
     bool link = false;
     std::optional<std::filesystem::path> beatsOut;
     /// Every 50 Hz frame, not just the beats: what the cloud said, what was published, and
@@ -859,6 +864,8 @@ TrackArgs parseTrackArgs(const std::vector<std::string_view>& args) {
             if (!(out.holdBpm > 0.0)) {
                 throw std::invalid_argument("--hold expects a positive tempo");
             }
+        } else if (arg == "--no-pulse-wait") {
+            out.waitForPulse = false;
         } else if (arg == "--link") {
             out.link = true;
         } else if (arg == "--out") {
@@ -978,6 +985,7 @@ takt4::engine::BeatEngine::Options engineOptions(const TrackArgs& args) {
     options.filter.seed = args.seed;
     options.forward = args.forward;
     options.tempo = args.tempo;
+    options.waitForPulse = args.waitForPulse;
     return options;
 }
 
@@ -1033,7 +1041,8 @@ public:
         out_ << "frame\ttime\tbeat_act\tdown_act\tgathering\tinterval\trefined_interval"
                 "\tcloud_bpm\tagreement\tbpm\tconfidence\tlocked\tholding\tmeter\tbeat_in_bar"
                 "\temitted\tpublished\tflux\tintensity\tonset\tinterp\tacquired\tno_signal"
-                "\tbeats_bpm\tgrid_bpm\n"
+                "\tbeats_bpm\tgrid_bpm\twaiting\tpulse_heard\tpulse_spread\tpulse_repeat"
+                "\tpulse_floor\tpulse_twice\tpulse_bar\n"
              << std::fixed << std::setprecision(6);
     }
 
@@ -1054,7 +1063,10 @@ public:
              << frame.activation.flux << '\t' << static_cast<int>(frame.activation.intensity)
              << '\t' << (frame.activation.onset ? 1 : 0) << '\t' << (frame.interpolated ? 1 : 0)
              << '\t' << (state.acquired ? 1 : 0) << '\t' << (state.noSignal ? 1 : 0) << '\t'
-             << state.beatsBpm << '\t' << state.gridBpm << '\n';
+             << state.beatsBpm << '\t' << state.gridBpm << '\t' << (state.waitingForPulse ? 1 : 0)
+             << '\t' << (frame.pulseHeard ? 1 : 0) << '\t' << frame.pulseSpread << '\t'
+             << frame.pulseRepeat << '\t' << frame.pulseFloor << '\t' << frame.pulseTwice << '\t'
+             << frame.pulseBar << '\n';
     }
 
 private:
@@ -1384,9 +1396,10 @@ int runTrackDevice(const TrackArgs& args, const takt4::model::ModelWeights& weig
                       << "s  ..        " << fixed1(state.bpm, 12)
                       << " BPM  "
                       // Eight characters either way, so the column below stays a column.
-                      << (state.pinned   ? "PINNED  "
-                          : state.locked ? "LOCKED  "
-                                         : "hunting ")
+                      << (state.pinned            ? "PINNED  "
+                          : state.locked          ? "LOCKED  "
+                          : state.waitingForPulse ? "no beat "
+                                                  : "hunting ")
                       << "conf " << formatProbability(static_cast<float>(state.confidence))
                       << (state.holding ? "  (holding)" : "") << '\n';
         }

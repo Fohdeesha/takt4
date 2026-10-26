@@ -81,11 +81,12 @@ const std::vector<float>& excerpt() {
 constexpr std::uint64_t kExpectedBeats = 21;
 constexpr std::uint64_t kExpectedDownbeats = 5;
 /// Of those, what reaches the rig. Nothing does before the tracker has earned a lock
-/// (`TempoState::acquired`, the operator's call of 2026-10-03), and a lock needs a bar of beats
-/// (`TempoTracker::Options::lockBeats`), so the first three beats, none of them a downbeat, are
+/// (`TempoState::acquired`), and a lock needs a bar of beats
+/// (`TempoTracker::Options::lockBeats`) and a beat heard in the activation, which is judged first
+/// at two seconds (`tracking::PulseGate`): so the first four beats, the fourth a downbeat, are
 /// called and not sent. "the observer sees every beat" checks the split rather than assuming it.
-constexpr std::uint64_t kSentBeats = 18;
-constexpr std::uint64_t kSentDownbeats = 5;
+constexpr std::uint64_t kSentBeats = 17;
+constexpr std::uint64_t kSentDownbeats = 4;
 
 /// Every engine here runs the particle filter. These tests are about the output thread
 /// — draining, counting, routing — and want a beat stream that never moves; the particle

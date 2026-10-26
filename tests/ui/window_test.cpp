@@ -395,12 +395,28 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
     takt4::ui::publishTempoState(*window, state);
     CHECK(window->get_acquired());
 
-    // A deck that stopped: the lock readout says "no signal" over the tempo it holds.
-    state.noSignal = true;
+    // Nothing with a beat in it heard yet: no lock is taken, and the readout says why rather than
+    // "hunting", which an operator reads as about to lock.
+    window->set_running(true);
     state.locked = false;
+    state.acquired = false;
+    state.waitingForPulse = true;
+    takt4::ui::publishTempoState(*window, state);
+    CHECK(window->get_waiting_for_pulse());
+    CHECK(std::string(window->get_lock_word()) == "no beat");
+    state.waitingForPulse = false;
+    takt4::ui::publishTempoState(*window, state);
+    CHECK(std::string(window->get_lock_word()) == "hunting");
+
+    // A deck that stopped: the lock readout says "no signal" over the tempo it holds — and the
+    // wait for a beat starts again behind it, which "no signal" is the truer word for.
+    state.noSignal = true;
+    state.waitingForPulse = true;
     takt4::ui::publishTempoState(*window, state);
     CHECK(window->get_no_signal());
     CHECK_FALSE(window->get_locked());
+    CHECK(std::string(window->get_lock_word()) == "no signal");
+    window->set_running(false);
 
     // Stopping must not leave the last set's tempo sitting there looking live.
     takt4::ui::publishIdleReadouts(*window);

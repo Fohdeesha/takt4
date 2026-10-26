@@ -382,6 +382,10 @@ export component MainWindow inherits Window {
   /// (`TempoState::acquired`) — locked or not: a lock lost mid-track is the tracker being unsure,
   /// and the beats go on going out.
   in-out property <bool> acquired;
+  /// Nothing heard since START or the last no signal has had a beat in it, so no lock is taken
+  /// and nothing fires (`TempoState::waitingForPulse`): an intro, a pad, a crowd, someone talking.
+  /// The lock readout says "no beat".
+  in-out property <bool> waiting-for-pulse;
   /// What went missing between the input and the beats — "3 input overflows", "12 hops
   /// dropped — the model fell behind the audio" — or empty. Shown under the meter, because a
   /// device dropping input, or a machine too busy to keep up, is otherwise visible nowhere.
@@ -659,6 +663,7 @@ export component MainWindow inherits Window {
                         : root.acquired ? "following" : "waiting")
     : root.input-lost ? "no audio"
     : root.no-signal ? "no signal"
+    : root.waiting-for-pulse ? "no beat"
     : root.holding ? "holding"
     : root.locked ? "locked"
     : "hunting";
@@ -1145,6 +1150,7 @@ export component MainWindow inherits Window {
                                   : root.acquired ? Wf.locked : Wf.tempo-ink2)
               : root.input-lost ? Wf.alarm
               : root.no-signal ? Wf.tempo-ink2
+              : root.waiting-for-pulse ? Wf.tempo-ink2
               : root.holding ? Wf.holding
               : root.locked ? Wf.locked
               : Wf.tempo-ink2;

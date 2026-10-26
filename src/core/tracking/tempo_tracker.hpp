@@ -32,12 +32,16 @@ struct TempoState {
     bool holding = false;          ///< confidence is below the gate; bpm is the last good one
     /// A lock has been earned since the run started or the input last had no signal. **Until
     /// then nothing fires the rig**: the output thread sends no beat to OSC, the rules or the
-    /// clocks before it (the operator, 2026-10-03). A lock lost later does not clear it — an
+    /// clocks before it. A lock lost later does not clear it — an
     /// unlock in the middle of a track is the tracker being unsure, not the rig going dark.
     bool acquired = false;
     /// The input has had no signal for a while (`BeatEngine::Options::noSignalSeconds`). The
     /// lock is dropped with it and `acquired` cleared; the tempo shown is the last one, held.
     bool noSignal = false;
+    /// No lock may be taken yet: nothing heard since the run started or the input last had no
+    /// signal has had a pulse (`PulseGate`, `BeatEngine::Options::waitForPulse`). Noise, a pad,
+    /// a crowd and a voice talking all hold it here.
+    bool waitingForPulse = false;
     double confidence = 0.0;       ///< 0 to 1; see TempoTracker's header for what it measures
     std::uint32_t beatsPerBar = 0; ///< from the filter's downbeat stage, never assumed
     std::uint32_t beatInBar = 0;   ///< 1 on the downbeat, counting up; 0 before the first beat
@@ -696,6 +700,11 @@ public:
     /// old lock had earned: a deck that stopped is not a challenger to out-argue. The pin is the
     /// operator's and stays.
     void setNoSignal(bool noSignal) noexcept;
+
+    /// Whether a first lock has to wait, because nothing heard has had a pulse yet (`BeatEngine`
+    /// decides, from the network's activation; see `TempoState::waitingForPulse`). Only taking a
+    /// lock waits: the tempo is still measured and shown, and a lock already earned is untouched.
+    void setWaitingForPulse(bool waiting) noexcept { state_.waitingForPulse = waiting; }
 
     /// The published tempo **in the decoder's own terms**: with the operator's ÷2 or ×2, the
     /// fold's octave and the octave the beats sit at against the cloud all taken back out.
