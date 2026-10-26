@@ -1,0 +1,7 @@
+# LeakSanitizer's exceptions for the linux-asan presets (LSAN_OPTIONS in CMakePresets.json).
+#
+# fontconfig's own configuration, and the character sets Slint's font fallback asks it for: made
+# once, the first time a process lays out text on Linux, and held for the rest of its life, since
+# nothing ends fontconfig. 544 bytes in nine allocations in every test that draws a window, and
+# never more; every frame of each report is fontconfig, expat or Slint's fontconfig backend.
+leak:libfontconfig.so

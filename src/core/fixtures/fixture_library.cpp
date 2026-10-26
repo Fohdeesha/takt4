@@ -422,7 +422,7 @@ std::size_t unusedIn(const ProfileMode& mode) noexcept {
     std::size_t unused = 0;
     for (const std::vector<ProfileChannel>& part : mode.parts) {
         for (const ProfileChannel& channel : part) {
-            unused += channel.role == dmx::Role::Unused ? 1 : 0;
+            unused += channel.role == dmx::Role::Unused ? 1U : 0U;
         }
     }
     return unused;

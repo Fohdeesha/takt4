@@ -832,7 +832,7 @@ void RulesController::publishHeads(const trigger::DmxSend& send) {
             HeadChoice row{};
             row.label = shared(std::to_string(k + 1) + (name.empty() ? "" : " · " + name));
             row.ticked = (ticked & (std::uint32_t{1} << k)) != 0;
-            tickedCount += row.ticked ? 1 : 0;
+            tickedCount += row.ticked ? 1U : 0U;
             rows.push_back(std::move(row));
         }
         // Fixtures with none of the ticked heads: aimed at and not reached.
@@ -845,7 +845,7 @@ void RulesController::publishHeads(const trigger::DmxSend& send) {
             ++aimed;
             const std::size_t own = std::min<std::size_t>(dmx::headsOf(patch_[i]), 32);
             const std::uint32_t has = own >= 32 ? ~std::uint32_t{0} : (std::uint32_t{1} << own) - 1;
-            without += (ticked & has) == 0 ? 1 : 0;
+            without += (ticked & has) == 0 ? 1U : 0U;
             const auto mine = static_cast<std::size_t>(std::popcount(ticked & has));
             if (mine > 0) {
                 fewestTicked = fewestTicked == 0 ? mine : std::min(fewestTicked, mine);

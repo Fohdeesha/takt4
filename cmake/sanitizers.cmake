@@ -39,6 +39,14 @@ if(TAKT4_SANITIZE STREQUAL "thread" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   add_compile_options(-Wno-tsan)
 endif()
 
+# And GCC 13 with AddressSanitizer reports, as an error here, a std::function inside libstdc++'s
+# own <regex> as maybe used uninitialised (build_info_test.cpp, the first linux-asan run,
+# 2026-10-26): ASan's instrumentation hides the initialisation from the optimiser pass that warns.
+# The same code builds clean everywhere else. Off for GCC's ASan builds only.
+if(TAKT4_SANITIZE MATCHES "address" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-Wno-maybe-uninitialized)
+endif()
+
 if(MSVC)
   if(NOT TAKT4_SANITIZE STREQUAL "address")
     message(FATAL_ERROR

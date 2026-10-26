@@ -147,7 +147,9 @@ TEST_CASE("a followed grid counts its bars in whatever beats to the bar it is se
     for (std::size_t k = 0; k < sent.size(); ++k) {
         INFO("beat " << k);
         const EngineBeat& beat = sent[k].beat;
-        bars += k % meter == 0 ? 1 : 0;
+        if (k % meter == 0) {
+            ++bars;
+        }
         CHECK(beat.event.beatsPerBar == meter);
         CHECK(beat.event.beatInBar == k % meter + 1);
         CHECK(beat.event.downbeat == (k % meter == 0));

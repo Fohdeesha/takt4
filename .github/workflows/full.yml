@@ -131,6 +131,15 @@ jobs:
             app: build/linux-tsan/bin/takt4
             cli: build/linux-tsan/bin/takt4-cli
             cargo: build/linux-tsan/cargo
+          # AddressSanitizer with UndefinedBehaviorSanitizer: the only place undefined behaviour,
+          # and a local used after its function returned, are looked for — Windows' ASan has
+          # neither. The preset stops a test at the first report (-fno-sanitize-recover=all) and
+          # asks for the stack-use-after-return check at run time.
+          - os: ubuntu-24.04
+            preset: linux-asan
+            app: build/linux-asan/bin/takt4
+            cli: build/linux-asan/bin/takt4-cli
+            cargo: build/linux-asan/cargo
           # macOS on both kinds of Mac, from the same preset. `name` tells the two jobs, and their
           # Slint caches, apart: the runner image's name is the same on both.
           - os: macos-26
@@ -323,6 +332,8 @@ jobs:
       - name: Test
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+          # A report names where it happened; the preset's ASAN_OPTIONS asks for the rest.
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ctest --preset ${{ matrix.preset }}-all ${{ matrix.realtime == 'report' && '-LE realtime' || '' }}
 
       # The tests that measure milliseconds ([realtime]) on GitHub's Intel Mac, whose machines

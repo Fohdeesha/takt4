@@ -357,7 +357,7 @@ std::vector<tracking::Tap> tapAlong(const io::WavData& audio, AnnotateArgs& a) {
             lastStatus = now;
             std::size_t downbeats = 0;
             for (const tracking::Tap& tap : taps) {
-                downbeats += tap.downbeat ? 1 : 0;
+                downbeats += tap.downbeat ? 1U : 0U;
             }
             std::cout << "         " << fixed(player.positionSeconds(), 1) << " / "
                       << fixed(player.durationSeconds(), 1) << " s   " << taps.size() << " taps, "
