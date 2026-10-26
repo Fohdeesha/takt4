@@ -1133,8 +1133,7 @@ void RulesController::publishSlots() {
             break;
         case trigger::SlotRole::Level:
             // A clip's level is the laser zone's intensity — its dimmer, as the patch names the
-            // channel — whatever role the rule last aimed at. ("intensity" is cut short in the
-            // chip's name column.)
+            // channel — whatever role the rule last aimed at.
             push(std::string(dmx::labelOf(dmx::takesClip(rule->dmx.effect) ? dmx::Role::Dimmer
                                                                            : rule->dmx.role)),
                  generator);
@@ -1168,6 +1167,19 @@ void RulesController::publishSlots() {
             break;
         }
     }
+    // **The names' column as wide as the longest name here**: in a column of seven characters
+    // "velocity", "{button}" and "color wheel" were cut short. One width for every chip of the
+    // rule, so they still line up; the face is monospaced, nine pixels a character at 15 px.
+    std::size_t longest = 0;
+    for (const SlotRow& row : rows) {
+        const std::string label(row.label);
+        const auto characters = std::count_if(label.begin(), label.end(), [](char c) {
+            return (static_cast<unsigned char>(c) & 0xC0U) != 0x80U; // a UTF-8 lead byte
+        });
+        longest = std::max(longest, static_cast<std::size_t>(characters));
+    }
+    window_->set_slot_label_width(
+        std::clamp(9.0f * static_cast<float>(longest) + 4.0f, 70.0f, 112.0f));
     // In place, and this is the one that mattered: these rows are the generator chips, they
     // are full of text boxes, and `tick` republishes them every time a rule fires. See
     // `writeRows`. Nothing here moves between fires *except* the last-produced readout, so

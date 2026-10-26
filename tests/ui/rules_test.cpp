@@ -313,6 +313,39 @@ TEST_CASE("the QLC+ preset presses a button full and lets it go, and says how QL
     }
 }
 
+TEST_CASE("a chip's name is never cut short: its column is as wide as the rule's longest",
+          "[ui][trigger]") {
+    // A column of seven characters cut "velocity", every MIDI note rule's value, and the QLC+
+    // preset's "{button}" to "veloci..." and "{butto...". The face is monospaced, nine pixels a
+    // character at 15 px, so the column is set from the longest name, for every chip of the rule.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    editor.add();
+    const auto width = [&editor] { return editor.window().get_slot_label_width(); };
+
+    editor.setAddress("/a/{n}");
+    CHECK(width() == Approx(70.0f)); // "{n}" and "value": no narrower than it always was
+    editor.setAddress("/qlc/{button}");
+    CHECK(width() >= 72.0f);
+    // A placeholder of the operator's own, longer than any sensible column: held to the most.
+    editor.setAddress("/show/{the_clip_for_the_drop}");
+    CHECK(width() == Approx(112.0f));
+
+    // A MIDI note's value is its velocity.
+    const auto note = std::find(takt4::trigger::kMessageKinds.begin(),
+                                takt4::trigger::kMessageKinds.end(),
+                                takt4::trigger::Message::Kind::MidiNote) -
+                      takt4::trigger::kMessageKinds.begin();
+    editor.pickSend(static_cast<int>(note));
+    bool velocity = false;
+    const auto slots = editor.window().get_slots();
+    for (std::size_t i = 0; i < slots->row_count(); ++i) {
+        velocity = velocity || std::string(slots->row_data(i)->label) == "velocity";
+    }
+    REQUIRE(velocity);
+    CHECK(width() >= 72.0f);
+}
+
 TEST_CASE("three Resolume layers, from one pick", "[ui][trigger]") {
     // What the preset is for: clips triggered at random, over OSC, on all three of Resolume's
     // layers. One pick in the rig picker, and the three rules that come out are checked against

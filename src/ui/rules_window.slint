@@ -902,6 +902,10 @@ export component RulesWindow inherits Window {
   /// what was typed.
   callback fold-clicked(int);
 
+  /// How wide the chips' names are drawn: the longest of this rule's, in the editor's mono face, so
+  /// "velocity" and "color wheel" are not cut short, and every chip's in the same column.
+  in-out property <length> slot-label-width: 70px;
+
   // --- E · remote control ----------------------------------------------------------------------
   /// Its fold — the window's, kept with the others — its rows, and what its heading says folded.
   in-out property <bool> remote-folded: true;
@@ -2601,6 +2605,8 @@ export component RulesWindow inherits Window {
                 // Every `{...}` of the address, the value and — for MIDI — the note: each a
                 // generator, in a band of its own. This is where "custom random triggers and
                 // sequences" actually gets designed.
+                // The chips' names, one column for the rule: as wide as the longest of them, which
+                // the controller works out (`slot-label-width`).
                 for slot[index] in root.slots: Band {
                   height: slot.is-ramp || (slot.is-live && slot.is-normalised) ? 90px : 48px;
 
@@ -2616,7 +2622,7 @@ export component RulesWindow inherits Window {
                       spacing: 10px;
 
                       Text {
-                        width: 70px;
+                        width: root.slot-label-width;
                         horizontal-stretch: 0;
                         text: slot.label;
                         color: Wf.slot-name;
