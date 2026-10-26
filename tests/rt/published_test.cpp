@@ -163,8 +163,24 @@ TEST_CASE("a reader that interrupts a write lets the writer finish it", "[rt][re
             published.publish(values[i & 1U]);
         }
     });
+    // The time the calling thread has spent on the CPU, kernel and user. Windows counts it by the
+    // clock tick: whichever thread is running when a tick comes is charged all of it (15.625 ms,
+    // on the rig and on a hosted runner alike).
+    const auto onCpu = [] {
+        FILETIME created{};
+        FILETIME exited{};
+        FILETIME kernel{};
+        FILETIME user{};
+        GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user);
+        const auto count = [](const FILETIME& t) {
+            return (static_cast<std::uint64_t>(t.dwHighDateTime) << 32U) | t.dwLowDateTime;
+        };
+        return static_cast<double>(count(kernel) + count(user)) * 1e-7;
+    };
     double worst = 0.0;
+    double mostOnCpu = 0.0;
     std::size_t loads = 0;
+    std::size_t torn = 0;
     std::thread reader([&] {
         SetThreadAffinityMask(GetCurrentThread(), core);
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
@@ -178,24 +194,35 @@ TEST_CASE("a reader that interrupts a write lets the writer finish it", "[rt][re
              now = std::chrono::steady_clock::now()) {
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
             const auto from = std::chrono::steady_clock::now();
+            const double cpuFrom = onCpu();
             const Wide got = published.load();
+            mostOnCpu = std::max(mostOnCpu, onCpu() - cpuFrom);
             const double took =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
             worst = std::max(worst, took);
             ++loads;
             if (!got.consistent()) {
-                worst = 1e9; // torn: worse than any wait
+                ++torn;
             }
         }
     });
     reader.join();
     stop.store(true, std::memory_order_relaxed);
     writer.join();
-    INFO(loads << " loads; the slowest took " << worst * 1000.0 << " ms");
+    INFO(loads << " loads; the slowest took " << worst * 1000.0
+               << " ms, and the most any load spent on the CPU was " << mostOnCpu * 1000.0
+               << " ms");
     CHECK(loads >= 50);
-    // Half a second, not a tenth: hosted runners took 107 and 147 ms on 2026-10-01, and the
-    // case this catches waits seconds for the starvation boost, so it is still told apart.
-    CHECK(worst < 0.5);
+    CHECK(torn == 0);
+    // **What a load spent on the CPU, not how long it took.** A reader that gives its core away
+    // waits off the CPU, and each time a writer that never stops writing, as here, is given the
+    // core it keeps it for up to a whole time slice. So the slowest load of a run took up to
+    // 280 ms on a hosted runner (Windows Server 2025, 60 runs on 2026-10-26, with and without
+    // AddressSanitizer) and once 516 ms, failing the half second this test allowed; in those 60
+    // runs no load spent more than one tick on the CPU. The case caught spins on the CPU until
+    // the starvation boost: with the yield taken out, 2.2 to 3.9 s of it on the same runner and
+    // 18 to 36 s on the rig.
+    CHECK(mostOnCpu < 0.1);
 }
 
 #endif
