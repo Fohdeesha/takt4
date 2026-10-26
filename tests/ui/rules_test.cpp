@@ -17,6 +17,7 @@
 #include "ui/delete_guard.hpp"
 #include "ui/keys.hpp"
 #include "ui/model_watch.hpp"
+#include "ui/rule_presets.hpp"
 #include "ui/rules_controller.hpp"
 #include "ui/shot.hpp"
 #include "ui/window_state.hpp"
@@ -254,6 +255,57 @@ TEST_CASE("a random clip every fourth bar, built through the window's callbacks"
             INFO(expected);
             CHECK(std::count(presses.begin(), presses.end(), expected) == 1);
         }
+    }
+}
+
+TEST_CASE("the QLC+ preset presses a button full and lets it go, and says how QLC+ learns it",
+          "[ui][trigger]") {
+    // QLC+ reads an int as a level from 0 to 255, a virtual console button presses on anything
+    // above 0 and a flash button lets go on 0 — its own source. So 255 and then 0. And QLC+ learns
+    // an address rather than being told one, so the editor says how, and where it listens.
+    Rig rig;
+    RulesController editor(rig.runner, {});
+    auto& window = editor.window();
+    window.invoke_rule_added();
+    const auto& presets = takt4::ui::rule_presets::kHostPresets;
+    const int qlc = static_cast<int>(presets.size()) - 1;
+    REQUIRE(std::string(presets.back().label).find("QLC+") == 0);
+    // Offered: the picker's list is the presets' own.
+    REQUIRE(window.get_host_presets()->row_count() == presets.size());
+    CHECK(std::string(*window.get_host_presets()->row_data(presets.size() - 1)) ==
+          presets.back().label);
+
+    window.invoke_host_preset_picked(qlc);
+    const Rule::Config& built = editor.rules().front();
+    CHECK(built.address == "/qlc/{button}");
+    REQUIRE(built.segments.size() == 1);
+    CHECK(built.value.kind == GeneratorKind::Fixed);
+    CHECK(built.value.fixed.asInt() == 255);
+    REQUIRE(built.followUps.size() == 1);
+    CHECK_FALSE(built.followUps.front().kind.has_value()); // a release: the same address again
+    CHECK(built.followUps.front().value.asInt() == 0);
+    CHECK(Rule(built).valid());
+    CHECK(window.get_host_preset_index() == qlc);
+    const std::string said(window.get_status());
+    CHECK(said.find("7700") != std::string::npos);
+    CHECK(said.find("auto detect") != std::string::npos);
+    CHECK_FALSE(window.get_status_is_error());
+
+    // What TEST sends — the editor's own button, through the real engine — is the press at 255,
+    // to one of the eight buttons the slot shuffles over.
+    editor.test();
+    const std::vector<OutputRunner::Fired> fired = rig.runner.takeFired();
+    REQUIRE_FALSE(fired.empty());
+    const std::string& press = fired.front().message;
+    INFO(press);
+    CHECK(press.rfind("/qlc/", 0) == 0);
+    CHECK(press.size() >= 4);
+    CHECK(press.substr(press.size() - 4) == " 255");
+
+    SECTION("and another preset says nothing it does not need to") {
+        window.invoke_host_preset_picked(1); // Resolume 7 — clip
+        CHECK(std::string(window.get_status()).empty());
+        CHECK(editor.rules().front().value.fixed.asInt() == 1);
     }
 }
 
@@ -1743,7 +1795,8 @@ TEST_CASE("the editor survives being hammered", "[ui][trigger]") {
             editor.removeFollowUp(static_cast<int>(random.bounded(3)));
             break;
         case 14:
-            editor.pickHostPreset(static_cast<int>(random.bounded(5)));
+            editor.pickHostPreset(
+                static_cast<int>(random.bounded(takt4::ui::rule_presets::kHostPresets.size())));
             break;
         default:
             editor.tick();
@@ -3287,29 +3340,47 @@ TEST_CASE("a box typed into and then another rule clicked keeps the edit on its 
     const Shown shown(editor);
     editor.tick();
 
-    float boxX = -1.0f;
-    float boxY = -1.0f;
-    for (float y = 400.0f; y < 740.0f && boxX < 0.0f; y += 4.0f) {
-        for (float x = 530.0f; x < 820.0f && boxX < 0.0f; x += 40.0f) {
+    // A rule's one slot, or -1 for a rule with none: a probe that misses can leave it so.
+    const auto slotOf = [&editor](std::size_t rule) -> std::int64_t {
+        const Rule::Config& config = editor.rules()[rule];
+        return config.segments.empty() ? -1 : config.segments[0].fixed.asInt();
+    };
+    // The first rule's box: the first spot where a digit and Enter change its slot, and nothing
+    // else. **Every miss is put back** before the next probe: the hunt begins over the preset
+    // picker, and a click that opened it and an Enter that picked from it gave the rule another
+    // address — Resolume's resync, which has no slot at all — so every probe after that typed
+    // into the address box and none could ever land.
+    const Spot box = sweep(
+        530.0f, 820.0f, 40.0f, 400.0f, 740.0f, 4.0f,
+        [&](float x, float y) {
             shown.click(x, y);
             shown.type("9");
             shown.enter();
             editor.tick();
-            if (editor.rules()[0].segments[0].fixed.asInt() != 1) {
-                boxX = x;
-                boxY = y;
+            return editor.rules()[0].address == "/layer/{n}" && slotOf(0) != 1 && slotOf(0) != -1;
+        },
+        [&] {
+            // Anything a miss opened closed by a click in the page's margin, outside everything
+            // (Escape would be PANIC here), and the rule as it was.
+            shown.click(4.0f, 4.0f);
+            editor.pick(0);
+            editor.setAddress("/layer/{n}");
+            editor.pickSlotKind(0, static_cast<int>(GeneratorKind::Fixed));
+            editor.setSlotFixed(0, "1");
+            while (!editor.rules()[0].followUps.empty()) {
+                editor.removeFollowUp(0);
             }
-        }
-    }
+            editor.tick();
+        });
     {
         INFO("no click landed in the chip's box");
-        REQUIRE(boxX >= 0.0f);
+        REQUIRE(box.found());
     }
-    editor.setSlotFixed(0, "1");
-    editor.tick();
+    REQUIRE(slotOf(0) == 1);
+    REQUIRE(slotOf(1) == 1);
 
     // The second rule in the list, found by clicking down its column.
-    shown.click(boxX, boxY);
+    shown.click(box.x, box.y);
     shown.type("5");
     bool switched = false;
     for (float y = 60.0f; y < 300.0f && !switched; y += 4.0f) {
@@ -3323,8 +3394,9 @@ TEST_CASE("a box typed into and then another rule clicked keeps the edit on its 
     shown.click(700.0f, 40.0f);
     editor.tick();
 
-    CHECK(editor.rules()[0].segments[0].fixed.asInt() != 1); // the edit went to its own rule
-    CHECK(editor.rules()[1].segments[0].fixed.asInt() == 1); // and not to the one clicked
+    CHECK(slotOf(0) != 1);  // the edit went to its own rule
+    CHECK(slotOf(0) != -1); // as an edit of its slot
+    CHECK(slotOf(1) == 1);  // and not to the one clicked
 }
 
 TEST_CASE("removing a swatch from its own picker lets the chips rebuild again",

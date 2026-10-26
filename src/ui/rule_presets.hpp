@@ -18,8 +18,8 @@ namespace takt4::ui::rule_presets {
 
 using trigger::Rule;
 
-/// The host presets — Resolume 7, TouchDesigner, MadMapper and a blank custom option — each a
-/// starting point the user can edit, never a hardcoded code path.
+/// The host presets — Resolume 7, TouchDesigner, MadMapper, QLC+ and a blank custom option — each
+/// a starting point the user can edit, never a hardcoded code path.
 ///
 /// So each one is nothing but an address template and the generators that fill it — the same
 /// data an operator could have typed, arrived at by clicking. Applying one leaves every part
@@ -30,12 +30,28 @@ struct HostPreset {
     /// becomes a chip on the rule editor, starting on the default generator — Shuffle over
     /// 1-8 — which the operator then says what they actually meant.
     const char* address;
+    /// What the press sends, where the host's gesture is a press and a release (an address with
+    /// a slot in it, or Resolume's `connect`): 1 for a host that reads it as a click, a level
+    /// for one that reads it as a level.
+    std::int32_t press = 1;
+    /// Said on the editor's message line when the preset is picked: what the operator has to do
+    /// in the host to make the message do something. Null for nothing to say.
+    const char* howTo = nullptr;
 };
 
 /// Only Resolume's addresses are *verified*: they were checked against Resolume's own
 /// documentation. The rest are the shapes those hosts use, and are starting points in the
 /// strongest sense: a TouchDesigner address is whatever the operator named their CHOP, so a
 /// preset can only offer the convention.
+///
+/// **QLC+ takes any address** and learns it: its OSC input turns each address into a channel of
+/// its own (a 16-bit checksum of the path), and a virtual console widget is bound to one by
+/// pressing auto detect on its external input and sending the message — the rule editor's TEST.
+/// What the preset gets right is the gesture, from QLC+'s own source (`oscpacketizer.cpp`,
+/// `vcbutton.cpp`, `vcspeeddial.cpp`): an int is a level from 0 to 255, a button presses on
+/// anything above 0, a flash button lets go on 0 and a toggle ignores it, and a speed dial's tap
+/// taps on anything but 0. So 255 and then 0: a press any widget reads as full, and a release that
+/// lets a flash go and changes nothing else. It listens on port 7700 for its first universe.
 ///
 /// The first entry is the blank custom option, and it means what it says: picking it
 /// empties the address and takes the host's press-then-release off with it. It used to change
@@ -45,12 +61,15 @@ struct HostPreset {
 /// two chips and its release sitting under a box that said "custom".
 /// The picker now follows the address (`presetOf`), so "custom" is a state as well as a
 /// choice, and choosing it is choosing an empty one.
-inline const std::array<HostPreset, 5> kHostPresets{{
+inline const std::array<HostPreset, 6> kHostPresets{{
     {"custom", ""},
     {"Resolume 7 — clip", "/composition/layers/{layer}/clips/{clip}/connect"},
     {"Resolume 7 — resync", "/composition/tempocontroller/resync"},
     {"TouchDesigner", "/takt4/{name}"},
     {"MadMapper — cue", "/medias/{cue}/play"},
+    {"QLC+ — button", "/qlc/{button}", 255,
+     "QLC+ listens on port 7700 for universe 1. In QLC+, press auto detect on the button's "
+     "external input, then TEST here."},
 }};
 
 /// Which preset an address *is*, or 0 for none of them — which is what "custom" means.

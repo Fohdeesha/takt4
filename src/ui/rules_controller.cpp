@@ -1782,11 +1782,11 @@ void RulesController::pickHostPreset(int index) {
     matchSegmentsToAddress(*rule);
     // Resolume's connect, whole: int 1 (press) then 0 (release). A rule sending only the 1
     // leaves the clip held, so a preset that filled the address and left the release off
-    // would have shipped the trap rather than the answer.
+    // would have shipped the trap rather than the answer. QLC+'s press is a level, 255.
     if (trigger::countPlaceholders(rule->address) > 0 ||
         rule->address.find("connect") != std::string::npos) {
         rule->value.kind = GeneratorKind::Fixed;
-        rule->value.fixed = trigger::Value::ofInt(1);
+        rule->value.fixed = trigger::Value::ofInt(preset.press);
         // Replaced rather than added to: picking a host preset is choosing that host's whole
         // gesture, and appending a second release to one an operator already had would send
         // the 0 twice.
@@ -1794,6 +1794,11 @@ void RulesController::pickHostPreset(int index) {
     }
     commit();
     publishSelected();
+    // What the host needs doing before the message does anything, after `commit`, which takes
+    // the message line down.
+    if (preset.howTo != nullptr) {
+        setStatus(preset.howTo, false);
+    }
 }
 
 void RulesController::setSendValue(bool on) {

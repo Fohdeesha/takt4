@@ -54,7 +54,7 @@ namespace takt4::output {
 /// To every target that wants them — `OutputTarget::sendsNamespace`, which an output has off
 /// until it is asked for. A target with it off is sent the rules aimed at it and nothing of this.
 ///
-/// Host presets (Resolume, TouchDesigner, MadMapper) fill in address templates and belong
+/// Host presets (Resolume, TouchDesigner, MadMapper, QLC+) fill in address templates and belong
 /// to the trigger engine; this is the layer underneath them, and is never a hardcoded code
 /// path for any one host.
 /// Whether `prefix` is one `OscPublisher` will take: it starts with '/', does not end with

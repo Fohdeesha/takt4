@@ -60,7 +60,7 @@ Enter the rule editor (the **triggers** window). **+** adds a rule. Each rule ha
 - **C send**: an OSC address, a MIDI note, note off, CC, program change or pitch bend, or DMX values. **send to** picks the outputs; DMX picks fixtures under **lights** instead
 - **D then send**: follow-ups (a clip release, a note off, etc) after so many ms, beats or bars
 
-Each `{slot}` in an OSC address gets a value: shuffle (no repeats until all have played), random, cycle, weighted, fixed, a live value (BPM, bar, confidence...) or a ramp. The **preset** box fills in Resolume, TouchDesigner and MadMapper addresses
+Each `{slot}` in an OSC address gets a value: shuffle (no repeats until all have played), random, cycle, weighted, fixed, a live value (BPM, bar, confidence...) or a ramp. The **preset** box fills in Resolume, TouchDesigner, MadMapper and QLC+ addresses
 
 - Click a rule's dot to mute it
 - **test** fires it once
