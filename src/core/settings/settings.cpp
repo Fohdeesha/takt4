@@ -655,6 +655,7 @@ std::string toJson(const Settings& settings) {
         {"meters", metersToJson(settings.preset.meters)},
         {"link", link},
         {"oscPrefix", settings.preset.oscPrefix},
+        {"phraseBars", settings.preset.phraseBars},
         {"timing", timingToJson(settings.preset)},
         {"outputs", targets},
         {"fixtures", patch},
@@ -840,6 +841,13 @@ Settings fromDocument(const json& document) {
         // every launch.
         if (!output::isValidOscPrefix(settings.preset.oscPrefix)) {
             settings.preset.oscPrefix = Preset{}.oscPrefix;
+        }
+        // A whole number of bars, or eight: `read` would take 2.5 as 2.
+        if (preset.contains("phraseBars") && preset.at("phraseBars").is_number_integer()) {
+            const std::int64_t bars = preset.at("phraseBars").get<std::int64_t>();
+            if (bars >= 1 && bars <= static_cast<std::int64_t>(output::OscPublisher::kMaxPhraseBars)) {
+                settings.preset.phraseBars = static_cast<std::uint32_t>(bars);
+            }
         }
         std::string decoder;
         read(preset, "decoder", decoder);

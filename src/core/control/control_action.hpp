@@ -170,6 +170,13 @@ public:
     /// driven and what lets a test tap out a tempo without spending it in real time.
     bool apply(const ControlTarget& target, std::optional<double> argument, double nowSeconds);
 
+    /// `/ctl/bar <n>`: the bar playing is bar `n` (`RuleControl::setBar`). A whole number, 1 or
+    /// more, as an int or a float with nothing after the point; anything else is refused rather
+    /// than rounded, and so is the address where nothing is wired to the rules. Not a
+    /// `ControlAction`: each of those is offered to a MIDI pad, whose value would be a bar number
+    /// nobody meant.
+    bool setBar(std::optional<double> argument);
+
     /// Seconds since this surface was created, on its own steady clock.
     double nowSeconds() const noexcept;
 

@@ -737,6 +737,7 @@ public:
     void setRuleMuted(std::string_view, bool) override {}
     void setRuleRate(std::string_view, double, bool) override {}
     void fireManual() override {}
+    void setBar(std::int64_t) override {}
 
     std::atomic<bool> inside{false};
     std::atomic<bool> release{false};

@@ -4052,3 +4052,129 @@ TEST_CASE("the lines the window says go to the monitor five a second, the rest a
     }
     CHECK(logs.dropped() == 3);
 }
+
+TEST_CASE("bars are counted from the first locked downbeat after START or no signal, by the rules, "
+          "/takt4/bar and the window alike, and /ctl/bar renumbers them",
+          "[output][bars]") {
+    // The tracker counts bars from START, the downbeats it heard while hunting included, so the
+    // first bar the rig played was bar 3 or bar 5 or whatever the hunt had left, and a rule's
+    // "every four bars" started from there. One count now, which the first locked downbeat starts
+    // at 1: the rules count in it, `/takt4/bar` says it before the downbeat, the window shows it.
+    LoopbackReceiver monitor;
+    Transports::Config config;
+    takt4::output::OutputTarget target;
+    target.name = "monitor";
+    target.host = "127.0.0.1";
+    target.port = monitor.port();
+    target.sendsNamespace = true;
+    config.outputs = {target};
+    takt4::testing::FakeBeatSource source;
+    OutputRunner runner(source, config);
+    Rule::Config every4;
+    every4.id = "every4";
+    every4.trigger = takt4::trigger::Trigger::Bar;
+    every4.every = 4;
+    every4.address = "/every4";
+    runner.post(OutputCommand::rules({every4}));
+    runner.post(OutputCommand::phraseBars(4));
+    runner.start();
+    runner.setTracking(true);
+
+    std::uint64_t beats = 0;
+    std::uint64_t trackerBars = 0;
+    std::uint32_t inBar = 0;
+    // One beat as the tracker calls it, the bars as it counts them.
+    const auto beat = [&](bool acquired) {
+        inBar = inBar % 4 + 1;
+        ++beats;
+        trackerBars += inBar == 1 ? 1U : 0U;
+        takt4::engine::EngineBeat called;
+        called.event.bpm = 120.0;
+        called.event.confidence = 0.9;
+        called.event.locked = acquired;
+        called.event.acquired = acquired;
+        called.event.beatsPerBar = 4;
+        called.event.beatInBar = inBar;
+        called.event.downbeat = inBar == 1;
+        called.state.bpm = 120.0;
+        called.state.confidence = 0.9;
+        called.state.locked = acquired;
+        called.state.acquired = acquired;
+        called.state.beatsPerBar = 4;
+        called.state.beatInBar = inBar;
+        called.state.beats = beats;
+        called.state.bars = trackerBars;
+        REQUIRE(source.push(called));
+        REQUIRE(runner.sync());
+    };
+    const auto heardBars = [&] {
+        std::vector<std::pair<int, int>> bars; // each /bar with the /phrase after it, its place
+        const auto heard = globalHeard(monitor, 200);
+        for (std::size_t i = 0; i + 1 < heard.size(); ++i) {
+            if (heard[i].first == "/takt4/bar") {
+                REQUIRE(heard[i + 1].first == "/takt4/phrase");
+                bars.emplace_back(static_cast<int>(heard[i].second),
+                                  static_cast<int>(heard[i + 1].second));
+            }
+        }
+        return bars;
+    };
+
+    // Two bars and a downbeat of hunting, then locked from beat 2 of the tracker's third bar.
+    for (int i = 0; i < 9; ++i) {
+        beat(false);
+    }
+    for (int i = 0; i < 3; ++i) {
+        beat(true);
+    }
+    CHECK(heardBars().empty()); // no downbeat locked yet
+    CHECK(firesOf(runner) == 0);
+    // The tracker's fourth bar is the rig's first: said, fired on, and shown.
+    beat(true);
+    CHECK(heardBars() == std::vector<std::pair<int, int>>{{1, 1}});
+    CHECK(firesOf(runner) == 1);
+    CHECK(runner.shownBeat().bars == 1);
+    for (int i = 0; i < 16; ++i) {
+        beat(true);
+    }
+    // Bars 2 to 5, in phrases of four: the fifth starts the second, and the rule fires again.
+    CHECK(heardBars() == std::vector<std::pair<int, int>>{{2, 2}, {3, 3}, {4, 4}, {5, 1}});
+    CHECK(firesOf(runner) == 2);
+    CHECK(runner.shownBeat().bars == 5);
+
+    SECTION("/ctl/bar: the bar playing is bar n, and the next downbeat n + 1") {
+        beat(true); // beat 2 of bar 5
+        runner.setBar(12);
+        REQUIRE(runner.sync());
+        for (int i = 0; i < 3; ++i) {
+            beat(true);
+        }
+        CHECK(heardBars() == std::vector<std::pair<int, int>>{{13, 1}});
+        CHECK(firesOf(runner) == 3); // 13 is one of every four counted from 1
+    }
+    SECTION("a START counts from 1 again") {
+        runner.setTracking(false);
+        source.start();
+        runner.setTracking(true);
+        beats = 0;
+        trackerBars = 0;
+        inBar = 2; // the new run's first beat called is a beat 3
+        for (int i = 0; i < 3; ++i) {
+            beat(true);
+        }
+        CHECK(heardBars() == std::vector<std::pair<int, int>>{{1, 1}});
+    }
+    SECTION("no signal counts from 1 again, on the first locked downbeat after it") {
+        takt4::tracking::TempoState silent;
+        silent.noSignal = true;
+        source.publish(silent);
+        REQUIRE(runner.sync());
+        (void)globalHeard(monitor, 100);
+        // The tracker counts on; the rig starts again.
+        for (int i = 0; i < 4; ++i) {
+            beat(true);
+        }
+        CHECK(heardBars() == std::vector<std::pair<int, int>>{{1, 1}});
+    }
+    runner.stop();
+}

@@ -37,7 +37,7 @@ bool isValidOscPrefix(std::string_view prefix) {
     }
     // The longest address built from it, which is the one most likely to be refused — and
     // every other one differs only in its last word.
-    return OscMessage(std::string(prefix) + "/beat/bar").valid();
+    return OscMessage(std::string(prefix) + "/beat/timing").valid();
 }
 
 OscPublisher::OscPublisher(std::string prefix) : prefix_(std::move(prefix)) {
@@ -54,9 +54,13 @@ OscPublisher::OscPublisher(std::string prefix) : prefix_(std::move(prefix)) {
     meterAddress_ = prefix_ + "/meter";
     resyncAddress_ = prefix_ + "/resync";
     timingAddress_ = prefix_ + "/beat/timing";
+    barNumberAddress_ = prefix_ + "/bar";
+    phraseAddress_ = prefix_ + "/phrase";
+    phraseBarsAddress_ = prefix_ + "/phrase_len";
+    intensityAddress_ = prefix_ + "/intensity";
     // Every address is built from the prefix, so one bad prefix is caught here rather
-    // than silently dropping messages later.
-    if (!OscMessage(barAddress_).valid()) {
+    // than silently dropping messages later. The longest is the one most likely refused.
+    if (!OscMessage(timingAddress_).valid()) {
         throw std::invalid_argument("OscPublisher: \"" + prefix_ +
                                     "\" does not make a legal OSC address");
     }
@@ -144,10 +148,7 @@ OscPublisher::setTargets(const std::vector<TargetSpec>& specs) {
     if (added) {
         // A target that is new has never been told the state, and only a change is sent
         // between beats — see `clearTargets`. The others are told it again, which is harmless.
-        lastBpm_ = -1.0;
-        lastConfidence_ = -1.0;
-        lastLocked_ = -1;
-        lastMeter_ = 0;
+        forgetSentState();
     }
     return failures;
 }
@@ -260,10 +261,20 @@ void OscPublisher::clearTargets() noexcept {
     pending_.clear();
     // Back to exactly what a freshly built publisher holds, so a target added after this
     // is told the same things a target present from the start would have been.
+    forgetSentState();
+}
+
+void OscPublisher::forgetSentState() noexcept {
     lastBpm_ = -1.0;
     lastConfidence_ = -1.0;
     lastLocked_ = -1;
     lastMeter_ = 0;
+    lastPhraseBars_ = 0;
+    lastIntensity_ = -1;
+}
+
+void OscPublisher::setPhraseBars(std::uint32_t bars) noexcept {
+    phraseBars_ = std::clamp<std::uint32_t>(bars, 1, kMaxPhraseBars);
 }
 
 void OscPublisher::sendAddress(std::string_view address) {
@@ -403,15 +414,37 @@ void OscPublisher::sendChangedState(double bpm, double confidence, bool locked, 
         sendInt(meterAddress_, static_cast<std::int32_t>(meter), kAllOutputs, moment, true);
         lastMeter_ = meter;
     }
+    if (force || phraseBars_ != lastPhraseBars_) {
+        sendInt(phraseBarsAddress_, static_cast<std::int32_t>(phraseBars_), kAllOutputs, moment,
+                true);
+        lastPhraseBars_ = phraseBars_;
+    }
+    if (intensity_) {
+        const int level = static_cast<int>(*intensity_);
+        if (force || level != lastIntensity_) {
+            sendInt(intensityAddress_, level, kAllOutputs, moment, true);
+            lastIntensity_ = level;
+        }
+    }
 }
 
 void OscPublisher::publishBeat(const tracking::BeatEvent& event, std::optional<double> moment,
-                               std::uint64_t count) {
+                               std::uint64_t count, std::uint64_t bar) {
     const double at = moment.value_or(now_);
     // State first: a consumer that reads the beat and then looks at the tempo should see
     // the tempo of the beat it just got, not the one before it. Both at the beat's own moment,
     // so a target delayed or brought forward keeps them in that order.
     sendChangedState(event.bpm, event.confidence, event.locked, event.beatsPerBar, true, at);
+    // And which bar a downbeat starts before the downbeat: a receiver numbering bars from the
+    // beat would otherwise number this one by the bar before.
+    if (event.downbeat && bar > 0) {
+        const std::uint64_t phrase = (bar - 1) % phraseBars_ + 1;
+        sendInt(barNumberAddress_, static_cast<std::int32_t>(std::min<std::uint64_t>(bar, 0x7FFFFFFF)),
+                kAllOutputs, at, true);
+        sendInt(phraseAddress_,
+                static_cast<std::int32_t>(std::min<std::uint64_t>(phrase, 0x7FFFFFFF)), kAllOutputs,
+                at, true);
+    }
     sendInt(beatAddress_, 1, kAllOutputs, at, true);
     if (event.beatInBar > 0) {
         sendInt(barAddress_, static_cast<std::int32_t>(event.beatInBar), kAllOutputs, at, true);

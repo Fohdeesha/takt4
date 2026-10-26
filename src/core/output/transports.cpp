@@ -609,7 +609,8 @@ void Transports::maintainMidi(double now) noexcept {
     }
 }
 
-void Transports::advance(double now, const tracking::TempoState& state, bool running) {
+void Transports::advance(double now, const tracking::TempoState& state, bool running,
+                         std::optional<features::Intensity> intensity) {
     lastNow_ = now;
     maintainMidi(now);
     for (Clock& clock : clocks_) {
@@ -620,6 +621,7 @@ void Transports::advance(double now, const tracking::TempoState& state, bool run
     // Before this round's state, so a message held from an earlier round goes out ahead of
     // one sent now.
     osc_->flushDue();
+    osc_->setIntensity(intensity);
     osc_->publishState(state, running);
 
     // The lighting half, and the reason it is here rather than in `publish`: a fade is not
@@ -746,7 +748,7 @@ void Transports::publishClocks(const tracking::BeatEvent& event, std::int64_t ho
 }
 
 void Transports::publishBeat(const tracking::BeatEvent& event, double moment, double now,
-                             std::uint64_t count) {
+                             std::uint64_t count, std::uint64_t bar) {
     // A beat queued for a delayed target is due its delay after *this* beat's moment, not
     // after whenever the next round happens to run.
     osc_->setNow(now);
@@ -755,7 +757,7 @@ void Transports::publishBeat(const tracking::BeatEvent& event, double moment, do
     if (event.downbeat) {
         downbeats_.fetch_add(1, std::memory_order_relaxed);
     }
-    osc_->publishBeat(event, moment, count);
+    osc_->publishBeat(event, moment, count, bar);
 }
 
 void Transports::publish(const tracking::BeatEvent& event, std::int64_t hostMicros,

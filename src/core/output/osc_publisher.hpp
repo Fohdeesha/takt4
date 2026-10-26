@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/features/intensity.hpp"
 #include "core/output/osc_message.hpp"
 #include "core/output/osc_sender.hpp"
 #include "core/output/output_target.hpp"
@@ -19,24 +20,32 @@ namespace takt4::output {
 /// takt4's generic OSC namespace, published to any number of targets.
 ///
 /// A generic namespace, the same whichever host preset is active, so anything can consume it
-/// with zero configuration. These nine addresses are that namespace:
+/// with zero configuration. These addresses are that namespace:
 ///
 ///     /takt4/bpm         float   the published tempo
+///     /takt4/bar         int     which bar it is, 1 on the first locked downbeat; on downbeats
+///     /takt4/phrase      int     which bar of its phrase that bar is, 1..L; on downbeats
 ///     /takt4/beat        int     1, on every beat
 ///     /takt4/beat/bar    int     which beat of the bar it was, 1..N
 ///     /takt4/downbeat    int     1, on downbeats only
 ///     /takt4/confidence  float   0 to 1
 ///     /takt4/locked      int     0 or 1
 ///     /takt4/meter       int     N, the detected beats per bar
+///     /takt4/phrase_len  int     L, the bars a phrase is counted in (`setPhraseBars`)
+///     /takt4/intensity   int     0 calm, 1 normal, 2 intense: the intensity classifier's
 ///     /takt4/resync      int     1, when the tracker has just re-found itself
-///     /takt4/intensity   int     0, 1 or 2 — the intensity classifier's; not sent yet
 ///
 /// And one more, with every beat after `/downbeat`:
 ///
 ///     /takt4/beat/timing float float int   ms since the beat, ms until the next, the run's
 ///                                          beats so far (see `publishBeat`)
 ///
-/// The four state addresses are sent on every beat, and between beats when a value changes —
+/// **`/bar` and `/phrase` come before the `/beat` of the downbeat they number**, at its moment,
+/// so a receiver knows which bar a downbeat is as the downbeat arrives. `/phrase` 1 is the first
+/// bar of a phrase — bars 1, L + 1, 2L + 1 — which is what a show fires a phrase's cue on. The bars are the output
+/// thread's count (`OutputRunner`), the one the rules count in and the window shows.
+///
+/// The six state addresses are sent on every beat, and between beats when a value changes —
 /// the tempo by more than 0.005 BPM, the confidence by more than 0.005 — so a consumer that
 /// started late is right again within a beat rather than waiting for the operator to touch
 /// something. **Only while a run is locked** (`publishState`): nothing before the first lock,
@@ -173,8 +182,21 @@ public:
     /// plus any lateness, and negative when it goes ahead; how long until the next beat, from the
     /// tempo; and `count`, the run's beats so far, so a dropped datagram is told from a missed
     /// beat. Worked out as each output's copy goes, not when the beat was fired.
+    ///
+    /// `bar`, on a downbeat, is the bar it starts, and is said with its place in its phrase
+    /// before the beat itself; zero says nothing of either.
     void publishBeat(const tracking::BeatEvent& event, std::optional<double> moment = std::nullopt,
-                     std::uint64_t count = 0);
+                     std::uint64_t count = 0, std::uint64_t bar = 0);
+
+    /// How many bars a phrase is, which `/phrase` counts round and `/phrase_len` says: 1 to
+    /// `kMaxPhraseBars`.
+    void setPhraseBars(std::uint32_t bars) noexcept;
+    std::uint32_t phraseBars() const noexcept { return phraseBars_; }
+    static constexpr std::uint32_t kMaxPhraseBars = 256;
+
+    /// The intensity classifier's level, `/intensity`, sent with the state; `std::nullopt` says
+    /// nothing, as before any is known.
+    void setIntensity(std::optional<features::Intensity> level) noexcept { intensity_ = level; }
 
     /// `packet` to every output that takes takt4's own messages, **now**: no delay, no offset, no
     /// queue. The heartbeat and the status (`remote`), which are about takt4 and not about a beat
@@ -248,9 +270,12 @@ private:
                  bool own);
     void sendFloat(std::string_view address, float value, std::uint64_t outputs, double moment,
                    bool own);
-    /// Sends the four state addresses whose value has moved, and remembers them.
+    /// Sends the state addresses whose value has moved, and remembers them.
     void sendChangedState(double bpm, double confidence, bool locked, std::uint32_t meter,
                           bool force, double moment);
+    /// What the last value of each sent was, forgotten: a target that has never been told the
+    /// state is told it whole.
+    void forgetSentState() noexcept;
 
     std::string prefix_;
     std::string timingAddress_;
@@ -263,6 +288,12 @@ private:
     std::string lockedAddress_;
     std::string meterAddress_;
     std::string resyncAddress_;
+    std::string barNumberAddress_;
+    std::string phraseAddress_;
+    std::string phraseBarsAddress_;
+    std::string intensityAddress_;
+    std::uint32_t phraseBars_ = 8;
+    std::optional<features::Intensity> intensity_;
 
     /// A sender and the routing bit that selects it; see `addTarget`.
     struct Target {
@@ -329,6 +360,8 @@ private:
     double lastConfidence_ = -1.0;
     int lastLocked_ = -1;
     std::uint32_t lastMeter_ = 0;
+    std::uint32_t lastPhraseBars_ = 0;
+    int lastIntensity_ = -1;
     std::uint64_t sent_ = 0;
     std::uint64_t failed_ = 0;
 };

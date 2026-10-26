@@ -266,6 +266,26 @@ TEST_CASE("the two addresses that reach the rules rather than the tracker", "[co
         CHECK(rules.rates()[0].factor == 2.0);
     }
 
+    SECTION("bar renumbers the bars: a whole number, one or more, and nothing else") {
+        // `/takt4/ctl/bar <n>`, the bar playing is bar n. What the rules count bars in and
+        // `/takt4/bar` says is the output thread's (tests/output/output_runner_test.cpp); this is
+        // the route, and what it refuses rather than rounds.
+        CHECK(control.dispatch("/takt4/ctl/bar", 5.0));
+        CHECK(control.dispatch("/takt4/ctl/bar", 1.0));
+        CHECK(control.dispatch("/takt4/ctl/bar", 2147483647.0));
+        for (const double junk : {0.0, -3.0, 2.5, 2147483648.0,
+                                  std::numeric_limits<double>::quiet_NaN(),
+                                  std::numeric_limits<double>::infinity()}) {
+            INFO(junk);
+            CHECK_FALSE(control.dispatch("/takt4/ctl/bar", junk));
+        }
+        CHECK_FALSE(control.dispatch("/takt4/ctl/bar", std::nullopt));
+        CHECK(rules.bars() == std::vector<std::int64_t>{5, 1, 2147483647});
+        // Nowhere to send it is not acted on either.
+        OscControl unwired(*engine, localConfig(kAnyPort));
+        CHECK_FALSE(unwired.dispatch("/takt4/ctl/bar", 5.0));
+    }
+
     SECTION("mute is its own verb, because it is its own state") {
         // Not a second spelling of enable: a disabled rule stops running and restarts when it
         // comes back, a muted one keeps running and stops sending. Dropping a layer out for

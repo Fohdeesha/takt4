@@ -282,6 +282,8 @@ public:
     void setClockObey(bool obey);
     /// Beats to the bar while following, 1 to 16. Only while stopped: it is fixed for a run.
     void setExternalBeatsPerBar(int beats);
+    /// The outputs heading's "in phrases of N bars": what `/takt4/phrase` counts in.
+    void setPhraseBars(int bars);
     /// Whose beats the CDJs' are, as an index into `cdj-follow-choices` — 0 the tempo master —
     /// and by player number (0 the master). Any time, running or not: at once.
     void pickCdjFollow(int index);
@@ -868,6 +870,8 @@ private:
     std::string clockPort_;
     bool clockObey_ = false;
     std::uint32_t externalBeatsPerBar_ = 4;
+    /// See `settings::Preset::phraseBars`.
+    std::uint32_t phraseBars_ = 8;
     /// Each followed source's own latency, which `activeLatencySeconds` hands the outputs while
     /// it is picked; beat detection's is the tracker's (`settings().latencyOffsetSeconds`).
     settings::Preset::TimingLatency timingLatency_;

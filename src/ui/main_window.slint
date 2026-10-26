@@ -576,6 +576,10 @@ export component MainWindow inherits Window {
   /// outputs there are and are ticked, which the window cannot count from a model itself. With no
   /// OSC output the box is not there: there would be nothing to pick.
   in property <string> global-summary: "nothing";
+  /// How many bars `/takt4/phrase` counts in, and `/takt4/phrase_len` says (`settings::Preset::
+  /// phraseBars`): the end of the heading's sentence, "global messages to … in phrases of 8 bars".
+  in-out property <int> phrase-bars: 8;
+  callback phrase-bars-edited(int);
   in property <int> global-osc-count;
   in property <int> global-ticked;
   /// Whether its list is open, for the tests, which find the list's rows by probing.
@@ -2415,6 +2419,32 @@ export component MainWindow inherits Window {
                     all-toggled(on) => {
                       root.outputs-namespace-all(on);
                     }
+                  }
+                  // What `/takt4/phrase` counts in, which only those messages carry.
+                  Text {
+                    text: "in phrases of";
+                    color: Wf.ink2;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                  }
+                  Count {
+                    width: 56px;
+                    height: 28px;
+                    value: root.phrase-bars;
+                    minimum: 1;
+                    maximum: 256;
+                    edited(bars) => {
+                      root.phrase-bars = bars;
+                      root.phrase-bars-edited(bars);
+                    }
+                  }
+                  Text {
+                    text: "bars";
+                    color: Wf.ink2;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
                   }
                 }
               }

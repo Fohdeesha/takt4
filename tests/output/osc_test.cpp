@@ -28,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using Catch::Matchers::ContainsSubstring;
@@ -371,15 +372,16 @@ TEST_CASE("the generic namespace is published as documented", "[output][osc]") {
 
     // Everything a consumer needs, on the first beat it hears: the state, then the beat.
     std::vector<std::string> addresses;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 9; ++i) {
         const std::string packet = receiver.receive();
         REQUIRE_FALSE(packet.empty());
         addresses.push_back(packet.substr(0, packet.find('\0')));
     }
     CHECK(addresses == std::vector<std::string>{"/takt4/bpm", "/takt4/confidence", "/takt4/locked",
-                                                "/takt4/meter", "/takt4/beat", "/takt4/beat/bar",
-                                                "/takt4/downbeat", "/takt4/beat/timing"});
-    CHECK(publisher.messagesSent() == 8);
+                                                "/takt4/meter", "/takt4/phrase_len", "/takt4/beat",
+                                                "/takt4/beat/bar", "/takt4/downbeat",
+                                                "/takt4/beat/timing"});
+    CHECK(publisher.messagesSent() == 9);
     CHECK(publisher.messagesFailed() == 0);
 
     SECTION("state that has not changed is not resent between beats") {
@@ -389,16 +391,22 @@ TEST_CASE("the generic namespace is published as documented", "[output][osc]") {
         state.locked = true;
         state.beatsPerBar = 4;
         publisher.publishState(state);
-        CHECK(publisher.messagesSent() == 8);
+        CHECK(publisher.messagesSent() == 9);
 
         state.confidence = 0.20;
         publisher.publishState(state);
-        CHECK(publisher.messagesSent() == 9);
+        CHECK(publisher.messagesSent() == 10);
         CHECK(receiver.receive().substr(0, 17) == "/takt4/confidence");
+
+        // And the phrase length, which moves when the operator moves it.
+        publisher.setPhraseBars(16);
+        publisher.publishState(state);
+        CHECK(publisher.messagesSent() == 11);
+        CHECK(receiver.receive().substr(0, 17) == "/takt4/phrase_len");
 
         state.locked = false;
         publisher.publishState(state);
-        CHECK(publisher.messagesSent() == 10);
+        CHECK(publisher.messagesSent() == 12);
         CHECK(receiver.receive().substr(0, 13) == "/takt4/locked");
     }
 
@@ -408,16 +416,16 @@ TEST_CASE("the generic namespace is published as documented", "[output][osc]") {
         early.beatInBar = 0;
         publisher.publishBeat(early);
         // Every beat repeats the state, so a consumer that started late is right again
-        // within a beat: four state messages, the beat and its timing, and nothing else.
-        CHECK(publisher.messagesSent() == 14);
+        // within a beat: five state messages, the beat and its timing, and nothing else.
+        CHECK(publisher.messagesSent() == 16);
         std::vector<std::string> after;
-        for (int i = 0; i < 6; ++i) {
+        for (int i = 0; i < 7; ++i) {
             const std::string packet = receiver.receive();
             REQUIRE_FALSE(packet.empty());
             after.push_back(packet.substr(0, packet.find('\0')));
         }
         CHECK(after == std::vector<std::string>{"/takt4/bpm", "/takt4/confidence", "/takt4/locked",
-                                                "/takt4/meter", "/takt4/beat",
+                                                "/takt4/meter", "/takt4/phrase_len", "/takt4/beat",
                                                 "/takt4/beat/timing"});
     }
 
@@ -425,6 +433,118 @@ TEST_CASE("the generic namespace is published as documented", "[output][osc]") {
         publisher.publishResync();
         CHECK(receiver.receive().substr(0, 13) == "/takt4/resync");
     }
+}
+
+namespace {
+
+/// Each datagram's address and its one int argument, or -1 where it has none.
+std::vector<std::pair<std::string, std::int32_t>> addressesAndInts(LoopbackReceiver& receiver) {
+    std::vector<std::pair<std::string, std::int32_t>> out;
+    for (std::string packet = receiver.receive(); !packet.empty(); packet = receiver.receive()) {
+        const std::string address = packet.substr(0, packet.find('\0'));
+        std::int32_t value = -1;
+        const std::size_t tags = packet.find(",i");
+        if (tags != std::string::npos && packet.size() >= tags + 8) {
+            const auto byte = [&](std::size_t i) {
+                return static_cast<std::uint32_t>(static_cast<unsigned char>(packet[tags + 4 + i]));
+            };
+            value = static_cast<std::int32_t>(byte(0) << 24 | byte(1) << 16 | byte(2) << 8 | byte(3));
+        }
+        out.emplace_back(address, value);
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("a downbeat says its bar and its phrase before itself, and other beats say neither",
+          "[output][osc]") {
+    // A receiver numbering bars has the number as the downbeat arrives, not a datagram after it.
+    LoopbackReceiver receiver;
+    OscPublisher publisher;
+    publisher.addTarget("127.0.0.1", receiver.port(), 0);
+    takt4::tracking::BeatEvent event;
+    event.bpm = 128.0;
+    event.confidence = 0.75;
+    event.locked = true;
+    event.beatsPerBar = 4;
+    event.beatInBar = 1;
+    event.downbeat = true;
+
+    // Bar 9 of phrases of eight: the second phrase's first bar.
+    publisher.publishBeat(event, std::nullopt, 33, 9);
+    std::vector<std::pair<std::string, std::int32_t>> got = addressesAndInts(receiver);
+    REQUIRE(got.size() == 11);
+    CHECK(got[5] == std::pair<std::string, std::int32_t>{"/takt4/bar", 9});
+    CHECK(got[6] == std::pair<std::string, std::int32_t>{"/takt4/phrase", 1});
+    CHECK(got[7].first == "/takt4/beat");
+    CHECK(got[4] == std::pair<std::string, std::int32_t>{"/takt4/phrase_len", 8});
+
+    SECTION("the last bar of a phrase is its eighth") {
+        publisher.publishBeat(event, std::nullopt, 34, 8);
+        got = addressesAndInts(receiver);
+        REQUIRE(got.size() == 11);
+        CHECK(got[6] == std::pair<std::string, std::int32_t>{"/takt4/phrase", 8});
+    }
+    SECTION("phrases of another length count in it") {
+        publisher.setPhraseBars(4);
+        publisher.publishBeat(event, std::nullopt, 34, 9);
+        got = addressesAndInts(receiver);
+        REQUIRE(got.size() == 11);
+        CHECK(got[4] == std::pair<std::string, std::int32_t>{"/takt4/phrase_len", 4});
+        CHECK(got[6] == std::pair<std::string, std::int32_t>{"/takt4/phrase", 1});
+        publisher.publishBeat(event, std::nullopt, 35, 11);
+        got = addressesAndInts(receiver);
+        REQUIRE(got.size() == 11);
+        CHECK(got[6] == std::pair<std::string, std::int32_t>{"/takt4/phrase", 3});
+        // And a length past the end is the longest there is, never none.
+        publisher.setPhraseBars(0);
+        CHECK(publisher.phraseBars() == 1);
+        publisher.setPhraseBars(100000);
+        CHECK(publisher.phraseBars() == OscPublisher::kMaxPhraseBars);
+    }
+    SECTION("a beat that is not a downbeat, and a downbeat with no bar counted, say neither") {
+        takt4::tracking::BeatEvent second = event;
+        second.downbeat = false;
+        second.beatInBar = 2;
+        publisher.publishBeat(second, std::nullopt, 34, 9);
+        publisher.publishBeat(event, std::nullopt, 35, 0);
+        for (const auto& [address, value] : addressesAndInts(receiver)) {
+            INFO(address);
+            CHECK(address != "/takt4/bar");
+            CHECK(address != "/takt4/phrase");
+        }
+    }
+}
+
+TEST_CASE("the intensity is said with the state once it is known, and between beats when it moves",
+          "[output][osc]") {
+    LoopbackReceiver receiver;
+    OscPublisher publisher;
+    publisher.addTarget("127.0.0.1", receiver.port(), 0);
+    takt4::tracking::TempoState state;
+    state.bpm = 128.0;
+    state.confidence = 0.75;
+    state.locked = true;
+    state.beatsPerBar = 4;
+    // Not known: nothing said of it.
+    publisher.publishState(state);
+    for (const auto& [address, value] : addressesAndInts(receiver)) {
+        CHECK(address != "/takt4/intensity");
+    }
+    publisher.setIntensity(takt4::features::Intensity::Intense);
+    publisher.publishState(state);
+    std::vector<std::pair<std::string, std::int32_t>> got = addressesAndInts(receiver);
+    REQUIRE(got.size() == 1);
+    CHECK(got[0] == std::pair<std::string, std::int32_t>{"/takt4/intensity", 2});
+    // Unchanged: not again.
+    publisher.publishState(state);
+    CHECK(addressesAndInts(receiver).empty());
+    publisher.setIntensity(takt4::features::Intensity::Calm);
+    publisher.publishState(state);
+    got = addressesAndInts(receiver);
+    REQUIRE(got.size() == 1);
+    CHECK(got[0] == std::pair<std::string, std::int32_t>{"/takt4/intensity", 0});
 }
 
 TEST_CASE("the namespace prefix is checked when the publisher is built", "[output][osc]") {
@@ -543,7 +663,7 @@ TEST_CASE("a negative offset lands ahead of the beat it belongs to", "[output][o
         event.downbeat = true;
         publisher.setNow(40.0);
         publisher.publishBeat(event, 40.5);
-        CHECK(publisher.pending() == 8);
+        CHECK(publisher.pending() == 9);
         publisher.setNow(40.1999);
         publisher.flushDue();
         CHECK(early.receive().empty());
@@ -554,8 +674,9 @@ TEST_CASE("a negative offset lands ahead of the beat it belongs to", "[output][o
             got.push_back(packet.substr(0, packet.find('\0')));
         }
         CHECK(got == std::vector<std::string>{"/takt4/bpm", "/takt4/confidence", "/takt4/locked",
-                                              "/takt4/meter", "/takt4/beat", "/takt4/beat/bar",
-                                              "/takt4/downbeat", "/takt4/beat/timing"});
+                                              "/takt4/meter", "/takt4/phrase_len", "/takt4/beat",
+                                              "/takt4/beat/bar", "/takt4/downbeat",
+                                              "/takt4/beat/timing"});
     }
 
     SECTION("flushing sends everything held, whatever it was waiting for") {
@@ -781,7 +902,7 @@ TEST_CASE("a target that takes only its rules is sent nothing of the namespace",
     const std::vector<std::string> atDeck = addresses(deck);
     const std::vector<std::string> atWinch = addresses(winch);
     INFO("deck: " << atDeck.size() << " datagrams, winch: " << atWinch.size());
-    CHECK(namespaced(atDeck) == 10); // the beat's eight, the resync, the tempo that moved
+    CHECK(namespaced(atDeck) == 11); // the beat's nine, the resync, the tempo that moved
     CHECK(std::find(atDeck.begin(), atDeck.end(), "/everywhere") != atDeck.end());
     CHECK(std::find(atDeck.begin(), atDeck.end(), "/winch/cue") == atDeck.end());
     CHECK(atWinch == std::vector<std::string>{"/everywhere", "/winch/cue"});
@@ -791,7 +912,7 @@ TEST_CASE("a target that takes only its rules is sent nothing of the namespace",
         publisher.setNow(2.0);
         publisher.publishBeat(event);
         publisher.sendAddressTo(std::uint64_t{1} << kWinchBit, "/winch/cue", std::int32_t{1});
-        REQUIRE(publisher.pending() == 9); // the beat's eight and the cue, all the winch's
+        REQUIRE(publisher.pending() == 10); // the beat's nine and the cue, all the winch's
         REQUIRE(publisher.setTargets(targets(false, 0.3)).empty());
         CHECK(publisher.pending() == 1);
         publisher.setNow(2.4);

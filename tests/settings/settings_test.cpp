@@ -209,6 +209,21 @@ TEST_CASE("a file with Link and the MIDI clock as settings of their own loads th
     }
 }
 
+TEST_CASE("the bars of a phrase are kept, and a number that is not one is eight", "[settings]") {
+    Settings in;
+    in.preset.phraseBars = 16;
+    CHECK(roundTrip(in).preset.phraseBars == 16);
+    CHECK(Settings{}.preset.phraseBars == 8);
+    for (const char* file : {R"({"preset": {"phraseBars": 0}})", R"({"preset": {"phraseBars": -4}})",
+                             R"({"preset": {"phraseBars": 257}})", R"({"preset": {"phraseBars": "16"}})",
+                             R"({"preset": {"phraseBars": 2.5}})", R"({"preset": {}})"}) {
+        INFO(file);
+        CHECK(takt4::settings::fromJson(file).preset.phraseBars == 8);
+    }
+    CHECK(takt4::settings::fromJson(R"({"preset": {"phraseBars": 256}})").preset.phraseBars == 256);
+    CHECK(takt4::settings::fromJson(R"({"preset": {"phraseBars": 1}})").preset.phraseBars == 1);
+}
+
 TEST_CASE("the two layers stay apart in the file", "[settings]") {
     // The whole point of two layers: the portable half has to be liftable into a preset file
     // without a migration, which means it cannot be mixed in with the machine's own business.

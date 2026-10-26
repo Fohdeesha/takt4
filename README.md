@@ -81,14 +81,20 @@ takt4 sends the below global data to all OSC outputs you tick under **/takt4 glo
 
 ```
 /takt4/bpm         float   the tempo
+/takt4/bar         int     which bar, on each downbeat: 1 on the first after start or a silence
+/takt4/phrase      int     which bar of its phrase, on each downbeat: 1 on bars 1, 9, 17 in phrases of 8
 /takt4/beat        int     1, on every beat
 /takt4/beat/bar    int     which beat of the bar, 1..N
 /takt4/downbeat    int     1, on downbeats
 /takt4/confidence  float   0 to 1
 /takt4/locked      int     0 or 1
 /takt4/meter       int     beats per bar
+/takt4/phrase_len  int     the bars in a phrase, set by "in phrases of" in the outputs heading
+/takt4/intensity   int     0 calm, 1 normal, 2 intense
 /takt4/resync      int     1, when the tracker has just found itself again
 ```
+
+`/takt4/bar` and `/takt4/phrase` go just before their downbeat's `/takt4/beat`. The rules count bars the same way, so "every 4 bars" fires on bars 1, 5, 9…
 
 They go out only while takt4 is running and locked: nothing while it hunts or is stopped. When the lock is lost, and at **stop**, `/takt4/locked 0` goes out once.
 
@@ -106,6 +112,7 @@ address                       send           does
 /takt4/ctl/panic              anything       panic
 /takt4/ctl/panic/release      nothing or 1   release
 /takt4/ctl/manual             nothing or 1   fire the manual rules
+/takt4/ctl/bar                a number       this bar is bar n, so the next downbeat is n + 1
 /takt4/ctl/rule/<id>/enable   1 or 0         switch a rule on (1) or off (0)
 /takt4/ctl/rule/<id>/mute     1 or 0         mute (1) or unmute (0) a rule
 /takt4/ctl/rule/<id>/double   nothing or 1   fire half as often

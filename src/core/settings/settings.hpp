@@ -197,6 +197,9 @@ struct Preset {
     /// older build given the file.
     bool link = false;
     std::string oscPrefix = "/takt4";
+    /// How many bars `/takt4/phrase` counts in, and `/takt4/phrase_len` says: 1 to 256, and a
+    /// file that says anything else, or nothing, eight — a phrase of most dance music.
+    std::uint32_t phraseBars = 8;
 
     /// Beats to the bar while a source is followed: neither Link nor a MIDI clock carries a
     /// meter, so it is the operator's, and it is Link's quantum too. 1 to 16; a file that says

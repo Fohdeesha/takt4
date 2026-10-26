@@ -5525,7 +5525,8 @@ TEST_CASE("takt4's own messages go to no OSC output until one is ticked in the o
     const int headRow = sheets[5].first + 10 + 14;
     const auto head = occupied(shot, headRow - 13, headRow + 13, 300, kWidth - 56, kSheet, 5);
     INFO("the outputs heading: " << spans(head));
-    REQUIRE(head.size() == 2);
+    // The label, the box, and the phrases' "in phrases of", count and "bars".
+    REQUIRE(head.size() == 5);
     const float boxX = middleOf(head[1]);
     const auto flags = [&rows] {
         return std::pair{rows->row_data(1)->sends_namespace, rows->row_data(2)->sends_namespace};
@@ -5541,7 +5542,8 @@ TEST_CASE("takt4's own messages go to no OSC output until one is ticked in the o
                     settle();
                 }
                 const auto before = flags();
-                clickAt(window, 600.0f, static_cast<float>(y));
+                // Under the box: the list hangs from its right edge (`GlobalPick`).
+                clickAt(window, boxX, static_cast<float>(y));
                 settle();
                 const auto after = flags();
                 if (after != before && after == wanted) {
@@ -5604,7 +5606,7 @@ TEST_CASE("takt4's own messages go to no OSC output until one is ticked in the o
     REQUIRE(controller.settleOutputs());
     CHECK(count(heard(winch), "/takt4/bpm") > 0);
     // And again, all of them off.
-    clickAt(window, 600.0f, everyLine);
+    clickAt(window, boxX, everyLine);
     settle();
     CHECK(flags() == std::pair{false, false});
     CHECK(std::string(controller.window().get_global_summary()) == "nothing");
@@ -7394,8 +7396,8 @@ TEST_CASE("the global messages box is in the outputs heading only with an OSC ou
     rows->push_back(deck);
     takt4::ui::publishGlobalMessages(*window, {link, clock, deck});
     CHECK(std::string(window->get_global_summary()) == "nothing");
-    INFO("one OSC output: its label and its box");
-    CHECK(middle().size() == 2);
+    INFO("one OSC output: its label and its box, and the phrases' words and count after them");
+    CHECK(middle().size() == 5);
 
     window->set_outputs_folded(true);
     window->set_outputs_on(3);
@@ -7437,6 +7439,7 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     window->on_clock_in_picked([&](int i) { note("clock-in " + std::to_string(i)); });
     window->on_clock_obey_toggled([&](bool on) { note(std::string("obey ") + (on ? "1" : "0")); });
     window->on_timing_beats_per_bar_edited([&](int n) { note("beats " + std::to_string(n)); });
+    window->on_phrase_bars_edited([&](int n) { note("phrase " + std::to_string(n)); });
     window->on_timing_change_clicked([&] { note("timing-change"); });
     window->on_learn_action_picked([&](int i) { note("action " + std::to_string(i)); });
     window->on_learn_clicked([&] { note("learn"); });
@@ -7860,7 +7863,8 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     const int headRow = sheets[5].first + 10 + 14;
     const auto head = occupied(shot, headRow - 13, headRow + 13, 300, kWidth - 56, kSheet, 5);
     INFO("the outputs heading: " << spans(head));
-    REQUIRE(head.size() == 2);
+    // The label, the box, and "in phrases of", its count and "bars".
+    REQUIRE(head.size() == 5);
     CHECK(std::string(window->get_global_summary()) == "nothing");
     click(middleOf(head[0]), headRow);
     expect({}, "the label, which is words");
@@ -7880,7 +7884,8 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
             if (!window->get_global_open()) {
                 click(middleOf(head[1]), headRow);
             }
-            click(600.0f, y);
+            // Under the box: the list hangs from its right edge (`GlobalPick`).
+            click(middleOf(head[1]), y);
             if (fired == std::vector<std::string>{"namespace 1 1"}) {
                 deckLine = static_cast<float>(y);
             } else {
@@ -7897,6 +7902,19 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     key(kEscape);
     CHECK_FALSE(window->get_global_open());
     expect({}, "Escape in the open list");
+    // After the box, the length of a phrase: words, a number typed, words.
+    click(middleOf(head[2]), headRow);
+    expect({}, "in phrases of, which is words");
+    click(middleOf(head[3]), headRow);
+    takt4::tests::endOfText(handle);
+    key("\x08");
+    key("6");
+    key("\n");
+    expect({"phrase 6"}, "the phrase box: a number typed, then Enter");
+    click(middleOf(head[4]), headRow);
+    expect({}, "bars, which is words");
+    window->set_phrase_bars(8);
+    settle();
 
     // [+ add output], under the rows.
     const int addRow = clockRow + 17 + 8 + 4 + 14;
@@ -11492,13 +11510,13 @@ TEST_CASE("whatever a show controller sends, the window stays up, answers and sa
     };
     const auto pick = [&next](std::size_t count) { return static_cast<std::size_t>(next() % count); };
 
-    const std::array<std::string_view, 27> verbs = {
+    const std::array<std::string_view, 28> verbs = {
         "status",        "audio/devices", "outputs",          "audio/start",   "audio/stop",
         "audio/restart", "audio/device",  "audio/channel",    "source",        "output/add",
         "output/1/enable", "output/1/delay", "output/1/global", "output//enable", "output/",
         "output/\xff/delay", "tap",       "downbeat",         "tempo/halve",   "tempo/double",
         "lock",          "panic",         "panic/release",    "manual",        "rule/x/enable",
-        "",              "audio"};
+        "",              "audio",         "bar"};
     const std::array<std::string, 22> words = {
         "",
         "audio",
@@ -12424,4 +12442,77 @@ TEST_CASE("an input picked from the network is the one the pickers show, and its
     REQUIRE(status.devices.size() == 2);
     CHECK(status.devices[1].device == "Microphone");
     CHECK(status.devices[1].inputs == 2);
+}
+
+TEST_CASE("the bars of a phrase typed in the outputs heading are what /takt4/phrase counts in, and "
+          "are saved",
+          "[ui][bars]") {
+    // The end of the heading's sentence, "global messages to … in phrases of 8 bars": typed into
+    // as an operator would, and read back where it acts — the output thread's publisher — and
+    // where it is kept.
+    LiveTracker tracker(kWeights, kStateSpace);
+    takt4::testing::LoopbackReceiver deck;
+    takt4::settings::Settings saved;
+    takt4::output::OutputTarget out;
+    out.id = "o-00000dec";
+    out.name = "deck";
+    out.kind = takt4::output::OutputTarget::Kind::Osc;
+    out.host = "127.0.0.1";
+    out.port = deck.port();
+    saved.preset.outputs = {out};
+    saved.preset.phraseBars = 4; // as a file holding it would
+    WindowController controller(tracker, saved);
+    constexpr int kWidth = 800;
+    constexpr int kHeight = 1400;
+    const takt4::tests::Shot shot = takt4::tests::render(controller.window(), kWidth, kHeight);
+    auto& window = controller.window().window();
+    window.dispatch_window_active_changed_event(true);
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    const auto publisherBars = [&controller] {
+        REQUIRE(controller.settleOutputs());
+        return controller.outputs().inspect(
+            [](const auto&, const takt4::output::Transports& transports, const auto&) {
+                return transports.osc().phraseBars();
+            });
+    };
+    CHECK(controller.window().get_phrase_bars() == 4);
+    CHECK(publisherBars() == 4u);
+
+    const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+    REQUIRE(sheets.size() == 7);
+    const int headRow = sheets[5].first + 10 + 14;
+    const auto head = occupied(shot, headRow - 13, headRow + 13, 300, kWidth - 56, kSheet, 5);
+    INFO("the outputs heading: " << spans(head));
+    REQUIRE(head.size() == 5);
+    clickAt(window, middleOf(head[3]), static_cast<float>(headRow));
+    settle();
+    takt4::tests::endOfText(window);
+    press(window, "\x08");
+    press(window, "1");
+    press(window, "6");
+    press(window, "\n");
+    settle();
+    CHECK(controller.window().get_phrase_bars() == 16);
+    CHECK(publisherBars() == 16u);
+
+    // And a number past the end is the longest there is, not refused into nothing.
+    clickAt(window, middleOf(head[3]), static_cast<float>(headRow));
+    settle();
+    takt4::tests::endOfText(window);
+    press(window, "\x08");
+    press(window, "\x08");
+    press(window, "9");
+    press(window, "9");
+    press(window, "9");
+    press(window, "\n");
+    settle();
+    CHECK(controller.window().get_phrase_bars() == 256);
+    CHECK(publisherBars() == 256u);
+
+    const std::filesystem::path file = takt4::settings::settingsFile();
+    REQUIRE(controller.saveNow());
+    CHECK(takt4::settings::load(file).preset.phraseBars == 256u);
 }

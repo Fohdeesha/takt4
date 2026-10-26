@@ -48,6 +48,17 @@ public:
         ++manuals_;
     }
 
+    void setBar(std::int64_t bar) override {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        bars_.push_back(bar);
+    }
+
+    /// Each `/ctl/bar` as it was asked for.
+    std::vector<std::int64_t> bars() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return bars_;
+    }
+
     /// How many times `/ctl/manual` was asked for.
     int manuals() const {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -93,6 +104,7 @@ private:
     std::vector<std::pair<std::string, bool>> enables_;
     std::vector<std::pair<std::string, bool>> mutes_;
     std::vector<Rate> rates_;
+    std::vector<std::int64_t> bars_;
     int manuals_ = 0;
 };
 

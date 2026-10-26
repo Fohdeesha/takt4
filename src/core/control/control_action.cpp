@@ -164,6 +164,15 @@ double ControlSurface::nowSeconds() const noexcept {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count();
 }
 
+bool ControlSurface::setBar(std::optional<double> argument) {
+    if (rules_ == nullptr || !argument || !std::isfinite(*argument) || *argument < 1.0 ||
+        *argument > 2147483647.0 || std::floor(*argument) != *argument) {
+        return false;
+    }
+    rules_->setBar(static_cast<std::int64_t>(*argument));
+    return true;
+}
+
 bool ControlSurface::apply(const ControlTarget& target, std::optional<double> argument) {
     return apply(target, argument, nowSeconds());
 }

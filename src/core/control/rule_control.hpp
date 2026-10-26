@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string_view>
 
 namespace takt4::control {
@@ -63,6 +64,9 @@ public:
 
     /// `/ctl/manual` — fires every rule whose trigger is "manual hotkey", conditions and all.
     virtual void fireManual() = 0;
+    /// `/ctl/bar <n>` — the bar playing is bar `bar`, 1 or more, and the next downbeat starts the
+    /// one after: what the rules count bars in and `/takt4/bar` says from then on.
+    virtual void setBar(std::int64_t bar) = 0;
 
 protected:
     RuleControl() = default;

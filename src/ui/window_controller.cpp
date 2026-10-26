@@ -719,6 +719,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_clock_in_picked([this](int index) { pickClockPort(index); });
     window_->on_clock_obey_toggled([this](bool obey) { setClockObey(obey); });
     window_->on_timing_beats_per_bar_edited([this](int beats) { setExternalBeatsPerBar(beats); });
+    window_->on_phrase_bars_edited([this](int bars) { setPhraseBars(bars); });
     window_->on_cdj_follow_picked([this](int index) { pickCdjFollow(index); });
     window_->on_cdj_card_picked([this](int index) { pickCdjCard(index); });
     // The banner's CHANGE: the timing row, which is in "02 inputs", folded or not.
@@ -879,6 +880,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     clockFollower_.setObeyStartStop(clockObey_);
     externalBeatsPerBar_ = settings.preset.externalBeatsPerBar;
     timingLatency_ = settings.preset.timingLatency;
+    setPhraseBars(static_cast<int>(settings.preset.phraseBars));
     cdjFollow_ = settings.machine.proLinkFollow;
     cdjPick_ = cardPickOf(settings.machine);
     cdjs_->setFollow(cdjFollow_);
@@ -3530,6 +3532,7 @@ settings::Settings WindowController::currentSettings() const {
     out.preset.library = library_;
     out.preset.externalBeatsPerBar = externalBeatsPerBar_;
     out.preset.timingLatency = timingLatency_;
+    out.preset.phraseBars = phraseBars_;
     return out;
 }
 
@@ -3733,6 +3736,7 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // before the tracker's options, which hand the outputs whichever latency is in force.
     timingLatency_ = loaded.preset.timingLatency;
     externalBeatsPerBar_ = loaded.preset.externalBeatsPerBar;
+    setPhraseBars(static_cast<int>(loaded.preset.phraseBars));
     publishTiming();
     postOptions(loaded.preset.tempo);
     // **The lighting patch too**: an import used to leave the patch alone, so every
@@ -4664,6 +4668,14 @@ void WindowController::setClockObey(bool obey) {
     clockObey_ = obey;
     clockFollower_.setObeyStartStop(obey);
     publishTiming();
+}
+
+void WindowController::setPhraseBars(int bars) {
+    phraseBars_ = static_cast<std::uint32_t>(
+        std::clamp(bars, 1, static_cast<int>(output::OscPublisher::kMaxPhraseBars)));
+    // Written back, as the box is the owner's: one that is not would not move.
+    window_->set_phrase_bars(static_cast<int>(phraseBars_));
+    runner_.post(output::OutputCommand::phraseBars(phraseBars_));
 }
 
 void WindowController::setExternalBeatsPerBar(int beats) {

@@ -95,6 +95,11 @@ struct OutputCommand {
         /// The MIDI input a clock is followed from, in `port`, or none: no MIDI clock is sent back
         /// to it. See `Transports::setClockInput`.
         ClockInput,
+        /// `/ctl/bar <n>`: the bar playing is bar `count`, and the next downbeat starts the one
+        /// after. See `OutputRunner::setBar`.
+        Bar,
+        /// How many bars a phrase is, in `count`: what `/takt4/phrase` counts in.
+        PhraseBars,
     };
 
     static OutputCommand linkEnabled(bool on) {
@@ -200,6 +205,18 @@ struct OutputCommand {
         return command;
     }
     /// `port` empty for none.
+    static OutputCommand bar(std::int64_t number) {
+        OutputCommand command;
+        command.kind = Kind::Bar;
+        command.count = number;
+        return command;
+    }
+    static OutputCommand phraseBars(std::int64_t bars) {
+        OutputCommand command;
+        command.kind = Kind::PhraseBars;
+        command.count = bars;
+        return command;
+    }
     static OutputCommand clockInput(std::string port) {
         OutputCommand command;
         command.kind = Kind::ClockInput;
@@ -251,6 +268,8 @@ struct OutputCommand {
     /// it. See `Kind::RuleRate`. Also `ChannelTest`'s duration in seconds.
     double factor = 1.0;
     bool relative = false;
+    /// `Bar`'s bar and `PhraseBars`' length.
+    std::int64_t count = 0;
 };
 
 /// The rule id that means **every rule** — `/ctl/rule/all/enable` and its neighbours.
@@ -655,6 +674,8 @@ public:
         post(OutputCommand::ruleRate(std::string(id), factor, relative));
     }
     void fireManual() override { post(OutputCommand::manual()); }
+    /// `/ctl/bar <n>`: see `barsCounted`.
+    void setBar(std::int64_t bar) override { post(OutputCommand::bar(bar)); }
 
     /// What went wrong applying the last posted change, or empty. A MIDI port that is not
     /// on the machine is the one that happens; an operator has to be told rather than
@@ -849,6 +870,19 @@ private:
     std::uint64_t onsetsSeen_ = 0;
     /// `TempoState::barsDeclared` last seen, likewise.
     std::uint64_t barsDeclaredSeen_ = 0;
+    /// **The bars the rig counts**: the tracker's, from the first locked downbeat after START or
+    /// after no signal, which is bar 1 — or from the bar `/ctl/bar` named. What the rules count
+    /// bars in, what `/takt4/bar` says and what the window shows, so the three cannot disagree.
+    /// It was the tracker's count from START, downbeats heard while it hunted included, so a
+    /// rule's "every four bars" started wherever that left it. See `barsCounted`.
+    std::int64_t barShift_ = 0;
+    /// Since START or no signal, no locked downbeat yet: the next one is bar 1.
+    bool barsFromNextDownbeat_ = true;
+    /// The tracker's count at the last beat fired, which `/ctl/bar` renumbers.
+    std::uint64_t firedTrackerBars_ = 0;
+    /// The tracker's count `trackerBars` as the rig counts it; zero before the first counted
+    /// downbeat.
+    std::uint64_t barsCounted(std::uint64_t trackerBars) const noexcept;
     /// `TempoState::noSignal` last seen: the round it turns on is the one that disarms the lasers.
     bool noSignalSeen_ = false;
     /// See `holds`: a note on and where it went, and a zone given a clip, each with the rule

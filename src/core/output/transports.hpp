@@ -268,7 +268,8 @@ public:
     /// Ticks the MIDI clock up to `now` and republishes any OSC state that moved — while
     /// `running` and locked only (`OscPublisher::publishState`). Called every round, beat or no
     /// beat: the MIDI clock's 24 PPQN does not wait for one.
-    void advance(double now, const tracking::TempoState& state, bool running = true);
+    void advance(double now, const tracking::TempoState& state, bool running = true,
+                 std::optional<features::Intensity> intensity = std::nullopt);
 
     /// One beat's effect on the two clocks: the MIDI clock is steered towards it and Link's
     /// timeline is put under it. Called as each beat is **detected**, whenever that is — both
@@ -287,9 +288,10 @@ public:
     /// `moment` plus the rig's offset plus its own delay. The moment is on the clock `advance`
     /// is given, and ahead of `now` when the output thread fires the beat on a prediction.
     /// Counted in `beats()`.
-    /// `count` is the run's beats so far, for the OSC's `/beat/timing`.
+    /// `count` is the run's beats so far, for the OSC's `/beat/timing`; `bar`, on a downbeat, the
+    /// bar it starts, for `/bar` and `/phrase` (`OscPublisher::publishBeat`).
     void publishBeat(const tracking::BeatEvent& event, double moment, double now,
-                     std::uint64_t count = 0);
+                     std::uint64_t count = 0, std::uint64_t bar = 0);
     /// Both at once, with the beat's moment taken to be now — for a caller with no scheduler
     /// of its own: `takt4-cli`'s file mode, and the tests.
     void publish(const tracking::BeatEvent& event, std::int64_t hostMicros, double beatTime);

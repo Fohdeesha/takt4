@@ -1024,6 +1024,9 @@ void OutputRunner::apply(const OutputCommand& command) {
                 // And Link put under the first locked beat again, not nudged onto it: see
                 // `Transports::resnapLink`.
                 transports_.resnapLink();
+                // And the bars counted from its first locked downbeat: see `barShift_`.
+                barsFromNextDownbeat_ = true;
+                barShift_ = 0;
             } else {
                 // **STOP: nothing fires after it.** Up to two predicted
                 // beats went on firing their rules after the blackout, because nothing reset the
@@ -1069,6 +1072,19 @@ void OutputRunner::apply(const OutputCommand& command) {
             break;
         case OutputCommand::Kind::Manual:
             triggers_.manual(contextAt(now));
+            break;
+        case OutputCommand::Kind::Bar: {
+            // "This bar is bar n": the bar of the last beat fired — or, before a downbeat has
+            // been counted, the one the tracker is in — and the next downbeat starts n + 1.
+            const std::int64_t n = std::clamp<std::int64_t>(command.count, 1, 0x7FFFFFFF);
+            const std::uint64_t at = barsFromNextDownbeat_ ? source_.state().bars : firedTrackerBars_;
+            barShift_ = n - static_cast<std::int64_t>(at);
+            barsFromNextDownbeat_ = false;
+            break;
+        }
+        case OutputCommand::Kind::PhraseBars:
+            transports_.osc().setPhraseBars(static_cast<std::uint32_t>(
+                std::clamp<std::int64_t>(command.count, 1, OscPublisher::kMaxPhraseBars)));
             break;
         case OutputCommand::Kind::TestRule:
             (void)triggers_.test(command.ruleId, contextAt(now));
@@ -1263,20 +1279,35 @@ trigger::Context OutputRunner::contextAt(double now) const {
     context.meter = state.beatsPerBar;
     context.beatInBar = state.beatInBar;
     context.beats = state.beats;
-    context.bars = state.bars;
+    context.bars = barsCounted(state.bars);
     context.intensity = intensity.level;
     context.now = now;
     return context;
 }
 
+std::uint64_t OutputRunner::barsCounted(std::uint64_t trackerBars) const noexcept {
+    if (barsFromNextDownbeat_) {
+        return 0;
+    }
+    const std::int64_t counted = static_cast<std::int64_t>(trackerBars) + barShift_;
+    return counted > 0 ? static_cast<std::uint64_t>(counted) : 0;
+}
+
 void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
+    // The first locked downbeat after START or no signal is bar 1: see `barShift_`.
+    if (barsFromNextDownbeat_ && beat.event.downbeat) {
+        barShift_ = 1 - static_cast<std::int64_t>(beat.bars);
+        barsFromNextDownbeat_ = false;
+    }
+    firedTrackerBars_ = beat.bars;
+    const std::uint64_t bars = barsCounted(beat.bars);
     // The releases owed about this beat first, and those owed a hair after it: see
     // `kReleaseFirstSeconds`.
     triggers_.sendFollowUpsAbout(beat.moment + kReleaseFirstSeconds, beat.beats, beat.moment);
-    transports_.publishBeat(beat.event, beat.moment, now, beat.beats);
+    transports_.publishBeat(beat.event, beat.moment, now, beat.beats, bars);
     // For the window's dots: when the rig plays this beat (see `shownBeat`).
     shown_.publish(ShownBeat{beat.moment, beat.moment + transports_.latencySeconds(),
-                             beat.event.beatInBar, beat.bars, ++shownSerial_});
+                             beat.event.beatInBar, bars, ++shownSerial_});
     // The rules' beat-counting triggers, off the state *at this beat* rather than off the engine's
     // newest: a round can fire several beats, and a rule counting bars has to see each of them
     // where it happened. And *about* the beat's own moment, which every message it sends is
@@ -1290,14 +1321,16 @@ void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
     context.meter = beat.event.beatsPerBar;
     context.beatInBar = beat.event.beatInBar;
     context.beats = beat.beats;
-    context.bars = beat.bars;
+    context.bars = bars;
     context.moment = beat.moment;
     triggers_.onBeat(context);
 }
 
 void OutputRunner::letGoOfTheRig(double now) {
-    // Link snaps under the first locked beat after it, as after a START.
+    // Link snaps under the first locked beat after it, as after a START, and the bars are
+    // counted from its first locked downbeat (`barShift_`).
     transports_.resnapLink();
+    barsFromNextDownbeat_ = true;
     // **Nothing still on its way may put a hold back on.** The
     // tracker calls beats until the moment it says "no signal", so the last beat's clip was often
     // still waiting out the latency here, and armed its zone straight after the disarm below —
@@ -1411,7 +1444,9 @@ void OutputRunner::drainOnce(double now) {
     // OSC's state addresses are how a peer learns the tempo drifted.
     // The global state goes out only for a run that is going: stopped, `source_.state()` is the
     // last run's, or another source's after the picker was flipped.
-    guarded("the outputs", [&] { transports_.advance(now, source_.state(), !quiet_); });
+    guarded("the outputs", [&] {
+        transports_.advance(now, source_.state(), !quiet_, source_.intensity().level);
+    });
 
     const trigger::Context context = contextAt(now);
     // The output thread never sees a frame, so an onset reaches it as a count that moved.
@@ -1436,9 +1471,14 @@ void OutputRunner::drainOnce(double now) {
     // Seen whether or not it fires, and fired only once a lock has been earned, as a beat is.
     if (countMoved(state.barsDeclared, barsDeclaredSeen_) && state.acquired) {
         guarded("a declared bar's rules", [&] {
+            // A bar the press started is a downbeat the rig counts, the first of them included.
+            if (barsFromNextDownbeat_) {
+                barShift_ = 1 - static_cast<std::int64_t>(state.declaredBar);
+                barsFromNextDownbeat_ = false;
+            }
             trigger::Context declared = context;
             declared.beatInBar = 1;
-            declared.bars = state.declaredBar;
+            declared.bars = barsCounted(state.declaredBar);
             triggers_.onBarDeclared(declared);
         });
     }

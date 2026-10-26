@@ -72,7 +72,11 @@ bool OscControl::dispatch(std::string_view address, std::optional<double> argume
     // Which leaves the verb, which is the whole of what this surface knows. What each one
     // does — and that `lock` refuses to act without its `<0|1>` — is `ControlSurface`'s,
     // shared with the MIDI bindings so the two surfaces cannot drift apart. `rule/<id>/enable`
-    // is the one verb that carries a name as well; `targetOf` is what splits it out.
+    // is the one verb that carries a name as well; `targetOf` is what splits it out. `bar` is
+    // this surface's alone: see `ControlSurface::setBar`.
+    if (address.substr(base.size()) == "bar") {
+        return surface_.setBar(argument);
+    }
     const std::optional<ControlTarget> target = targetOf(address.substr(base.size()));
     if (!target) {
         return false;
