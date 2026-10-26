@@ -266,8 +266,8 @@ TEST_CASE("a rig is patched through the window's callbacks", "[ui][dmx]") {
     }
 
     SECTION("renaming a fixture leaves the rules aimed at it reaching it") {
-        // The operator's report of 2026-09-23 about outputs held for fixtures too: a rule aimed
-        // at a fixture by name stopped reaching it the moment it was renamed.
+        // What held for outputs held for fixtures too: a rule aimed at a fixture by name
+        // stopped reaching it the moment it was renamed.
         const std::string id = patch.fixtures()[0].id;
         REQUIRE_FALSE(id.empty());
         window.invoke_picked(0);
@@ -384,7 +384,7 @@ TEST_CASE("a lighting rule is built through the window's callbacks, against a pa
     }
 
     SECTION("a fade out is a follow-up with a duration of its own") {
-        // The operator's own first example: fade up on the downbeat, fade down two bars
+        // An example: fade up on the downbeat, fade down two bars
         // later. The *delay* is when it starts and the *duration* is how long it runs, and
         // they are different numbers on the same row.
         rules.invoke_effect_picked(effectIndexOf(takt4::dmx::EffectKind::Level));
@@ -432,11 +432,10 @@ TEST_CASE("mute and rate are live, and are not saved with the rule", "[ui][dmx]"
 TEST_CASE("TEST drives one channel and puts it back", "[ui][dmx]") {
     // The patch editor's per-channel TEST, all the way through: the button's callback, the
     // controller, the command queue, the engine, the universe buffer. (It said "the button" and
-    // called the controller, which skips the wiring a click goes through.) Asked for on
-    // 2026-09-16 — "next to the channel assignments, there should also be a test button that
-    // will temporarily send a test value of your choice" — and it is the question IDENTIFY
-    // cannot answer: IDENTIFY flashes the whole fixture and says which lamp this is, not whether
-    // channel 72 is really its blue.
+    // called the controller, which skips the wiring a click goes through.) A TEST button beside
+    // the channel assignments sends a chosen value for a moment, and it answers the question
+    // IDENTIFY cannot answer: IDENTIFY flashes the whole fixture and says which lamp this is,
+    // not whether channel 72 is really its blue.
     Rig rig;
     FixturesController patch(rig.runner, {});
     patch.add();
@@ -793,8 +792,8 @@ TEST_CASE("the patch says when two fixtures share channels, and what no rule can
     CHECK(summary.find("left and right share channel 3 of universe 0") != std::string::npos);
 
     SECTION("past the last a rule can reach") {
-        // 512 since 2026-09-28 — it was 64, one machine word, and the operator asked whether it
-        // had to be. Started with that many rather than clicked up to it.
+        // 512 since 2026-09-28 — it was 64, one machine word. Started with that many rather than
+        // clicked up to it.
         const std::size_t limit = takt4::dmx::kMaxRoutableFixtures;
         REQUIRE(limit == 512);
         std::vector<takt4::dmx::Fixture> many;
@@ -1156,13 +1155,13 @@ TEST_CASE("a channel's dropdown shows the next fixture's role after a delete or 
 
 // --- the redesign of 2026-09-30: every control, clicked, typed into, wheeled over -------------
 //
-// The operator asked for the rebuilt patch editor to be tested "adversarially to find whats broken
-// and hidden". Each of these drives real pointer and key events into the window, on the rig the
-// approved design was drawn with, and judges by what reached the patch.
+// The rebuilt patch editor, tested adversarially to find what is broken and hidden. Each of these
+// drives real pointer and key events into the window, on the rig the design was drawn with, and
+// judges by what reached the patch.
 
 namespace {
 
-/// The rig the approved design was drawn with: two washes, two heads — the second left out of
+/// The rig the design was drawn with: two washes, two heads — the second left out of
 /// the show — and a blinder that runs off the end of its universe.
 std::vector<Fixture> rigOfFive() {
     std::vector<Fixture> rig = {
@@ -1849,10 +1848,9 @@ TEST_CASE("pan and tilt follow the hand, and are patched once, when let go", "[u
 
 TEST_CASE("a right-click puts pan and tilt back to the whole of their travel, once each",
           "[ui][dmx]") {
-    // The operator's ask of 2026-10-05: a right-click on any slider sets it back to its default,
-    // and a fixture's own is the whole of its travel, 0 to 100 % (`dmx::Fixture`). Along each
-    // row, right-clicked until something changes: that one slider is put back, both ends, and
-    // the patch hears of it once.
+    // A right-click on any slider sets it back to its default, and a fixture's own is the whole
+    // of its travel, 0 to 100 % (`dmx::Fixture`). Along each row, right-clicked until something
+    // changes: that one slider is put back, both ends, and the patch hears of it once.
     Rig rig;
     FixturesController patch(rig.runner, rigOfFive());
     int patched = 0;
@@ -2126,8 +2124,8 @@ TEST_CASE("nothing the patch editor does builds its rows again", "[ui][dmx]") {
 
 TEST_CASE("the rule editor shows the id a control surface names the rule by", "[ui][trigger]") {
     // `/takt4/ctl/rule/<id>/mute` and the rest name a rule by its id, which the window never showed
-    // — the README sent the operator to settings.json for it (the operator, 2026-09-30: "yes you
-    // should show rule IDs"). Beside the name, following the rule picked, and gone with none.
+    // — the README sent the operator to settings.json for it. Beside the name, following the rule
+    // picked, and gone with none.
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();

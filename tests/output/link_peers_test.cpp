@@ -173,7 +173,7 @@ TEST_CASE("a peer that was there first is put on the music's phase", "[output][l
     // `requestBeatAtTime` does not move the session's phase ("the next time value ... with the
     // same phase"), so takt4 used to change only the tempo: measured, both sessions stayed
     // 180 ms off the music for every beat, the bar 1.6 beats wrong. The first locked beat now
-    // forces the phase — the operator's call, snap once and then nudge — and the peer reads the
+    // forces the phase — snap once and then nudge — and the peer reads the
     // music's bar.
     LinkSession peer(128.0);
     peer.enable(true);

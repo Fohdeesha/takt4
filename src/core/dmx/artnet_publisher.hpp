@@ -85,9 +85,7 @@ public:
     /// why.
     ///
     /// **A node that goes — switched off, deleted, or pointed somewhere else — is sent every
-    /// universe all zeros before it is let go**: its lights dark and its laser zones disarmed (the
-    /// operator, 2026-10-06: *"unchecking the liberation artnet output in the main window doesnt
-    /// disarm them"*, and then *"untickng artnet should black out lights / send zeroed"*). A node
+    /// universe all zeros before it is let go**: its lights dark, its laser zones disarmed. A node
     /// holds the last frame it was sent, and Liberation did — that frame armed the zone, so the
     /// beam stayed up with nothing driving it. The zeros go at the 44 Hz pace for
     /// `kFarewellSeconds`, so one lost datagram costs nothing, and then nothing: what a universe

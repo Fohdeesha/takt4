@@ -82,8 +82,7 @@ std::vector<Rule::Config> rigPresetRules(std::size_t index) {
         //
         // **Highest layer first, because that is the way Resolume draws them.** Resolume
         // stacks layer 3 above 2 above 1, so a list running 1, 2, 3 down the screen is the
-        // operator's rig upside down — reported on 2026-09-12 as "the order it adds them is
-        // backwards, which can be confusing". The layer *numbers*, their periods and their
+        // operator's rig upside down. The layer *numbers*, their periods and their
         // seeds are unchanged; only the order they are added in is.
         return {resolumeLayer(3, 16, 303), resolumeLayer(2, 8, 202), resolumeLayer(1, 4, 101)};
     }

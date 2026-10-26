@@ -23,8 +23,7 @@ struct ScheduledBeat {
     bool predicted = false;
 };
 
-/// **When a beat's messages are sent** — scheduled by prediction, the operator's call of
-/// 2026-09-23.
+/// **When a beat's messages are sent** — scheduled by prediction.
 ///
 /// A beat reaches the output thread a pipeline's worth after it was in the music — tens of
 /// milliseconds, the network and the decoder between them — and a message cannot be sent

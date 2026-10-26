@@ -519,8 +519,7 @@ TEST_CASE("a ramp given from high to low falls", "[trigger][generator]") {
 }
 
 TEST_CASE("a ramp breathes with the bar rather than jumping about", "[trigger][generator]") {
-    // The user's ask on 2026-09-06: "algorithmic settings ... based on the bpm of the song
-    // and downbeat". A ramp is the one generator whose value is computed from *where in the
+    // A ramp is the one generator whose value is computed from *where in the
     // music we are*, which is what a host's dashboard parameter or a layer opacity wants.
     using takt4::trigger::rampPhase;
     using takt4::trigger::RampShape;

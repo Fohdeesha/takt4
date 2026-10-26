@@ -31,7 +31,7 @@ namespace takt4::output {
 ///     /takt4/resync      int     1, when the tracker has just re-found itself
 ///     /takt4/intensity   int     0, 1 or 2 — the intensity classifier's; not sent yet
 ///
-/// And one more since (the operator's answer of 2026-10-22), with every beat after `/downbeat`:
+/// And one more, with every beat after `/downbeat`:
 ///
 ///     /takt4/beat/timing float float int   ms since the beat, ms until the next, the run's
 ///                                          beats so far (see `publishBeat`)
@@ -167,8 +167,8 @@ public:
     /// the music, on the clock `setNow` is given — ahead of now when the output thread fires it
     /// on a prediction — and each target has it at that moment plus its offset. Unset is now.
     ///
-    /// And with it `/beat/timing f ms_since_beat f ms_until_next i count` (the operator's answer of
-    /// 2026-10-22): how long after the beat — its moment plus the rig's latency, where the
+    /// And with it `/beat/timing f ms_since_beat f ms_until_next i count`: how long after the
+    /// beat — its moment plus the rig's latency, where the
     /// operator means it to land — the datagram is sent, which for each output is its own delay
     /// plus any lateness, and negative when it goes ahead; how long until the next beat, from the
     /// tempo; and `count`, the run's beats so far, so a dropped datagram is told from a missed
@@ -181,8 +181,8 @@ public:
     /// — a monitor told takt4 is alive should be told it when it is.
     void sendNow(std::span<const std::byte> packet);
 
-    /// Publishes state that changed since the last call, without a beat — **only a run's lock**
-    /// (the operator, 2026-10-22): `running` and `state.locked` both. Before a lock the tempo is
+    /// Publishes state that changed since the last call, without a beat — **only a run's lock**:
+    /// `running` and `state.locked` both. Before a lock the tempo is
     /// the hunt's, flipping octaves or read off beatless sound; stopped, the state is the last
     /// run's, or another source's after the picker was flipped. What is said then is that the lock
     /// is gone: `/locked 0`, once — at STOP, and when a run loses its lock. Cheap to call every

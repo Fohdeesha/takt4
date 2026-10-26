@@ -351,8 +351,8 @@ public:
     /// Enables the transports and starts the thread. `start()` on a running runner does
     /// nothing.
     ///
-    /// **An application starts this once and leaves it running** — the operator's call of
-    /// 2026-09-23. It used to start and stop with the tracker, so before Start nothing was
+    /// **An application starts this once and leaves it running.** It used to start and stop with
+    /// the tracker, so before Start nothing was
     /// transmitted at all: the patch editor's IDENTIFY and TEST changed a buffer nobody sent, a
     /// Stop to change input dropped the Art-Net keep-alive so nodes fell back to their failsafe,
     /// and a control surface's PANIC reached rules that could not hear it. The tracker's Start
@@ -375,7 +375,7 @@ public:
     /// Started, the MIDI clock begins ticking, and is sent Start on the first locked downbeat — a
     /// receiver's bar 1 is the first tick after it. Stopped, it is sent Stop, and
     /// **the lights are blacked out** — every light-emitting channel to zero, and kept being
-    /// sent: the operator's call of 2026-09-23, for the rig takt4 is running. PANIC is
+    /// sent. PANIC is
     /// different and freezes; see `dmx::DmxEngine::cancelAll`. Everything else goes on — Link on
     /// its own switch, OSC state, a rule fired by hand or from a control surface, and every
     /// release still owed, when it is due.
@@ -447,8 +447,7 @@ public:
     /// clock — the instant an output with no delay of its own sends it. A locked beat is fired
     /// before that whenever the latency leaves room, so the window can light its dot then, rather
     /// than when the tracker's state reaches it a detection and a redraw later: the dots ran
-    /// behind outputs that were on time (the operator, 2026-10-08). `serial` counts the beats
-    /// fired; 0 before the first.
+    /// behind outputs that were on time. `serial` counts the beats fired; 0 before the first.
     struct ShownBeat {
         double moment = 0.0;
         double due = 0.0;
@@ -721,9 +720,8 @@ public:
     /// When beats have been fired, for a test to read. Output thread only, like `triggers()`.
     const BeatScheduler& scheduler() const noexcept { return scheduler_; }
 
-    /// **What the rig is being held on, and by which rule** — the review of releases the operator
-    /// asked for on 2026-10-06, after a laser went on playing under a muted rule: *"anything that
-    /// needs an explicit release/disarm ... this is dangerous"*.
+    /// **What the rig is being held on, and by which rule**: anything that needs an explicit
+    /// release or disarm is dangerous left on — a laser went on playing under a muted rule.
     ///
     /// Two things takt4 sends stay on until something takes them off: a MIDI note on, until its
     /// note off, and a Liberation zone given a clip, until it is given none. Everything that sends
@@ -823,7 +821,7 @@ private:
     void releaseRefused();
     /// Every zone has just been disarmed by the engine — PANIC, Stop, quit, no signal.
     void forgetZones() noexcept { heldZones_.clear(); }
-    /// **The input gone quiet or gone altogether** (the operator, 2026-10-05): the lasers
+    /// **The input gone quiet or gone altogether**: the lasers
     /// disarmed, every note and clip a rule holds let go, every fire still waiting for its rule's
     /// delay dropped, nothing predicted from the last beats heard, and Link put under the first
     /// locked beat when the music is back. Nothing fires until the next lock, so a laser zone would

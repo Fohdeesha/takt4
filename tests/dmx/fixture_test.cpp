@@ -89,7 +89,7 @@ TEST_CASE("a rule aims at fixtures by id and at groups by label", "[dmx][fixture
     CHECK(takt4::dmx::resolveFixtures(patch, {"heads", washL}) == 0b101);
 
     SECTION("a fixture's name reaches nothing, so renaming it moves no rule") {
-        // The operator's report of 2026-09-23: a rule aimed at a fixture by name stopped reaching
+        // A rule aimed at a fixture by name used to stop reaching
         // it the moment it was renamed.
         CHECK(takt4::dmx::resolveFixtures(patch, {"wash L"}) == 0);
         patch[0].name = "front wash";

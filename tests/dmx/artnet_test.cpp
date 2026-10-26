@@ -455,7 +455,7 @@ TEST_CASE("a delayed node's frame is looked up only when one can go, and only pa
 }
 
 TEST_CASE("an Art-Net node set later is sent the lighting that much later", "[dmx][artnet]") {
-    // The operator's call of 2026-09-25: every output has a delay, and a node's is honoured like
+    // Every output has a delay, and a node's is honoured like
     // the rest. A universe is a stream of frames rather than a message to hold, so what is
     // delayed is the stream — the late node is sent the frame the patch had that long ago.
     using takt4::testing::kArtNetFrame;

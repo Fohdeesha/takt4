@@ -238,7 +238,7 @@ TEST_CASE("following a grid, every beat's cue lands on that beat, early or late"
 
 TEST_CASE("following a grid, the rig is let go of when the source has been gone four seconds",
           "[output][timing][follow][release][realtime][slow]") {
-    // The operator's call of 2026-10-15: a source that goes is coasted, then treated exactly as
+    // A source that goes is coasted, then treated exactly as
     // silence — and silence lets go of every note a rule holds on, so a Liberation clip driven by
     // MIDI is not left playing to a rig nobody is following.
     auto cable = std::make_shared<Bytes>();
@@ -309,7 +309,7 @@ TEST_CASE("following a grid, the rig is let go of when the source has been gone 
 
 TEST_CASE("following a grid, a MIDI clock output is ticked from it and started on its downbeat",
           "[output][timing][follow][midi][realtime][slow]") {
-    // The bridge the operator asked for: a drum machine or a lighting desk on MIDI clock hears the
+    // takt4 as a bridge: a drum machine or a lighting desk on MIDI clock hears the
     // followed grid's tempo, 24 ticks to its beat, and is started on its downbeat — the clock is
     // the same one the tracker drives, fed by beats that are exact.
     auto cable = std::make_shared<Bytes>();

@@ -531,9 +531,8 @@ public:
     /// **Why this exists.** `app.cpp` saves when the window closes and nowhere else, on the
     /// reasoning that a slider drag would otherwise write the file sixty times a second —
     /// which is right, and leaves an operator who has spent an hour building rules with no
-    /// way to commit them and nothing to do but trust a clean exit. They said so on
-    /// 2026-09-12: *"I am scared of closing it"*. A button is the answer; the automatic
-    /// save on exit stays exactly as it was.
+    /// way to commit them and nothing to do but trust a clean exit. A button is the answer; the
+    /// automatic save on exit stays exactly as it was.
     bool saveNow();
 
     /// The same bytes to a file of the operator's choosing, for a backup or a second rig.
@@ -564,7 +563,7 @@ public:
     /// damaged and what was done about it. On the status line, as an error.
     void showNotice(const std::string& text);
 
-    /// Load a file and apply **all of it** — the operator's call of 2026-10-03, over the earlier
+    /// Load a file and apply **all of it** — over the earlier
     /// rule that the machine half does not travel: the preset (the rules, the outputs with Link
     /// and the MIDI clocks among them, the lighting patch, the fold window and the rest of
     /// `TempoTracker::Options`, the meters and the OSC prefix) and the machine half
@@ -952,7 +951,7 @@ private:
     std::string startupMessage_;
     double startupHeldUntil_ = -1.0;
     /// A loopback input that has gone quiet: nothing is playing on the output it captures, which
-    /// is not a fault to reopen (the operator's call of 2026-09-26). Said once, and cleared when
+    /// is not a fault to reopen. Said once, and cleared when
     /// sound comes back.
     bool nothingPlaying_ = false;
     /// When PortAudio last looked for devices during an outage; negative before that.

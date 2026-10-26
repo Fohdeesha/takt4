@@ -1,6 +1,6 @@
 """Draws takt4's icon and writes every file made from it, into assets/icon/.
 
-The mark (the operator's pick of 2026-10-08, "Lock", drawn as its small-size art at every size):
+The mark ("Lock", drawn as its small-size art at every size):
 four heavy corner brackets round a white disc on a near-black plate, the top-left bracket red —
 the bar's first beat — in the red of PANIC and the beat disc, the window's own. On a 64-cell grid of a 1024 square,
 so at 16 px every edge falls on a whole pixel.
@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw
 
 PLATE = (0x0E, 0x0E, 0x0E, 255)
 INK = (0xEF, 0xEE, 0xE9, 255)
-RED = (0xD8, 0x30, 0x1F, 255)  # PANIC's red (Wf.panic), the operator's call of 2026-10-08
+RED = (0xD8, 0x30, 0x1F, 255)  # PANIC's red (Wf.panic)
 
 # In units of a 1024 square.
 PLATE_RADIUS = 96

@@ -124,8 +124,8 @@ std::optional<Role> roleOf(std::string_view name) noexcept {
             return entry.role;
         }
     }
-    // **The spelling this used to write.** The app said "colour" everywhere until a rig asked
-    // for the other spelling on 2026-09-16; a patch saved before that holds `colour-wheel`,
+    // **The spelling this used to write.** The app said "colour" everywhere until 2026-09-16; a
+    // patch saved before that holds `colour-wheel`,
     // and a role that will not read back becomes `Unused` — which is a channel map silently
     // one role short. One line, and it never needs another: nothing writes this name now.
     if (name == "colour-wheel") {

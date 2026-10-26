@@ -214,7 +214,7 @@ TEST_CASE("the two addresses that reach the rules rather than the tracker", "[co
     SECTION("every panic engages, and panic/release lets go of it") {
         // `panic 0` used to let go, so a TouchOSC push button — 1 on the press, 0 on the
         // release — held the halt only while the finger was down. Every panic message engages
-        // now, the operator's call, and the same surface lets go with an address of its own: a
+        // now, and the same surface lets go with an address of its own: a
         // panic is a latch, and remote control exists so the laptop need not be touched.
         CHECK(control.dispatch("/takt4/ctl/panic", 1.0));
         CHECK(control.dispatch("/takt4/ctl/panic", 0.0));

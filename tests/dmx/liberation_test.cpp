@@ -73,7 +73,7 @@ TEST_CASE("a clip number is Liberation's deck order", "[dmx][liberation]") {
     CHECK(liberation::indexOf({1, 1}) == 6);
     CHECK(liberation::indexOf({21, 1}) == 106);
     CHECK(liberation::clipAt(106) == Clip{21, 1});
-    // The operator's own example, 1-1 to 21-1, is every clip between the two in that order.
+    // The default range, 1-1 to 21-1, is every clip between the two in that order.
     CHECK(liberation::indexOf({21, 1}) - liberation::indexOf({1, 1}) + 1 == 101);
 }
 
@@ -388,7 +388,7 @@ TEST_CASE("a clip rule shuffles every clip of its range onto the zone",
     RuleSink sink(transports);
     TriggerEngine engine(sink);
 
-    // Untouched, a clip rule is the operator's example: 1-1 to 21-1 in deck order.
+    // Untouched, a clip rule is 1-1 to 21-1 in deck order.
     const Rule::Config rule = clipRule("z1");
     CHECK(rule.dmx.clip.low == liberation::indexOf({1, 1}));
     CHECK(rule.dmx.clip.high == liberation::indexOf({21, 1}));

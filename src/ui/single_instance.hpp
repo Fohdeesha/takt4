@@ -5,7 +5,7 @@
 
 namespace takt4::ui {
 
-/// **One takt4 per settings folder** (the operator, 2026-10-22). A second launch from the same
+/// **One takt4 per settings folder.** A second launch from the same
 /// folder brings the first one's window to the front and goes.
 ///
 /// Two of them on one folder fought over everything: the second's output thread started at once

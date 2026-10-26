@@ -670,9 +670,8 @@ void OutputRunner::start() {
     if (running()) {
         return;
     }
-    // **The clock is not restarted here, and that is the whole of a bug reported from a rig
-    // on 2026-09-12**: *"when hitting stop on the main window, when I hit start again, none of
-    // the triggers started firing again."*
+    // **The clock is not restarted here, and that is the whole of a bug**: after a Stop and then
+    // a Start on the main window, none of the triggers fired again.
     //
     // `started_` used to be taken here, so `elapsed()` — which is `Context::now` — went back
     // to zero on every Start while the state measured against it did not. `Rule::lastFired_`
@@ -769,7 +768,7 @@ void OutputRunner::stop() noexcept {
             transports_.osc().flushAll();
             // And a Note Off a full queue refused, now that the queue is empty.
             releaseRefused();
-            // Then the lights out — the operator's call for quit as for Stop — and that
+            // Then the lights out — for quit as for Stop — and that
             // frame actually sent. Art-Net only goes out in `advance`, paced at 44 Hz, and there
             // is no round after this one: a node left holding the last frame before it would
             // hold the rig lit after takt4 had gone.
@@ -922,13 +921,13 @@ void OutputRunner::apply(const OutputCommand& command) {
                 // A Note Off a full queue refused goes now that the queue is empty.
                 releaseRefused();
                 // And the lights stop animating — but keep their levels, and keep being sent.
-                // The operator's own call on 2026-09-16: takt4 may be one source among several
+                // takt4 may be one source among several
                 // on a rig, and a panic that blacked out the stage would take down lights that
                 // were not takt4's to take. See `dmx::DmxEngine::cancelAll`.
                 transports_.dmx().cancelAll();
                 // **Except the lasers, which are disarmed**: a frozen laser look is still a beam
-                // in the air, and PANIC is the button pressed when something is wrong (the
-                // operator, 2026-10-05). Every other channel keeps its level.
+                // in the air, and PANIC is the button pressed when something is wrong.
+                // Every other channel keeps its level.
                 transports_.dmx().disarm(now);
                 forgetZones();
                 // On every node at once: a delayed one was sent its last second of animation
@@ -943,8 +942,8 @@ void OutputRunner::apply(const OutputCommand& command) {
             break;
         case OutputCommand::Kind::RuleEnabled:
         case OutputCommand::Kind::RuleMuted: {
-            // **A rule that stops sending lets go of what it holds** (the operator, 2026-10-06: a
-            // laser went on playing under a muted rule). Its clip was a state Liberation keeps,
+            // **A rule that stops sending lets go of what it holds** (a laser went on playing
+            // under a muted rule). Its clip was a state Liberation keeps,
             // and nothing would ever have taken it off: its owed releases go now, its held fires
             // go nowhere, and its notes and zones are let go of — see `holds`.
             const bool enabling = command.kind == OutputCommand::Kind::RuleEnabled;
@@ -1026,7 +1025,7 @@ void OutputRunner::apply(const OutputCommand& command) {
                 // `Transports::resnapLink`.
                 transports_.resnapLink();
             } else {
-                // **STOP: nothing fires after it** (the operator's call). Up to two predicted
+                // **STOP: nothing fires after it.** Up to two predicted
                 // beats went on firing their rules after the blackout, because nothing reset the
                 // scheduler and nothing gated it — so a flash, a colour or a clip came back on
                 // with takt4 stopped. Now: the predictions go, and so do the beats the tracker
@@ -1050,8 +1049,8 @@ void OutputRunner::apply(const OutputCommand& command) {
                 transports_.osc().flushAll();
                 // a Note Off a full queue refused, now that the queue is empty;
                 releaseRefused();
-                // and the lights go out and stay out — sent, because the outputs keep running (the
-                // operator's call of 2026-09-23). The blackout disarms every laser zone with them.
+                // and the lights go out and stay out — sent, because the outputs keep running.
+                // The blackout disarms every laser zone with them.
                 transports_.stopClock();
                 transports_.dmx().blackout(now);
                 forgetZones();
@@ -1061,7 +1060,7 @@ void OutputRunner::apply(const OutputCommand& command) {
         case OutputCommand::Kind::Sync:
             break;
         case OutputCommand::Kind::InputLost:
-            // **An outage is the input gone quiet** (the operator, 2026-10-05). An interface
+            // **An outage is the input gone quiet.** An interface
             // unplugged delivers no frames at all, so the tracker never sees the silence that
             // says "no signal" — and the lasers held their last clip, and the notes stayed on,
             // for the whole of the outage.
@@ -1149,9 +1148,9 @@ void OutputRunner::setTargets(const std::vector<OutputTarget>& targets) {
     // or sent to whatever takes its place.
     const std::vector<OutputTarget> before = transports_.outputs();
     // **But what is owed to an output that is going goes to it first**, while its port is still
-    // open: switched off, deleted, or pointed somewhere else. The operator, 2026-09-30: "if I
-    // uncheck a midi target for instance, it immediately dies, so it never sends the note off,
-    // and the midi device keeps playing that note". The same order as Stop — the rules' releases,
+    // open: switched off, deleted, or pointed somewhere else. A MIDI target switched off died at
+    // once, so it never sent the note off and the device kept playing that note.
+    // The same order as Stop — the rules' releases,
     // then what the sink holds for a MIDI target's delay, then the OSC publisher's — so a note
     // on still held for its delay goes before its own note off.
     if (const std::uint64_t leaving = leavingOutputs(before, targets); leaving != 0) {
@@ -1361,8 +1360,8 @@ void OutputRunner::drainOnce(double now) {
         if (beat.hostMicros != 0) {
             moment = now - static_cast<double>(linkNow - beat.hostMicros) / 1e6;
         }
-        // **Nothing reaches the rig until a lock has been earned** (`TempoState::acquired`; the
-        // operator, 2026-10-03). Before one, a beat is the hunt's: a tempo that flips octaves, or
+        // **Nothing reaches the rig until a lock has been earned** (`TempoState::acquired`).
+        // Before one, a beat is the hunt's: a tempo that flips octaves, or
         // one read off beatless sound. Link already waited for a lock; the MIDI clock's Start did
         // and its tempo did not, and OSC and the rules fired from the first beat called.
         if (!beat.event.acquired) {
@@ -1425,7 +1424,7 @@ void OutputRunner::drainOnce(double now) {
     // A bar a late DOWNBEAT press declared, whose first beat had already gone out as another:
     // its bar and downbeat rules fire now, as that bar's.
     const tracking::TempoState state = source_.state();
-    // **The input gone quiet disarms the lasers** (the operator, 2026-10-05). Nothing fires until
+    // **The input gone quiet disarms the lasers.** Nothing fires until
     // the next lock, so a laser zone would otherwise hold its last clip through the silence — a
     // beam nobody is driving. Once, as it goes quiet: the next clip a rule fires arms it again.
     if (state.noSignal != noSignalSeen_) {

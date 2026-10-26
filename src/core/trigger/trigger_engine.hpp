@@ -157,8 +157,8 @@ public:
     /// while building one. **Not held for the rule's delay** (`Rule::Config::delayOn`): a test
     /// is pressed to see where the message lands, now.
     ///
-    /// **And what it holds, let go of a moment later, when nothing else would** (the operator,
-    /// 2026-10-06: a laser left playing is "dangerous"). A note on or a laser clip tested from a
+    /// **And what it holds, let go of a moment later, when nothing else would** (a laser left
+    /// playing is dangerous). A note on or a laser clip tested from a
     /// rule that is muted or switched off, or while the tracker is stopped, has nothing to fire
     /// it again or take it off: its note off, or no clip, follows `kTestHoldSeconds` later — or
     /// a beat, if that is longer — on top of any follow-up the rule owes of its own.
@@ -223,8 +223,7 @@ public:
     /// **For a stop.** A note on whose note off has not yet come due is a laser still lit, and
     /// an operator pressing Stop has said the opposite — so the release goes out on the way
     /// down rather than being dropped with the thread that owed it. It is the same argument
-    /// `panic` and `setRules` already make, and the same one the operator met as a clip that
-    /// would not let go.
+    /// `panic` and `setRules` already make, against a clip that would not let go.
     void flushFollowUps() { flushPending(); }
 
     /// Sends now the part of every owed follow-up that goes to `outputs` (routing bits), and
@@ -233,7 +232,7 @@ public:
     ///
     /// **For an output that is going** — switched off, deleted, or pointed at another device.
     /// Its port closes as it goes, so a note off owed to it later went nowhere and the synth
-    /// on the end of it kept playing the note (the operator, 2026-09-30).
+    /// on the end of it kept playing the note.
     void flushFollowUpsTo(std::uint64_t outputs);
 
     /// Messages handed to the sink, follow-ups included.

@@ -1,11 +1,11 @@
-// The rule editor, in the Weltformat-dark look the operator locked on 2026-09-30 — every size here
-// is measured off the approved pictures.
+// The rule editor, in the Weltformat-dark look — every size here is measured off the approved
+// pictures.
 //
 // The bar it is built to: a rule that fires a non-repeating random clip on every fourth downbeat
 // can be built entirely by clicking, in under a minute, by someone who has not read the docs.
 //
-// **A window of its own**, by the user's call on 2026-09-06: the tracker and the rules are watched
-// at the same time, and one screen holding both means either can be on a second monitor.
+// **A window of its own**: the tracker and the rules are watched at the same time, and one screen
+// holding both means either can be on a second monitor.
 //
 // **Master and detail**: the list of rules down the left, the one being edited on the right as four
 // sheets that fold — A when, B only if, C send, D then send — and under both, the window's full
@@ -113,7 +113,7 @@ export struct PaletteEntry {
   val: float,
 }
 
-/// One of the messages a rule sends *after* the one it fired — `trigger::FollowUp`. A rig asked for
+/// One of the messages a rule sends *after* the one it fired — `trigger::FollowUp`. A rig may need
 /// what one "then send" value could not say — a note on to start a laser clip and a real note off
 /// to stop it, from the one trigger — so each entry says *what* it sends as well as when.
 export struct FollowRow {
@@ -128,8 +128,8 @@ export struct FollowRow {
   number: int,
   /// False for a program change, which has nowhere to put a value.
   takes-value: bool,
-  /// And what the value *is* — "velocity", "bend", "value". *"theres an unlabled box next to it
-  /// with 0 in the field? wtf is that?"* — a release velocity, and now it says so.
+  /// And what the value *is* — "velocity", "bend", "value" — so no box goes unlabelled: the 0
+  /// beside a release is its release velocity, and says so.
   value-label: string,
   value: string,
   /// 0 ms, 1 beats, 2 bars — `trigger::DelayUnit`.
@@ -584,7 +584,7 @@ component ChoiceField inherits Rectangle {
 
 /// "select a preset": a menu that always says the same words, not a dropdown — a dropdown keeps
 /// showing what was picked from it, and after adding the Resolume rig the pane read "Resolume:
-/// clips on 3 layers" as though that were the state of something (reported from a rig).
+/// clips on 3 layers" as though that were the state of something.
 component PresetMenu inherits Rectangle {
   in property <[string]> presets;
   out property <bool> open: list.is-open;
@@ -685,10 +685,10 @@ component PresetMenu inherits Rectangle {
   }
 }
 
-/// What a colour picker holds: the colour over its three tracks, **each track drawn in its colours**
-/// (the operator's choice) — the hue round the wheel, the saturation from white to the hue, the
-/// brightness from black to the colour — and under them the line that says the picker sends as it is
-/// dragged; for a palette's entry, the code box and "remove" too.
+/// What a colour picker holds: the colour over its three tracks, **each track drawn in its
+/// colours** — the hue round the wheel, the saturation from white to the hue, the brightness from
+/// black to the colour — and under them the line that says the picker sends as it is dragged; for
+/// a palette's entry, the code box and "remove" too.
 component PickerBody inherits Rectangle {
   in property <color> swatch;
   in property <float> hue;
@@ -1106,7 +1106,7 @@ export component RulesWindow inherits Window {
   in-out property <string> effect-hue;
   in-out property <float> effect-size;
   /// A movement aimed at fixtures with more than one head (`dmx::headsOf`): a tick per head, all
-  /// ticked being every head — the operator's pick of 2026-10-05.
+  /// ticked being every head.
   in-out property <bool> effect-takes-heads;
   in-out property <[HeadChoice]> head-choices;
   in-out property <string> heads-note;
@@ -1196,9 +1196,9 @@ export component RulesWindow inherits Window {
   // The name and enabled state of the selected rule, and what else the top row shows.
   in-out property <string> rule-name;
   /// The rule's id — what `/takt4/ctl/rule/<id>/...` names it by. Shown beside the name, because a
-  /// control surface cannot be pointed at a rule whose id nobody can see (the operator, 2026-09-30:
-  /// the README sent them to settings.json for it). Generated, and not edited here: a rule is
-  /// aimed at by its id, never by a name anybody can change.
+  /// control surface cannot be pointed at a rule whose id nobody can see (the README sent anyone
+  /// looking for it to settings.json). Generated, and not edited here: a rule is aimed at by its
+  /// id, never by a name anybody can change.
   in property <string> rule-id;
   in-out property <bool> rule-enabled;
   /// Why the selected rule will not fire — `Rule::problem()` — or empty.
@@ -1391,10 +1391,9 @@ export component RulesWindow inherits Window {
 
             // The foot: the preset menu and PANIC, the same place every time and never scrolled
             // away. **PANIC never moves.** RELEASE appears between the menu and PANIC while PANIC
-            // is held, and the menu moves up to make room (the operator, 2026-09-30) — the foot
-            // grows upwards, so the second click of a double-click lands on PANIC again, which is
-            // already engaged. An explicit height: an `if` in a vertical layout takes a share of
-            // the spare height otherwise.
+            // is held, and the menu moves up to make room — the foot grows upwards, so the second
+            // click of a double-click lands on PANIC again, which is already engaged. An explicit
+            // height: an `if` in a vertical layout takes a share of the spare height otherwise.
             VerticalLayout {
               padding: 10px;
               spacing: 10px;
@@ -1652,10 +1651,9 @@ export component RulesWindow inherits Window {
                     vertical-alignment: center;
                     overflow: elide;
                   }
-                  // Which beat of the bar (the operator, 2026-10-06: "not just fire every two
-                  // beats, but WHICH two beats"): "on beat 3" of a bar, every 2 "from beat 2 of
-                  // the bar". Only where it changes something — on a bar, and on beats counted
-                  // more than one at a time; every single beat is every beat from any of them.
+                  // Which beat of the bar: "on beat 3" of a bar, every 2 "from beat 2 of the
+                  // bar". Only where it changes something — on a bar, and on beats counted more
+                  // than one at a time; every single beat is every beat from any of them.
                   if root.beat-of-bar-shown: Word {
                     text: root.beat-of-bar-word;
                   }
@@ -1733,9 +1731,9 @@ export component RulesWindow inherits Window {
                   Rectangle { horizontal-stretch: 1; }
                 }
 
-                // The wait between the trigger and the send (the operator, 2026-10-06): off until
-                // ticked, as nothing optional is on by default; its box dashed and its unit quiet
-                // while it is off, and settable all the same, for later — as B's are.
+                // The wait between the trigger and the send: off until ticked, as nothing
+                // optional is on by default; its box dashed and its unit quiet while it is off,
+                // and settable all the same, for later — as B's are.
                 HorizontalLayout {
                   height: 34px;
                   spacing: 10px;
@@ -2531,8 +2529,7 @@ export component RulesWindow inherits Window {
 
                 // How far apart those heads move — only while it moves two or more, since one has
                 // nothing to be staggered against. 0, together, until somebody slides it. Beside
-                // the slider, what it does (the operator's words, 2026-10-05: "stagger movement
-                // between selected heads"); under it, what the value it is at does.
+                // the slider, what it does; under it, what the value it is at does.
                 if root.sends-dmx && root.effect-takes-spread: VerticalLayout {
                   height: 54px;
                   HorizontalLayout {
@@ -3027,9 +3024,9 @@ export component RulesWindow inherits Window {
 
               // --- D · then send -----------------------------------------------------------------
               // **A list, where there was a tick box.** Resolume's connect takes 1 for press and 0
-              // for release — and a rig needed more than that from one trigger: *"so each trigger
-              // can send multiple things, spaced by time or beats/bars"*. Every delay is counted
-              // from the fire, never from the row above (`trigger::FollowUp`).
+              // for release — and a rig can need more than that from one trigger: several things,
+              // spaced by time or by beats and bars. Every delay is counted from the fire, never
+              // from the row above (`trigger::FollowUp`).
               Section {
                 letter: "D";
                 title: "then send";

@@ -168,8 +168,7 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     window_->on_fold_clicked(finishing([this](int section) { fold(section); }));
 
     // The import. Every button through `finishing`, as the editor's are: IMPORT itself commits
-    // what was being typed in the editor before the import takes its place (the operator,
-    // 2026-10-05: "be sure to not lose edits that were made in the editor it replaces"), and
+    // what was being typed in the editor before the import takes its place, and
     // the import's own IMPORT commits what was typed into its boxes before it reads them.
     window_->on_import_clicked(finishing([this] { openImport(); }));
     window_->on_import_cancelled(finishing([this] { closeImport(); }));
@@ -213,7 +212,7 @@ FixturesController::FixturesController(output::OutputRunner& runner,
     // `ui::kRulesWindowWidth` gives at length: Slint sizes a window from what its content
     // asks for, so a `preferred-width` in the markup decides nothing and this window opened
     // at its 820x520 minimum — a patch editor two thirds the size of the rule editor beside
-    // it. Asked for on a rig on 2026-09-16, measured from the shot they sent.
+    // it. Measured from a screenshot.
     // No larger than the screen has room for, though: see `fitToScreen`.
     const LogicalExtent opening = fitToScreen({kFixturesWindowWidth, kFixturesWindowHeight});
     window_->window().set_size(slint::LogicalSize({opening.width, opening.height}));
@@ -1321,7 +1320,7 @@ void FixturesController::removeLibraryEntry(int row) {
     const fixtures::FixtureProfile& entry = library_[libraryOrder_[static_cast<std::size_t>(row)]];
     const std::string id = entry.id;
     const std::string name = definitionName(library_, entry);
-    // Only an entry no fixture is made from (decision 13): its × is not drawn otherwise, and
+    // Only an entry no fixture is made from: its × is not drawn otherwise, and
     // this is the belt to that.
     if (!fixtures::removeProfile(library_, id, fixtures_)) {
         setStatus(name + " has fixtures made from it, so it stays in the library.", true);
@@ -1370,7 +1369,7 @@ void FixturesController::importFile(const std::filesystem::path& path) {
     std::string problem;
     std::optional<fixtures::FixtureProfile> read = fixtures::importProfile(path, problem);
     if (!read) {
-        // Said where the file was asked for, in plain words (the operator, 2026-10-05).
+        // Said where the file was asked for, in plain words.
         import_.fileLine = fileName;
         import_.fileNote = "Can't read " + fileName + ": " + problem + ".";
         import_.fileError = true;
@@ -1399,7 +1398,7 @@ void FixturesController::importFile(const std::filesystem::path& path) {
         pickFirstImportMode();
         break;
     case fixtures::Arrival::Same:
-        // The library has it, the same: that entry, and nothing added (decision 12).
+        // The library has it, the same: that entry, and nothing added.
         import_.entryId = library_[seen.index].id;
         import_.fileNote = "this preset's library has it already, the same — picked above";
         pickFirstImportMode();

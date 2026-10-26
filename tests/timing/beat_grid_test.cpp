@@ -390,7 +390,7 @@ TEST_CASE("halving a followed grid keeps its downbeats and doubling adds a beat 
 
 TEST_CASE("a followed source that goes is coasted, then let go of, and acquired again",
           "[timing][follow]") {
-    // The operator's call of 2026-10-15: run on at the last tempo and phase for a while, as the
+    // Run on at the last tempo and phase for a while, as the
     // tracker's flywheel does through a breakdown, and then stop exactly as silence stops it.
     const double bpm = 128.0;
     const double period = periodOf(bpm);
@@ -723,7 +723,7 @@ TEST_CASE("a reading at a tempo no source has is no reading", "[timing][follow]"
 }
 
 TEST_CASE("no two followed beats go out closer than 60 ms", "[timing][follow]") {
-    // ×2 twice over a 300 BPM source is a beat every 50 ms. The operator's call: never closer than
+    // ×2 twice over a 300 BPM source is a beat every 50 ms. Never closer than
     // 60 ms, past any grid a source and the octave buttons make that is still a beat.
     const double bpm = 300.0;
     const double zero = static_cast<double>(kStart) + 900.0;

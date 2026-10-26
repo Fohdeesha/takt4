@@ -38,15 +38,13 @@ enum class ControlAction : std::uint8_t {
     TempoDouble,
     Lock,
     /// `/ctl/panic` — a global halt that stops every rule instantly. It only ever engages,
-    /// whatever it is sent: letting go is `PanicRelease`, or the window's RELEASE (the
-    /// operator's call of 2026-09-26).
+    /// whatever it is sent: letting go is `PanicRelease`, or the window's RELEASE.
     Panic,
     /// `/ctl/rule/<id>/enable <0|1>`. The first action that **names** something as well as
     /// doing it; see `ControlTarget`.
     RuleEnable,
-    /// `/ctl/rule/<id>/mute <0|1>` — the rule keeps running and stops sending. Added on the
-    /// operator's ask of 2026-09-16. Not a second spelling of `RuleEnable`: see
-    /// `RuleControl::setRuleMuted` for why both exist.
+    /// `/ctl/rule/<id>/mute <0|1>` — the rule keeps running and stops sending. Not a second
+    /// spelling of `RuleEnable`: see `RuleControl::setRuleMuted` for why both exist.
     RuleMute,
     /// `/ctl/rule/<id>/double` — half as often, by doubling the interval. Bare, and
     /// *relative*, so pressing it twice is four times the interval.
@@ -64,8 +62,7 @@ enum class ControlAction : std::uint8_t {
     Manual,
     /// `/ctl/panic/release` — lets go of a PANIC. Its own address, because a push button sends
     /// 1 on the press and 0 on the release, so a `panic 0` that released lasted only while the
-    /// finger was down (the operator's call of 2026-09-26). A button, bare, like the window's
-    /// RELEASE.
+    /// finger was down. A button, bare, like the window's RELEASE.
     PanicRelease,
 };
 

@@ -184,10 +184,9 @@ Published feedDisagreeing(TempoTracker& tracker, std::uint64_t& index, std::uint
 } // namespace
 
 TEST_CASE("the published tempo is the one the beats are on", "[tracking][tempo]") {
-    // Reported from a rig on 2026-09-08 about "Pogo - Quantum Field - 08 Moonlake": "the app
-    // said locked and displayed 200bpm, but the beat counter dot lights were moving very
-    // clearly at 100bpm ... everything pointed towards a correct 100bpm detection but the app
-    // said 200bpm". Both numbers were true of what they described — the readout is the cloud's
+    // On "Pogo - Quantum Field - 08 Moonlake" the app said locked at 200 BPM while the beat
+    // dots moved very clearly at 100, and every sign pointed to 100 as the right tempo. Both
+    // numbers were true of what they described — the readout is the cloud's
     // tempo and the dots move on the beats — and the filter was reporting one while emitting
     // the other. Measured over the track: 216 of 402 gaps are 30 frames, the cloud says 15.
     TempoTracker::Options options = testOptions();
@@ -316,8 +315,8 @@ TEST_CASE("a tap names the octave the beats are on, not the cloud's", "[tracking
 }
 
 TEST_CASE("the octave fold divides the beats, not only the number", "[tracking][tempo]") {
-    // The user's report of 2026-09-06: "the tool kept detecting the bpm as double, when it
-    // has a very obvious kick drum at 93ish bpm ... it kept trying to fold from 186."
+    // A track with a very obvious kick drum at about 93 BPM kept being detected at double, and
+    // the fold kept trying to fold it from 186.
     //
     // The fold was folding — the *number* read 92. What went past it untouched were the
     // beats, so OSC, MIDI clock, Link's phase and every trigger rule ran at 186 under a
@@ -402,8 +401,8 @@ TEST_CASE("a manual halving divides the beats without waiting to be convinced",
     //
     //   **the beats a tracker publishes are the tempo it publishes.**
     //
-    // That is the invariant the whole of `Options::foldBeats` exists to restore, it is what
-    // the user's report was a violation of, and it is true here where a ÷2 has been pressed
+    // That is the invariant the whole of `Options::foldBeats` exists to restore, and it is
+    // true here where a ÷2 has been pressed
     // on a fold that was holding back — which is exactly where it is easiest to lose.
     const double publishedPeriodFrames = 60.0 / (tracker.state().bpm * kFramePeriod);
     const double framesPerPublishedBeat = 640.0 / static_cast<double>(halved.beats);
@@ -498,9 +497,9 @@ TEST_CASE("the tempo locks only after sustained agreement, and unlocks the same 
     }
 
     SECTION("a disagreement that resolves never moves the tempo at all") {
-        // Two thirds of the way to an unlock, then back. This is the shape the operator's
-        // report was about — "as soon as the main beat drops it goes from 140 to 90 in
-        // seconds, just because the clap stopped" — and it now costs nothing.
+        // Two thirds of the way to an unlock, then back: the shape of a tempo that went from 140
+        // to 90 in seconds as soon as the main beat dropped, just because the clap stopped — and
+        // it now costs nothing.
         settle(tracker, index, 31, 0.8, 50);
         CHECK(tracker.state().bpm == Approx(bpmOf(23)));
         settle(tracker, index, 23, 0.8, 1);
@@ -1104,7 +1103,7 @@ TEST_CASE("the published tempo comes from the beat spacing once locked", "[track
         // Eight seconds of frames with nothing emitted, which is what a breakdown is. The
         // gaps in `beatFrames_` go stale and stop being counted; before, that fell straight
         // back to `lockedBpm_` — 130.43 here — and alternating between two values 2.4 BPM
-        // apart is exactly the jump the operator was reporting.
+        // apart is exactly the jump this guards against.
         for (int i = 0; i < 400; ++i) {
             (void)tracker.process(frameAt(next++, 23, 0.9));
         }
@@ -1409,7 +1408,7 @@ TEST_CASE("the manual octave shift stops at two octaves either way", "[tracking]
 
 TEST_CASE("a halving is dropped at the next track unless the operator asked to keep it",
           "[tracking][tempo]") {
-    // The operator's call of 2026-09-23: a set is one record after another, and a ÷2 that suited a
+    // A set is one record after another, and a ÷2 that suited a
     // drum-and-bass record turned the house record after it into half time with the beats divided,
     // until somebody noticed. Dropped at the next track by default; kept when the operator ticks
     // "keep for the next track".
@@ -1535,9 +1534,8 @@ TEST_CASE("a tapped tempo moves the fold window onto the octave the operator mea
 }
 
 TEST_CASE("a tap does not switch the fold on behind the operator", "[tracking][tempo]") {
-    // Reported from a rig on 2026-09-08: "octave fold keeps getting automatically turned on,
-    // which then breaks the next track in the mix because it might not need octave folding
-    // ... the tool will always be streamed several tracks in a row". `seedTempo` used to set
+    // The octave fold kept switching itself on, which broke the next track in a mix that might
+    // not need it — and a set is several tracks in a row. `seedTempo` used to set
     // `octaveFold = true`, so one tap left a window behind that halved or doubled every
     // record after it.
     TempoTracker::Options options = testOptions();
@@ -1956,7 +1954,7 @@ TEST_CASE("no signal drops the lock, and what comes back is acquired afresh", "[
 
 namespace {
 
-/// The filter contradicting itself the way the operator met it on 2026-10-06: a cloud at
+/// The filter contradicting itself: a cloud at
 /// `interval` frames, beats called twice that apart — and a stray one half way every seventh
 /// beat, so the beats are never clean for the eight in a row `Options::beatOctaveBeats` asks for,
 /// and the readout stays at the cloud's tempo while the dots move at half of it.
@@ -1985,10 +1983,9 @@ std::size_t feedWithStrays(TempoTracker& tracker, std::uint64_t& index, std::uin
 
 TEST_CASE("the readout an octave from the dots is published, and halving agrees them",
           "[tracking][tempo][octave]") {
-    // The operator, 2026-10-06: "the beat dots advance at the right bpm, for instance 90, and the
-    // track is 90, but the bpm display shows twice that. theres not indication why ... i click
-    // divide by 2 button to fix it. but then theres no indication anywhere in the program that a
-    // divide by two action is currently in effect".
+    // The beat dots advanced at the track's tempo, 90 say, and the BPM display showed twice that
+    // with nothing saying why; ÷2 fixed it, and then nothing anywhere in the program said a
+    // halving was in effect.
     TempoTracker::Options options = testOptions();
     options.octaveFold = false;
     options.lockAfter = 5;
@@ -2043,7 +2040,7 @@ TEST_CASE("the dots' own rate is measured from the beats published, and forgotte
 
 TEST_CASE("a doubling left in force reads double over dots at the right tempo, and says so",
           "[tracking][tempo][octave]") {
-    // The operator's report of 2026-10-06, on 808 State "In Yer Face (Bicep Remix)": the dots at
+    // On 808 State "In Yer Face (Bicep Remix)": the dots at
     // the track's tempo, the number twice it, nothing saying why, and ÷2 the fix. The file itself
     // does not do it — tracked from its start and from nine points through it, both versions on
     // the operator's drive keep the number with the beats whenever they are locked. A ×2 does:
@@ -2125,7 +2122,7 @@ std::size_t feedBeats(TempoTracker& tracker, Feed& feed, std::uint32_t cloud, st
 
 TEST_CASE("a wrong lock lost is taken back on the beats, despite a dip on every beat",
           "[tracking][tempo][relock]") {
-    // The re-lock trap, found on the operator's 109-g playlist on 2026-10-07: "THE SNACK THAT
+    // The re-lock trap, found on the 109-g playlist: "THE SNACK THAT
     // SMILES BACK" locked at 188 in a double-time passage, settled at 94, lost the lock — and the
     // number stayed at 188 for two minutes while every beat went out at 94. The real tempo could
     // never take the lock back: replacing a lock that has held for half a minute asks for a run
@@ -2224,7 +2221,7 @@ TEST_CASE("a re-lock is not refused for a lock that moved with the beats' octave
 }
 
 TEST_CASE("the beats' evidence never takes a first lock", "[tracking][tempo][relock]") {
-    // The operator's strict-lock ruling of 2026-10-03: tolerating the dip on a *first* lock made a
+    // The strict lock: tolerating the dip on a *first* lock made a
     // drum machine lock sooner and locked wrong tempi half as often again. The beats' evidence is
     // for replacing a lock, and only that. Here a run of agreement can never reach `lockAfter`
     // (beats twenty frames apart, the dip on two of them), so nothing locks, however steady the

@@ -399,7 +399,7 @@ trigger::DmxSend dmxFromJson(const json& node) {
         send.clip = generatorFromJson(node.at("clip"));
     }
     readNamed(node, "colorMode", send.colorMode, trigger::colorModeOf);
-    // `colour` was the key until a rig asked for the other spelling on 2026-09-16. A preset
+    // `colour` was the key until 2026-09-16. A preset
     // written before that holds it, and a color that does not read back is a rule that fires
     // white — which is exactly the failure this whole change was about. Read, never written.
     if (node.contains("color")) {
@@ -636,7 +636,7 @@ Rule::Config ruleFromJson(const json& node) {
     if (node.contains("conditions")) {
         rule.conditions = conditionsFromJson(node.at("conditions"));
     }
-    // **B's switch, and what a file from before it means** (agreed 2026-09-30): a rule that
+    // **B's switch, and what a file from before it means**: a rule that
     // used any of the conditions loads with them on, so nothing fires differently after the
     // upgrade; one that used none loads with them off, as a new rule starts.
     if (node.contains("conditionsOn")) {

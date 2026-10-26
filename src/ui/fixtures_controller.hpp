@@ -146,7 +146,7 @@ public:
     void setTestLevel(int level);
     int testLevel() const noexcept { return testLevel_; }
 
-    // --- the import (the operator's decisions of 2026-10-04 and 2026-10-05) ----------------------
+    // --- the import ------------------------------------------------------------------------------
     // In the editor's place while it is open; the editor is kept behind it, and what was being
     // typed there is committed before it opens, so nothing typed is lost to it.
 

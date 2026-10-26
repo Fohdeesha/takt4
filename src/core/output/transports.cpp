@@ -830,7 +830,7 @@ void Transports::publishToLink(const tracking::BeatEvent& event, std::int64_t ho
         }
     };
 
-    // **Snap once, then nudge** — the operator's call of 2026-09-23.
+    // **Snap once, then nudge.**
     //
     // With a peer in the session, `requestBeatAtTime` does not move the session's phase at all:
     // Link's own header says the request is moved to "the next time value greater than the

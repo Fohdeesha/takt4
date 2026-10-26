@@ -266,8 +266,8 @@ std::vector<std::string_view> splitTargets(std::string_view text) {
 /// What a row's port box holds when the operator has not said otherwise.
 ///
 /// Not `OutputTarget::port`'s own 7000, which is Resolume's: this is the number the *box* is
-/// pre-filled with when [+ ADD OUTPUT] makes a row, and 9000 is what the person who uses this
-/// asked for. A prefilled port is worth having at all because it is the half of an OSC
+/// pre-filled with when [+ ADD OUTPUT] makes a row.
+/// A prefilled port is worth having at all because it is the half of an OSC
 /// destination that has a conventional answer, where the host does not.
 constexpr std::uint16_t kNewTargetPort = 9000;
 
@@ -944,8 +944,8 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     editor_.applyLayout(settings.machine);
     patch_.applyLayout(settings.machine);
 
-    // **The outputs from now until the window goes**, not from Start to Stop — the operator's
-    // call of 2026-09-23. Last, after every setting above has been applied on this thread: a
+    // **The outputs from now until the window goes**, not from Start to Stop.
+    // Last, after every setting above has been applied on this thread: a
     // `post` to a running runner is taken by its thread a millisecond later, and the lines above
     // read `lastError()` straight after posting.
     //
@@ -1273,8 +1273,8 @@ std::string WindowController::applyMachine(const settings::MachineSettings& mach
 void WindowController::publishPortLists() {
     // The first entry of each list is "nothing picked". **It says so in words**: it used to
     // be an empty string, and a dropdown showing nothing at all does not read as a list
-    // nobody has chosen from — it reads as a box the application failed to fill in. Reported
-    // from a rig about the control input, and the clock picker had the same hole.
+    // nobody has chosen from — it reads as a box the application failed to fill in.
+    // The control input's picker had that hole, and so did the clock picker.
     //
     // The MIDI outputs, as a MIDI row's and a MIDI clock row's dropdown offers them — the ones
     // this machine has, and after them any a row names that it has not, said to be missing
@@ -1541,8 +1541,8 @@ void WindowController::superviseStereo(const audio::StereoSums& sums, double now
                                                inputName(input_->selection.channels[1]));
     }
     // **"Fine again" goes too**, once the pair has stayed fine this long: the status line gets back
-    // what it said before the warning, unless something else has been said since (the operator,
-    // 2026-10-08: it should not stick as the warning did).
+    // what it said before the warning, unless something else has been said since (it should
+    // not stick as the warning did).
     constexpr double kStereoFineSeconds = 10.0;
     if (problem.empty() && stereoStatus_ && !stereoStatus_->fine.empty() &&
         now - stereoStatus_->fineSince >= kStereoFineSeconds) {
@@ -1567,7 +1567,7 @@ void WindowController::superviseStereo(const audio::StereoSums& sums, double now
     } else {
         // **And off the status line when it ends.** It stayed there, amber, until something else
         // was said, so a pair that had been put right went on reading "out of phase" until its
-        // input was stopped and started again (the operator, 2026-10-08). Only its own sentence
+        // input was stopped and started again. Only its own sentence
         // goes: a status line that has said something since is the operator's news.
         const std::string sentence = stereoProblem_ + ".";
         if (const std::size_t at = startupMessage_.find(sentence); at != std::string::npos) {
@@ -2088,8 +2088,8 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
 
     switch (reading.verdict) {
     case audio::InputWatchdog::Verdict::Silent:
-        // **A loopback's silence is nothing playing, not a dead input** (the operator's call of
-        // 2026-09-26). Windows sends a loopback nothing at all while nothing plays on the output
+        // **A loopback's silence is nothing playing, not a dead input.**
+        // Windows sends a loopback nothing at all while nothing plays on the output
         // it captures — measured: 0 hops in 3 s from an idle output's loopback — so a paused
         // player read as an unplugged interface, and was reopened every few seconds, the tracker
         // restarting each time. Said once, and the stream left open for whatever plays next.
@@ -3330,7 +3330,7 @@ void WindowController::tap(double seconds) {
     lastTapSeconds_ = seconds;
     if (tapped) {
         // A seed, not an override: the fold window moves onto the tapped octave and the
-        // tracker keeps tracking (the operator's call of 2026-09-04). It moves `minBpm`/`maxBpm`
+        // tracker keeps tracking. It moves `minBpm`/`maxBpm`
         // under this window, which is why nothing here holds a copy of them — and why a
         // settings change in flight is dropped, since the tap has just superseded it.
         (void)source_.post(engine::Command::seedTempo(*tapped));
@@ -3785,8 +3785,8 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     }
     applyTargets();
 
-    // **And this machine's half, when the file has one** (the operator, 2026-10-03: an import
-    // "should carry/restore EVERYTHING"). It used to be left alone by design — the input and the
+    // **And this machine's half, when the file has one.**
+    // It used to be left alone by design — the input and the
     // learned controls were kept out of anything that travels — so a rig restored from its own
     // export came back without its input, its pads, its OSC control or its layout.
     const std::string input = loaded.machine.inFile ? applyMachine(loaded.machine) : std::string{};
@@ -4088,7 +4088,7 @@ std::string WindowController::latencyLine() const {
     // input, whatever the buffer size, so none of these moves an output — and a buffer size
     // changed in the driver's panel reopens the input and is said again here. The figures alone:
     // "latency taken out of the beat times: " before them made the line so long the window had
-    // to be widened a long way to stop it wrapping (the operator, 2026-10-08).
+    // to be widened a long way to stop it wrapping.
     return fixed(stream->inputLatencySeconds() * 1000.0, 1) + " ms input + " +
            fixed(resamplerMs, 1) + " ms resampler + 40.0 ms centred framing";
 }
@@ -4110,8 +4110,8 @@ void WindowController::publishOpenStream(const std::string& said) {
             ? "In " + std::to_string(running.selection.channels[0] + 1) + " + " +
                   std::to_string(running.selection.channels[1] + 1) + " (stereo)"
             : inputName(running.selection.channels[0]);
-    // Two lines: what is being listened to, and the latency figures on a line of their own
-    // (asked for on 2026-09-29, with the redesign), so neither is broken across the other.
+    // Two lines: what is being listened to, and the latency figures on a line of their own,
+    // so neither is broken across the other.
     setStatus(inputs + " of " + running.device.name + " \xC2\xB7 " +
                   fixed(stream->sampleRate(), 0) + " Hz \xE2\x86\x92 " +
                   fixed(audio::kInternalSampleRate, 0) + " Hz \xC2\xB7 " +

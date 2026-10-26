@@ -3,7 +3,7 @@
     python tools/drop_font_feature.py IN.ttf OUT.ttf liga
 
 How `assets/fonts/chivo-mono/ChivoMono-Medium.ttf` was made from Google Fonts' own static
-Medium instance of Chivo Mono (the one the approved mockup rendered): the rule editor sets colour
+Medium instance of Chivo Mono (the one the mockup rendered): the rule editor sets colour
 codes in it, and "#20ff80" has to read f, f — but the font's `liga` feature joins them, and Slint
 has no way to switch a feature off (the rule editor locked 2026-09-30). So our copy
 has no `liga`: its feature record goes, and every script's list of features is renumbered without

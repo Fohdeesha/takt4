@@ -197,7 +197,7 @@ TEST_CASE("a target's name and id survive being written down and read back", "[o
 
     SECTION("any name at all, however it would read unquoted") {
         // "off stage" came back switched off and called "stage", and "a=b" came back mangled.
-        // The operator's call: a name like that is written in quotes; every other name is
+        // A name like that is written in quotes now; every other name is
         // written as it always was.
         for (const bool enabled : {true, false}) {
             for (const char* name : {"off stage", "off", "a=b", " spaced ", "say \"hi\"",
@@ -241,7 +241,7 @@ TEST_CASE("a rule's output ids become the bits its messages carry", "[output][ro
     CHECK(takt4::output::resolveOutputs({idFor("main"), idFor("lights")}, targets) == 0b001);
 
     SECTION("a name reaches nothing, so renaming an output moves no rule") {
-        // The operator's report of 2026-09-23: renaming an OSC target broke every rule routed
+        // Renaming an OSC target used to break every rule routed
         // to it, and each had to be routed again.
         CHECK(takt4::output::resolveOutputs({"main"}, targets) == 0);
         targets[0].name = "front of house";
@@ -345,7 +345,7 @@ TEST_CASE("the generic namespace goes to every output that asks for it, routed o
           "[output][routing]") {
     // The namespace used to go everywhere, so that anything could consume it with zero
     // configuration; since 2026-10-02 it goes to the outputs ticked for it
-    // (`OutputTarget::sendsNamespace`) and no others, the operator's call after a receiver
+    // (`OutputTarget::sendsNamespace`) and no others, after a receiver
     // complained of them. Which of those a *rule* reaches has nothing to do with it.
     LoopbackReceiver deck;
     LoopbackReceiver wall;

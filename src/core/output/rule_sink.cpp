@@ -367,8 +367,8 @@ bool RuleSink::sendMidi(const trigger::Message& message) {
     // **Not every message is three bytes**, which is why this builds a length rather than a
     // fixed array. Program change is two. And the release half of a rule's press-then-release
     // is a real Note Off: this file used to claim "a note with velocity zero is a note-off on
-    // every device made since 1983", and the operator's laser controller is the counter
-    // example that cost a show — it holds the clip until `0x80` arrives. See
+    // every device made since 1983", and a laser controller is the counter example that cost
+    // a show — it holds the clip until `0x80` arrives. See
     // `trigger::Message::Kind`.
     std::array<unsigned char, 3> bytes{midiStatusFor(message.kind, message.channel), 0, 0};
     const std::size_t length = midiLengthFor(message.kind);

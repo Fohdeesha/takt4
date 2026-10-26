@@ -157,9 +157,8 @@ TEST_CASE("an engine takes its first command without touching the heap", "[engin
 }
 
 TEST_CASE("the meter is steady enough to read", "[engine][meter]") {
-    // The user's report, 2026-09-05: *"the time signature detected constantly changes and
-    // jumps almost every single beat/bar on any song I test, so it's impossible to set the
-    // downbeat consistently"*. Measured over these eighteen real-music excerpts it was
+    // The time signature used to change almost every beat or bar on any song, so the downbeat
+    // could not be set consistently. Measured over these eighteen real-music excerpts it was
     // **166 changes**, up to 1.8 a second — the meter was the bar length of whichever
     // single downbeat particle happened to be commonest that frame, so a cloud split
     // between three and four to the bar crossed over whenever one particle moved.
@@ -1389,7 +1388,7 @@ std::vector<float> quietInput(double seconds, std::optional<double> dbfs) {
 } // namespace
 
 TEST_CASE("digital silence and a noise floor call no beat and earn no lock", "[engine][shipped]") {
-    // Reported from the rig on 2026-10-03: 178.66 BPM, locked, confidence 0.95, with the input
+    // The tracker once read 178.66 BPM, locked, confidence 0.95, with the input
     // at -inf dB. The network reads P(beat) 0.46 to digital zeros, the decoder took that as
     // evidence for the one tempo whose beat zone is the largest share of its interval, and the
     // tracker locked on it with no beat ever called. The same at -70 dBFS. Now nothing is

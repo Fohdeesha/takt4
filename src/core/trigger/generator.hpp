@@ -37,8 +37,7 @@ enum class GeneratorKind : std::uint8_t {
     Live,
     /// A value that sweeps its range over a whole number of bars, locked to the downbeat.
     ///
-    /// **Not one of the six**, and added on the user's ask for *"algorithmic settings ...
-    /// based on the bpm of the song and downbeat"*. It is the one generator whose output is
+    /// **Not one of the six**: it is the one generator whose output is
     /// neither drawn nor read but *computed from where in the music we are*, which is what a
     /// Resolume dashboard parameter, a layer opacity or a clip speed wants — a value that
     /// breathes with the track rather than jumping about.

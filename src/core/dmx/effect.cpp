@@ -78,8 +78,8 @@ std::optional<EffectKind> effectKindOf(std::string_view name) noexcept {
             return entry.kind;
         }
     }
-    // **The spelling this used to write.** takt4 said "colour" everywhere until a rig asked for
-    // the other spelling on 2026-09-16, and a preset saved before that holds `"effect":
+    // **The spelling this used to write.** takt4 said "colour" everywhere until 2026-09-16, and a
+    // preset saved before that holds `"effect":
     // "colour"`. An effect name that will not read back silently becomes the default — so a
     // colour rule an operator built would have come back as a fade, which is a rule that does
     // something else rather than a rule that fails. Read only; nothing writes this now.

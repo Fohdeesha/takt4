@@ -15,8 +15,7 @@ namespace takt4::audio {
 /// reopened (`WindowController::superviseInput`). The MOTU's driver
 /// falls over as it is let go, about one time in 840 — a fast fail inside its `ASIOExit`
 /// (caught on 2026-09-23), which no handler in the process can catch. In takt4's own process
-/// that was the rig going dark with no report; the operator's call on 2026-09-24 was to move the
-/// asking out.
+/// that was the rig going dark with no report, so the asking was moved out.
 ///
 /// So this executable is started again with `kAsioScanOption`. It lets PortAudio ask every
 /// driver, writes down what PortAudio found, and exits without going on to `main`. takt4 reads

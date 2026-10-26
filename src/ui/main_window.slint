@@ -111,8 +111,7 @@ component Label inherits Text {
 
 /// A line saying why something is not working, for as long as it is not, under the row it is
 /// about — a port that will not open, a host that will not resolve. The status line says each
-/// once, and the next thing it says writes it away (2026-09-28: *"it should say so in the UI so
-/// it doesn't just silently fail"*).
+/// once, and the next thing it says writes it away.
 component Alarm inherits Text {
   color: Wf.alarm;
   font-family: Wf.sans;
@@ -125,9 +124,8 @@ component Alarm inherits Text {
 /// (`output::OutputTarget::sendsNamespace`) — none until some are ticked. A closed box in the
 /// outputs heading saying which, that opens a list of the OSC outputs with a tick each and stays
 /// open while ticking, drawn as the rule editor's "send to" list is (`ChoiceField`), at the
-/// heading's 28 px. In the heading because the operator wants the table kept as it is (2026-10-02:
-/// a line under every OSC row for this was "definitely" not it — "keep the main window sharp
-/// concise and clear").
+/// heading's 28 px. In the heading, so the table is kept as it is rather than given a line under
+/// every OSC row.
 ///
 /// It sets nothing itself: a tick says what is asked for and the owner writes the rows back. The
 /// list is not inside a repeater, so nothing rebuilds it under the pointer; its rows follow
@@ -498,9 +496,8 @@ export component MainWindow inherits Window {
   /// moved and the beats have not.
   in-out property <int> beat-divisor: 1;
   /// The operator's ÷2 and ×2, as octaves — `TempoState::octaveShift`: -1 after a ÷2, +1 after a
-  /// ×2. Shown beside the number and on the buttons while it is in force (the operator,
-  /// 2026-10-06: "no indication anywhere in the program that a divide by two action is currently
-  /// in effect").
+  /// ×2. Shown beside the number and on the buttons while it is in force, or nothing would say
+  /// it is.
   in-out property <int> octave-shift;
   /// The rate the published beats — the dots — are arriving at, measured: `TempoState::
   /// beatsBpm`. Zero until there are eight gaps to measure.
@@ -613,8 +610,7 @@ export component MainWindow inherits Window {
   in-out property <string> control-reading;
   /// The reading is a state in words — "not bound", "off — pick a port" — rather than a control
   /// ("note 36 ch 10"), so it is set in Archivo, as every other state in the window is, and not in
-  /// DM Mono, which is for numbers and addresses (the operator, 2026-09-30: "off" in DM Mono
-  /// "looks weird").
+  /// DM Mono, which is for numbers and addresses.
   in-out property <bool> control-reading-words;
   /// The reading is saying why the port picked is not open — not on the machine, or another
   /// program has it — rather than what arrived. Drawn in the alarm colour on a line of its own.
@@ -714,7 +710,7 @@ export component MainWindow inherits Window {
   // What this build is, kept where it cannot be scrolled or overwritten: the title bar and
   // the corner of the status bar.
   in-out property <string> version;
-  /// The same, short, for the status bar's corner, always on two lines (the operator, 2026-09-29):
+  /// The same, short, for the status bar's corner, always on two lines:
   /// the version, and under it "release" or "dev". A dev build's full label — "0.9.9
   /// (v0.9.9-1-g16611d86d-dirty)", 257 px — left the status line 215 px, and neither of its lines
   /// fits that (measured); it is in the title bar and the About box.
@@ -1127,14 +1123,12 @@ export component MainWindow inherits Window {
             property <bool> folded-note: !root.following && root.fold-on && root.called-bpm > 0
               && root.bpm > 0
               && (root.called-bpm > root.bpm * 1.5 || root.called-bpm < root.bpm * 0.67);
-            // **Whether the dots and the number disagree by an octave** (the operator, 2026-10-06:
-            // "the beat dots advance at the right bpm ... but the bpm display shows twice that.
-            // theres not indication why"). Measured from the beats going out rather than inferred
-            // from the tracker's state, so it says what is on the wire whatever put it there; a
-            // clean octave within 12 %, which a beat let pass or a stray one cannot fake past the
-            // median. **Whenever the outputs are live**, locked or not: a lock lost mid-track
-            // leaves the number where it was while the beats go out at the record's tempo, and
-            // that — not a locked state — is where the operator met it.
+            // **Whether the dots and the number disagree by an octave**. Measured from the beats
+            // going out rather than inferred from the tracker's state, so it says what is on the
+            // wire whatever put it there; a clean octave within 12 %, which a beat let pass or a
+            // stray one cannot fake past the median. **Whenever the outputs are live**, locked or
+            // not: a lock lost mid-track leaves the number where it was while the beats go out at
+            // the record's tempo, and that — not a locked state — is where it happens.
             property <float> beats-ratio: root.bpm > 0 ? root.beats-bpm / root.bpm : 0;
             property <bool> beats-apart: root.running && root.acquired && !root.no-signal
               && root.beats-bpm > 0
@@ -1626,8 +1620,8 @@ export component MainWindow inherits Window {
             vertical-stretch: 0;
 
             // **Two columns**, so the half/double tick starts where "latency" starts under it, at
-            // any width (the operator, 2026-10-08): two rows of their own lined up only where the
-            // fold slider's stretch happened to put "latency".
+            // any width: two rows of their own lined up only where the fold slider's stretch
+            // happened to put "latency".
             GridLayout {
               padding-left: 16px;
               padding-right: 16px;
@@ -1703,8 +1697,7 @@ export component MainWindow inherits Window {
               }
 
               // What ÷2 and ×2 do when the record changes. A setting, so it is live while
-              // stopped; the default, the operator's call of 2026-09-23, is to drop a shift at
-              // the next track.
+              // stopped; the default is to drop a shift at the next track.
               //
               // **Following, there is no next track to keep them for**, and TAP and LOCK are off:
               // the tempo is the source's. The cell says so, as the reason the two are grey.
@@ -2442,10 +2435,9 @@ export component MainWindow inherits Window {
                 }
 
                 // **The column headings, and they are not decoration** — a filled-in row is
-                // "RDM10", "127.0.0.1", "6454" with nothing saying which is which (2026-09-16:
-                // "LABEL UI ELEMENTS!! humans arent psychcic"). Centred over their columns, which
-                // have the rows' own widths: on 30 · name 90 · protocol 106 · host / device the
-                // rest · port 58 · delay 239 · delete 24, 6 px apart.
+                // "RDM10", "127.0.0.1", "6454" with nothing saying which is which. Centred over
+                // their columns, which have the rows' own widths: on 30 · name 90 · protocol 106 ·
+                // host / device the rest · port 58 · delay 239 · delete 24, 6 px apart.
                 if root.outputs-list.length > 0: HorizontalLayout {
                   height: 18px;
                   spacing: 6px;
@@ -3011,8 +3003,8 @@ export component MainWindow inherits Window {
 
         // --- the status bar ------------------------------------------------------------
         // Two lines, always, so the rows above do not move as the status changes length: what
-        // the input is on the first, and the latency figures on a line of their own (asked for
-        // on 2026-09-29). The version and the buttons about the whole rig at the right.
+        // the input is on the first, and the latency figures on a line of their own. The version
+        // and the buttons about the whole rig at the right.
         status-bar := Rectangle {
           height: 51px;
           background: Wf.page;
@@ -3058,8 +3050,8 @@ export component MainWindow inherits Window {
               vertical-alignment: center;
             }
 
-            // Saving, which until 2026-09-12 happened only when the window closed ("I am scared
-            // of closing it"), and the two file routes. With ABOUT, one size, in the corner.
+            // Saving, which until 2026-09-12 happened only when the window closed, and the two
+            // file routes. With ABOUT, one size, in the corner.
             for action[i] in ["save", "export", "import", "about"]: VerticalLayout {
               alignment: center;
               horizontal-stretch: 0;

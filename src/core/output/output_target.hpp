@@ -74,7 +74,7 @@ struct OutputTarget {
     /// generic namespace, `/takt4/bpm`, `/beat`, `/beat/bar`, `/downbeat`, `/confidence`,
     /// `/locked`, `/meter` and `/resync` (`OscPublisher`), several on every beat.
     ///
-    /// **Off unless asked for** (the operator, 2026-10-02), where it used to be always on:
+    /// **Off unless asked for**, where it used to be always on:
     /// a receiver that takes only what a rule sends it complains about the rest, logging each
     /// address it does not handle, and every output a rig had got them
     /// whether it wanted them or not. The main window's "/takt4 global messages to" picks the
@@ -112,7 +112,7 @@ struct OutputTarget {
     /// `RuleSink::releaseDue` for MIDI), so the resolution is that thread's round — 1 ms,
     /// which is why it raises Windows' timer granularity.
     ///
-    /// **Every kind honours it, the same way** (the operator's call, 2026-09-25): everything
+    /// **Every kind honours it, the same way**: everything
     /// the output sends is moved by it, on top of the rig's latency.
     ///   * `ArtNet`: a universe is a stream of frames, so what is delayed is the stream — the
     ///     node is sent the frame the patch had that long ago (`dmx::ArtNetPublisher`). For a

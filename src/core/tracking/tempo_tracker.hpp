@@ -57,7 +57,7 @@ struct TempoState {
     /// 184, and nothing on screen says the two disagree. That happens whenever the window
     /// folds a track the filter is double-timing and `Options::foldSupportFrames` has not
     /// been satisfied — which is every track whose cloud never visits the slower octave.
-    /// Three were reported on 2026-09-08 and all three are that state; see
+    /// Three tracks found doing this are all in that state; see
     /// `foldSupportFrames` for why no threshold separates them from a record that is
     /// genuinely fast. (`calledBpm` rather than `rawBpm`: a filter calling beats an octave
     /// below its own cloud is publishing exactly the grid it calls, and that is not this
@@ -65,16 +65,13 @@ struct TempoState {
     std::uint32_t beatDivisor = 1;
     /// **The operator's ÷2 and ×2, as octaves**: -1 after one ÷2, +1 after one ×2, -2 to 2, zero
     /// for none — and a tap that named another octave counts. Published so the window can say a
-    /// shift is in force (the operator, 2026-10-06: *"theres no indication anywhere in the
-    /// program that a divide by two action is currently in effect. same with multiply"*); the
+    /// shift is in force; the
     /// readout alone cannot, since a halved tempo reads like any other.
     std::int32_t octaveShift = 0;
     /// **The rate the published beats are arriving at**, in BPM: the median of the last eight
     /// gaps between them, or zero until there are enough, or once the next is more than two gaps
     /// late. What the bar dots move at, measured rather than assumed — so that when it is an
-    /// octave from `bpm` the window can say so, and say which button agrees them (the operator,
-    /// 2026-10-06: *"the beat dots advance at the right bpm ... but the bpm display shows twice
-    /// that. theres not indication why"*).
+    /// octave from `bpm` the window can say so, and say which button agrees them.
     double beatsBpm = 0.0;
     /// **The rate the published beats are going out at, as precisely as it is known** — what a
     /// rule's beats and bars are counted in, what the beat scheduler predicts from, and what the
@@ -165,9 +162,8 @@ struct BeatEvent {
 /// is no longer sure, not that it has a better answer, so what it publishes meanwhile is
 /// the tempo that last earned one, with `locked` false to say so.
 ///
-/// That rule is the answer to the report this layer was rebuilt for: *"the BPM is way too
-/// eager to change hugely on mostly steady songs — as soon as the main beat drops it will
-/// go from 140 to 90 in seconds, just because the clap stopped."* All three of the places
+/// That rule is the answer to a tempo that changed hugely on mostly steady songs — 140 to 90 in
+/// seconds when the main beat dropped, just because the clap stopped. All three of the places
 /// that came from were here rather than in the filter. Publishing the cloud's median while
 /// hunting is one: the median is a whole-frame interval, so it steps by 5.4 BPM at 130 and
 /// walks freely during a passage with nothing percussive in it, and the moment the lock
@@ -176,7 +172,7 @@ struct BeatEvent {
 /// whenever a frame had too few usable beat gaps is the third (`refinedBpm_`).
 ///
 /// Measured over the seventeen full tracks in `references/audio`, 68 minutes of the
-/// material the report came from: **2737 tempo jumps of more than 2 % became 457** — and of
+/// material it happened on: **2737 tempo jumps of more than 2 % became 457** — and of
 /// those 457, **316 are inside the first 5.5 seconds of a track**, which is the acquisition
 /// the tracker is openly hunting through and says so. Past acquisition it is 141 against
 /// 2737: one every 29 seconds where it had been one every 1.5. Unlocks, 221 to 122.
@@ -231,9 +227,7 @@ public:
 
         /// Whether the fold reaches the **beats**, or only the number on the screen.
         ///
-        /// This is the half of the octave fold that was missing, and it is the whole of the
-        /// user's report of 2026-09-06: *"the tool kept detecting the bpm as double, when it
-        /// has a very obvious kick drum at 93ish bpm ... it kept trying to fold from 186."*
+        /// This is the half of the octave fold that was missing.
         ///
         /// Measured on `references/audio`'s "03 - Fake Sweat", whose kick is at 92.0 BPM
         /// (independently: the peak of the 30-110 Hz onset envelope's autocorrelation, where
@@ -352,9 +346,8 @@ public:
         /// reports a beat period of 15 frames — 200 BPM — and then *calls* its beats 30 frames
         /// apart. Measured on `references/audio`'s "Pogo - Quantum Field - 08 Moonlake": 216
         /// of its 402 beat-to-beat gaps are exactly 30 frames and only 59 are 15, while the
-        /// cloud's interval sits at 15 for the whole track. Reported from a rig on 2026-09-08,
-        /// and reported exactly right: *"the app said locked and displayed 200bpm, but the beat
-        /// counter dot lights were moving very clearly at 100bpm"*.
+        /// cloud's interval sits at 15 for the whole track. The window said locked at 200 BPM
+        /// while the beat dots moved, very clearly, at 100.
         ///
         /// Both numbers were true of what they described. The readout is the cloud's tempo;
         /// the dots move on the beats. **The published tempo has to be the one the beats are
@@ -462,8 +455,8 @@ public:
         /// Judged over a beat rather than per frame, because the per-frame dip is exactly what
         /// makes the run impossible. **Only a replacement**: a first lock, and a lock coming
         /// back to the tempo still published, are earned as before — tolerating the dip on a
-        /// first lock was measured to lock wrong tempi half as often again (the operator's
-        /// strict-lock ruling of 2026-10-03), and nothing here is a first lock.
+        /// first lock was measured to lock wrong tempi half as often again, and nothing here is a
+        /// first lock.
         bool relockOnBeats = true;
         /// How close two estimates have to be to count as the same *value*. The state space
         /// is discrete, so in practice this means "the same tempo interval". Used where an
@@ -501,7 +494,7 @@ public:
 
         /// Whether a ÷2 or ×2 the operator pressed **carries on into the next track** — the
         /// next time a different tempo earns the lock — or is dropped there. Off by default,
-        /// which is the operator's call of 2026-09-23: a set is one record after another, and
+        /// because a set is one record after another, and
         /// a ÷2 that suited a 174 drum-and-bass track turned the 128 house record after it into
         /// 64, with the beats divided, until somebody noticed. On, the shift
         /// is a set-wide preference that lasts until pressed again or a restart.
@@ -588,7 +581,7 @@ public:
     ///
     /// **Only when the fold is already on.** A tap does not switch it on — it used to, and
     /// the window it left behind then halved or doubled the *next* record of a set (see the
-    /// implementation for the report). With the fold off a tap moves the published tempo onto
+    /// implementation). With the fold off a tap moves the published tempo onto
     /// the octave it named through the manual shift instead, which is what ÷2 and ×2 do and
     /// is the only thing an octave instruction can mean when there is no window.
     ///
@@ -622,9 +615,8 @@ public:
     /// **Which beat that is, is the whole difficulty.** This used to be "the next beat
     /// called", and that is a beat late for the only way the control is ever used: a
     /// person presses the button *on* the downbeat they can hear, by which time the
-    /// tracker has already called it, so the bar came out anchored to beat 2. The user's
-    /// report, 2026-09-05: "if I press the downbeat, it should start at the very beginning
-    /// of the four dots, but it's always one too slow." The control is meant to snap the bar
+    /// tracker has already called it, so the bar came out anchored to beat 2. The control is
+    /// meant to snap the bar
     /// phase immediately, and a beat late is not immediately.
     ///
     /// So it takes the **nearest** beat: the one just called if it is less than half a beat
@@ -963,7 +955,7 @@ private:
     /// double time for a passage — its beats already steady there before the old lock let go,
     /// so a lock taken the moment it did followed the excursion, and Link with it. Measured on
     /// 2026-10-07 over the 23 tracks of `references/audio` (window off) and the twenty worst of
-    /// the operator's 109-g playlist: 8 % and no wait locked a wrong tempo for 294 s of the
+    /// a 109-track playlist: 8 % and no wait locked a wrong tempo for 294 s of the
     /// agreed fifteen (260 before any of this) and left the number off the beats for 69 s of
     /// the twenty (1057 before); 5 % and three seconds, 261 s and 106 s.
     static constexpr double kRelockSpread = 0.05;

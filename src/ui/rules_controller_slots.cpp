@@ -97,8 +97,6 @@ void RulesController::pickSlotKind(int slot, int kind) {
     // index. On a color it is nonsense in both directions: the draws are numbers `dmx::parseColor`
     // cannot read, so every fire fell back to white, and the editor drew a box saying "1 - 8" over
     // a generator whose values are `#ff2040`.
-    // Reported from a rig on 2026-09-16: *"I define a range 1-9 which maps to what!? it just
-    // stays the same #ffff color code"*.
     //
     // So picking shuffle, random or cycle on the color chip seeds six colors the operator
     // can then edit, which is what picking them meant.
@@ -414,7 +412,7 @@ void RulesController::setPickerOpen(bool open) {
 void RulesController::previewColor(dmx::Color color) {
     // **The color goes to the lamp while it is being chosen.**
     //
-    // Asked for on 2026-09-16, and the reason is one nobody who has programmed lights will
+    // The reason is one nobody who has programmed lights will
     // argue with: `#20ff80` on a screen and `#20ff80` out of a fixture are not the same
     // color. Three LEDs, a diffuser and a wall between them, and what an operator is
     // choosing is what comes out of the *fixture* — so the picker sends it as they drag and

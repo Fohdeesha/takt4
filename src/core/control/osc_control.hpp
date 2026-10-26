@@ -118,7 +118,7 @@ public:
         commands_ = commands;
     }
     /// **Who may change takt4's set-up from the network** — START, STOP, the input, the source
-    /// and the outputs (the operator's answer of 2026-10-22). Off unless the operator ticks
+    /// and the outputs. Off unless the operator ticks
     /// "allow remote setup", which is a second step after "listen" and, from another machine,
     /// "allow other machines". With addresses in `from` (IPv4, host order), only those; empty, any
     /// that reaches the socket — and this machine (127.x.x.x) whatever the list says: what runs

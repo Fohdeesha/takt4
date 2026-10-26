@@ -134,7 +134,7 @@ TEST_CASE("a DMX rule reaches the fixtures it names and no others", "[dmx][trigg
 }
 
 TEST_CASE("a rule reaches the 300th fixture of a patch, not only the first 64", "[dmx][trigger]") {
-    // 2026-09-28, the operator: "Is the 64 fixture limit hard coded or can we up that?" It was the
+    // A rule used to reach the first 64 fixtures of a patch and no more. The limit was the
     // width of one machine word: a rule carried its fixtures as a 64-bit mask, so on a rig of more
     // than 64 lamps the rest could be patched and tested and never reached by a rule. A set of
     // `dmx::kMaxRoutableFixtures` bits now — 512 — so here 300 pars, three to a universe'
@@ -262,9 +262,9 @@ TEST_CASE("a rule's numbers past what an effect holds are clamped, not converted
 // carry comes back mangled — so the test "fails" by matching nothing at all. It passes when
 // run by wildcard, which is the giveaway.
 TEST_CASE("fade in, then fade out: one rule with a follow-up", "[dmx][trigger]") {
-    // The operator's own first example. The follow-up's *delay* is when it starts and its
-    // *duration* is how long it runs, and the two are different numbers: "fade up over a beat,
-    // then two beats later fade down over a beat".
+    // The follow-up's *delay* is when it starts and its *duration* is how long it runs, and
+    // the two are different numbers: fade up over a beat, then two beats later fade down over
+    // a beat.
     Transports::Config config;
     config.patch = {rgb("par", 1)};
     Transports transports(config);
@@ -593,8 +593,8 @@ TEST_CASE("a random position draws once per fire and the engine executes a numbe
 }
 
 TEST_CASE("two rules move the two heads of one fixture apart", "[dmx][trigger][heads]") {
-    // The operator, 2026-10-05: every head should move, "and the ability for them to be driven
-    // independently so a rule or multiple rules doesnt just move all heads the exact same way".
+    // Every head moves, and each can be driven on its own, so that one rule or several do not
+    // just move all the heads the exact same way.
     Fixture twin;
     twin.id = "twin";
     twin.name = "twin";
@@ -696,10 +696,10 @@ TEST_CASE("an effect aimed at fixtures that cannot do it is undeliverable, not a
 
 TEST_CASE("a rule mixes a random color within the limits set per component",
           "[dmx][trigger]") {
-    // Generators doing color work — `trigger::ColorMode::Mix`. Asked for on
-    // 2026-09-16: "any random combination of rgb, within limits I set for r g and b channels
-    // specifically on that trigger". Three generators rather than a "random color" tick box,
-    // because a limit is a `Random` over a range and that already exists.
+    // Generators doing color work — `trigger::ColorMode::Mix`: any random combination of
+    // red, green and blue, within limits set for each channel on that rule. Three generators
+    // rather than a "random color" tick box, because a limit is a `Random` over a range and
+    // that already exists.
     Transports::Config rig;
     rig.patch = {rgb("par", 1)};
     Transports transports(rig);
@@ -747,10 +747,10 @@ TEST_CASE("a rule mixes a random color within the limits set per component",
 }
 
 TEST_CASE("a rule shuffles a palette of colors", "[dmx][trigger]") {
-    // The other half of what a rig asked for: "I should be able to make it shuffle/randomize
-    // through colors, a list of colors I pick from a color picker". A palette is a
-    // `Shuffle` over a `List` of text values and no code here knows that is what it is
-    // looking at — which is the whole argument for `DmxSend::color` being a generator.
+    // The other half of the color work: a shuffle through a list of colors picked with a color
+    // picker. A palette is a `Shuffle` over a `List` of text values and no code here knows that
+    // is what it is looking at — which is the whole argument for `DmxSend::color` being a
+    // generator.
     Transports::Config rig;
     rig.patch = {rgb("par", 1)};
     Transports transports(rig);
@@ -795,7 +795,7 @@ TEST_CASE("a rule shuffles a palette of colors", "[dmx][trigger]") {
 }
 
 TEST_CASE("the rig a new operator builds actually lights up", "[dmx][trigger]") {
-    // **The exact rig that reported "the light is not coming on at all" on 2026-09-16**, and
+    // **A rig whose light did not come on at all**, and
     // the whole of what was wrong with it. One RGB par, universe 5, address 70 — the numbers
     // off the back of a fixture — and a lighting rule left at its defaults: a fade, aimed at
     // "dimmer", over a beat.

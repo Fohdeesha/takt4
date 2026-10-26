@@ -1,7 +1,7 @@
 // takt4-cli — the development console (built first to list devices, open one channel and
 // print RMS, then to run the feature front end over a file; since then the tracker, the
 // evaluations and `annotate`). Links takt4_core, and the built-in weights where the build has
-// them; attached to every release beside the app (the operator's call of 2026-09-23).
+// them; attached to every release beside the app.
 
 #include "cli/annotate.hpp"
 #include "cli/args.hpp"
@@ -119,7 +119,7 @@ void printUsage(std::ostream& out) {
         << "      Run the feature front end and the BeatNet+ model over a file or a live\n"
         << "      input and print P(beat), P(downbeat) and P(non-beat) as they come.\n"
         << "      --weights S     electronic (default: the set built in, generic fine-tuned on\n"
-        << "                      the operator's library), or a path to a .bin from\n"
+        << "                      electronic music), or a path to a .bin from\n"
         << "                      tools/convert_weights.py. Built from source, the names\n"
         << "                      generic, generic-main and af-non-percussive work too:\n"
         << "                      those sets are read from assets/weights/ in the tree\n"

@@ -50,7 +50,7 @@ struct MachineSettings {
     /// an odd input and the even one after it as an interface numbers them (1 and 2, 11 and 12),
     /// which is how a stereo feed is patched into one.
     int channel = 0;
-    /// One input rather than the pair `channel` is in — the operator's "mono" tick (2026-09-28).
+    /// One input rather than the pair `channel` is in — the window's "mono" tick.
     /// **Off unless asked for**: a stereo feed is heard as the average of its two sides, which is
     /// what the model was trained on, and which measured as well as the better side alone and
     /// better on downbeats (`tools/refeval/stereo.py`).
@@ -125,24 +125,24 @@ struct MachineSettings {
     std::string proLinkInterfaceMac;
     std::string proLinkInterfaceName;
 
-    /// The main window's Inputs and Outputs folded down to their headings, as they were left —
-    /// the operator's call of 2026-09-29, when folding arrived. Machine-local: how much of the
+    /// The main window's Inputs and Outputs folded down to their headings, as they were left.
+    /// Machine-local: how much of the
     /// window a desk's screen has room for is that desk's business, not the music's. Inputs —
     /// MIDI and OSC control, which a rig sets once — **folded** in a fresh install and in a file
-    /// from before there was folding (the operator, 2026-10-08); its heading still says what
+    /// from before there was folding; its heading still says what
     /// each is doing. Outputs open.
     bool inputsFolded = true;
     bool outputsFolded = false;
 
     /// The rule editor's sections folded — A when, B only if, C send, D then send — its event log
     /// open, and how tall the log's lines are, in logical pixels: remembered with the main window's
-    /// folds (the rule editor's design, locked 2026-09-30). As it opens the first time: B folded,
+    /// folds. As it opens the first time: B folded,
     /// as a new rule's B starts, and the log folded to one line; open, five lines of 18.
     std::array<bool, 4> ruleSectionsFolded{false, true, false, false};
     bool ruleLogOpen = false;
     double ruleLogHeight = 90.0;
     /// The patch editor's sheets folded — A where, B channels, C how far it moves — remembered the
-    /// same way (its redesign, 2026-09-30). All open the first time.
+    /// same way. All open the first time.
     std::array<bool, 3> patchSectionsFolded{false, false, false};
 
     friend bool operator==(const MachineSettings&, const MachineSettings&) = default;
@@ -159,9 +159,8 @@ struct MachineSettings {
 /// is handed a set — one record after another, not one track being tuned for. A window that
 /// suited the last track silently halves or doubles the next one, and the operator's first
 /// experience of the app is a tempo that is wrong by a factor of two for reasons nothing on
-/// screen explains. Reported from a rig on 2026-09-08, having been switched on by a tap:
-/// *"octave fold keeps getting automatically turned on, which then breaks the next track in
-/// the mix"*. Off, the tracker publishes what it hears; the window is there for an operator
+/// screen explains. Switched on by a tap, the fold broke the next track in the mix. Off, the
+/// tracker publishes what it hears; the window is there for an operator
 /// who knows what is coming and says so.
 ///
 /// This is only the value a settings file that does not mention the field starts from. Once
@@ -188,8 +187,7 @@ struct Preset {
     /// the way to switch it.
     tracking::Decoder decoder = tracking::Decoder::Forward;
     /// The bar lengths the forward filter models — `ForwardFilter::Options::meters`, and
-    /// its default: four alone, measured as the better decoder on electronic material and
-    /// chosen by the operator for the rig on 2026-09-09.
+    /// its default: four alone, measured as the better decoder on electronic material.
     /// Written as `"meters": [4]`; `[3, 4]` puts the waltz back for a set that has one. Up
     /// to four bar lengths of 1 to 16, zero-filled; a file that names none keeps the
     /// default. No control in the window yet, like `decoder`.
@@ -284,8 +282,8 @@ struct Settings {
 /// Falls back to `userSettingsDirectory()` where the platform will not name the executable at
 /// all, and **on macOS where that folder cannot be written**: an app downloaded and opened
 /// where it landed is run by macOS from a read-only copy of itself in a random place until it
-/// is moved ("App Translocation"), and a stick can be locked. The operator chose this on
-/// 2026-10-08 over keeping nothing until the app is moved. Once the folder can be written, the
+/// is moved ("App Translocation"), and a stick can be locked. The alternative is keeping nothing
+/// until the app is moved. Once the folder can be written, the
 /// first save there takes what was kept in the profile with it — see `existingSettingsFile`.
 ///
 /// **Unless `TAKT4_SETTINGS_DIR` names another.** The test binaries set it (tests/support/

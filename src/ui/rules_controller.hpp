@@ -144,10 +144,9 @@ public:
     int selected() const noexcept { return selected_; }
     /// Every rule the next duplicate or delete would act on, in row order.
     ///
-    /// **A set rather than one row**, on the user's ask of 2026-09-08: *"you should be able to
-    /// ctrl click or shift click in this trigger list to duplicate or kill multiple of them at
-    /// once"*. A rig with three layers plus a preset's worth of rules is a list somebody wants
-    /// to prune in one gesture, not six.
+    /// **A set rather than one row**, picked with ctrl-click and shift-click: a rig with three
+    /// layers plus a preset's worth of rules is a list somebody wants to prune in one gesture,
+    /// not six.
     std::vector<int> chosen() const;
 
     /// What the window's callbacks do, reachable directly as well as through a click — which

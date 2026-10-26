@@ -540,7 +540,7 @@ TEST_CASE("a rule file written before follow-ups were a list still opens", "[set
 }
 
 TEST_CASE("a rule file written before B had a switch fires as it did", "[settings][trigger]") {
-    // Agreed 2026-09-30: the ONLY IF stage has an on/off tick now, off for a new
+    // Since 2026-09-30 the ONLY IF stage has an on/off tick, off for a new
     // rule. A file from before it holds no switch, and upgrading must not change what fires — so
     // a rule that used any of the four conditions loads with them on, and one that used none
     // loads with them off, as a new rule starts. And the cooldown, which was one of them, is

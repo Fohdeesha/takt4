@@ -379,8 +379,7 @@ private:
     std::string place() {
         const std::string_view geometryName = valueOf(mode_, "Geometry");
         const auto top = index_.topNamed(geometryName);
-        // **Every message here is for someone who has never read the GDTF spec** (the operator,
-        // 2026-10-05: "simple concise sense to someone who may not be a dmx genius"). A geometry
+        // **Every message here is for someone who has never read the GDTF spec**. A geometry
         // is "a part of the fixture", a DMX break is "a start address", an offset is "an
         // address"; the file's own names stay, in quotes, for whoever opens it to look.
         if (!top) {

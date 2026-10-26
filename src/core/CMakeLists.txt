@@ -297,8 +297,8 @@ if(TAKT4_BUILD_UI)
   # (function name, asset file) pairs. The script rewrites its output only when the bytes
   # change, so an incremental build does not recompile a multi-megabyte translation unit
   # every time something else moves.
-  # `electronic` is the built-in set since 0.9.1: BeatNet+'s `generic` fine-tuned on the
-  # operator's own library. The three published sets stay in assets/weights/ for the
+  # `electronic` is the built-in set since 0.9.1: BeatNet+'s `generic` fine-tuned on a
+  # library of electronic music. The three published sets stay in assets/weights/ for the
   # console and the tests.
   #
   # The licence and the third-party notices go in too: takt4 is one file, and the notices of

@@ -733,9 +733,7 @@ void TempoTracker::seedTempo(double bpm) noexcept {
         // It used to: `octaveFold = true` sat here, on the reasoning that an operator naming
         // a tempo has named a window too. But takt4 is handed a *set* — one record after
         // another — and the window that a tap set for the record playing then stayed on and
-        // silently halved or doubled the next one. Reported from a rig on 2026-09-08:
-        // "octave fold keeps getting automatically turned on, which then breaks the next
-        // track in the mix because it might not need octave folding". A setting the operator
+        // silently halved or doubled the next one. A setting the operator
         // switched off must not come back on because they tapped.
         //
         // So with the fold off, the tap moves the published tempo onto the octave it named
@@ -761,8 +759,8 @@ void TempoTracker::seedTempo(double bpm) noexcept {
     // refinement — and one that names another octave moves everything published by exactly
     // that, the way ÷2 and ×2 do, and the lock stays with it. It used to rebuild the tempo from
     // the filter's continuous estimate and drop the lock whenever that differed from what was
-    // showing by more than the lock's tolerance, which on the operator's material it did on
-    // most locked frames.
+    // showing by more than the lock's tolerance, which on the library it was measured on it
+    // did on most locked frames.
     chooseOctave(state_.calledBpm);
     movePublishedOctave((foldOctave_ + octaveShift_) - before);
 }

@@ -19,7 +19,7 @@ Which side to repair is a decision about the labels, not about the files:
                      whose annotation is the one OLD's entry was made from, OLD's label
                      fields (layout.LABEL_FIELDS) replace the manifest's. The library's 254
                      came back this way on 2026-09-26 from `manifest.before-cross.json`,
-                     which octave.py wrote on 2026-09-09; the operator chose half time.
+                     which octave.py wrote on 2026-09-09; half time is the labels' convention.
   --rebuild          the manifest is right and the labels are stale: each mismatched
                      `.gt.npy` is rebuilt from the manifest's beats.
 

@@ -416,7 +416,7 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
 
 TEST_CASE("the beats' own rate is said whenever the outputs are live, locked or not",
           "[ui][relock]") {
-    // The re-lock trap as the operator met it (2026-10-07): a lock lost mid-track leaves the
+    // The re-lock trap: a lock lost mid-track leaves the
     // number where the lock left it — 188 — while the dots and every output go at the record's
     // 94. The line that says so ("beats going out at ...") was drawn only while locked, so in
     // exactly that state nothing on screen said why. Rendered, and the line's amber looked for
@@ -472,7 +472,7 @@ TEST_CASE("the build's version is on screen and stays there", "[ui]") {
 }
 
 TEST_CASE("the status bar's corner says the version and, under it, release or dev", "[ui]") {
-    // The operator's call of 2026-09-29: "always two lines". The full label of a build between
+    // The corner is always two lines. The full label of a build between
     // releases — "0.9.9 (v0.9.9-1-g16611d86d-dirty)" — left the status line too narrow for either
     // of its lines; it is in the title bar.
     using takt4::ui::shortVersionLabel;
@@ -1766,8 +1766,8 @@ std::optional<OutputRow> outputRow(WindowController& controller, const std::stri
 TEST_CASE("an OSC control port another program holds stays asked for, says why, and is taken "
           "once it is free",
           "[ui]") {
-    // 2026-09-28, on the decision to save "wanted" rather than "running": *"if it can't bind the
-    // osc port (or any port) it should say so in the UI so it doesn't just silently fail"*. It
+    // What is saved is what was asked for, not whether it is running, so a port that cannot be
+    // bound has to say so in the window rather than fail silently. It
     // was said once, on the status line, and the next message wrote it away; the tick went back
     // to empty as if it had never been asked for, while the file went on saving it as asked for;
     // and nothing tried the port again. In the sandbox's own terms: a port a receiver of this
@@ -2216,8 +2216,7 @@ TEST_CASE("a stereo pair out of phase is said under the meter and on the status 
 
     // Wired back: the line goes — and so does the warning on the status line, which said it when
     // it started. It stayed there, amber, until something else was said, so a rig that had been
-    // put right went on reading "out of phase" until its input was stopped and started again
-    // (the operator, 2026-10-08).
+    // put right went on reading "out of phase" until its input was stopped and started again.
     play(4.0, 0.009);
     CHECK(std::string(controller.window().get_input_trouble()).empty());
     const std::string after(controller.window().get_status());
@@ -2227,7 +2226,7 @@ TEST_CASE("a stereo pair out of phase is said under the meter and on the status 
     CHECK_FALSE(controller.statusIsError());
 
     // And "fine again" does not stick either: after ten seconds of the pair staying fine, the
-    // status line has back what it said before the warning (the operator, 2026-10-08).
+    // status line has back what it said before the warning.
     play(5.0, 0.009);
     CHECK(std::string(controller.window().get_status()).find("are fine again") !=
           std::string::npos);
@@ -2327,7 +2326,7 @@ TEST_CASE("a stereo warning in the first seconds joins what the window met start
 
 TEST_CASE("the beat dots move when the rig plays the beat, not when the window hears of it",
           "[ui]") {
-    // The operator, 2026-10-08: the red dots looked about 50 ms behind outputs that were on time.
+    // The red dots looked about 50 ms behind outputs that were on time.
     // They moved when the tracker's state showed a beat, a detection and a redraw after its
     // moment, while every output fires at the moment plus the latency. Now they follow the beats
     // the output thread fires, on its clock: a beat fired ahead of its time is shown at that time,
@@ -2433,7 +2432,7 @@ TEST_CASE("a tap seeds the fold window onto the tapped tempo", "[ui]") {
     controller.tap(1.0);
     run.applyPosted();
 
-    // A tap *seeds*, a decision locked on 2026-09-04. The window moves onto an octave centred on
+    // A tap *seeds*. The window moves onto an octave centred on
     // the tapped tempo — 120/sqrt(2) to 120*sqrt(2) — and the tracker keeps tracking.
     const Options options = tracker.engine().tempoOptions();
     CHECK(options.octaveFold);
@@ -2476,8 +2475,8 @@ TEST_CASE("the manual downbeat reaches the tracker", "[ui]") {
 }
 
 TEST_CASE("the downbeat button says it has been pressed", "[ui]") {
-    // The user's report, 2026-09-05: "the downbeat button has never seemed to do anything
-    // ... nothing changes". The snap itself was working — tests/engine proves it through
+    // The downbeat button never seemed to do anything: nothing changed. The snap itself was
+    // working — tests/engine proves it through
     // the real filter — but the window said nothing between the press and the beat it
     // lands on, which at 70 BPM is the best part of a second. A control that is invisible
     // for that long, and then shifts a bar phase that is hard to see moving (and in a 2/4
@@ -2734,9 +2733,9 @@ TEST_CASE("the Link row's tick reaches the transports", "[ui][network]") {
     controller.window().invoke_output_enabled_changed(0, true);
     CHECK(seen(controller).link);
     CHECK(controller.window().get_outputs_list()->row_data(0)->enabled);
-    // **Joined on its own switch, whether or not the tracker is listening** — the operator's
-    // call of 2026-09-23. Joining publishes nothing: takt4 sends Link a tempo and a phase only
-    // from a locked beat, so a peer is not handed anything until there is one.
+    // **Joined on its own switch, whether or not the tracker is listening.** Joining publishes
+    // nothing: takt4 sends Link a tempo and a phase only from a locked beat, so a peer is not
+    // handed anything until there is one.
     CHECK(controller.outputs().transports().link().enabled());
     CHECK_FALSE(controller.outputs().tracking());
 
@@ -2792,8 +2791,8 @@ void CALLBACK hearMidi(takt4::testing::VirtualMidi::Port, LPBYTE data, DWORD len
 
 TEST_CASE("unticking a MIDI output sends the note off it still owes, on a real port",
           "[ui][trigger][hardware]") {
-    // The operator, 2026-09-30: "if I uncheck a midi target for instance, it immediately dies, so
-    // it never sends the note off, and the midi device keeps playing that note". End to end on a
+    // A MIDI output unticked closed at once, so it never sent the note off it still owed, and
+    // the device kept playing that note. End to end on a
     // real MIDI port: a virtual one this test makes (teVirtualMIDI), picked on a row of the main
     // window, a rule's note on sent down it by the rule editor's TEST, and the row's "on" box
     // clicked off with the note off a minute from due. The note off must arrive before RtMidi
@@ -3218,8 +3217,8 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
         // *dead* `text:` binding with them: Slint drops a binding the moment somebody types
         // into the box. Delete the first of two outputs and, rewritten in place, the second's
         // name moved up a row, so a box that had been typed into went on showing the name of
-        // the target that used to be above it — and committed into it. Reported in the trigger
-        // editor as "editing one changes them all"; this is the same mechanism in the main
+        // the target that used to be above it — and committed into it. In the trigger editor this
+        // was the "editing one changes them all" bug; this is the same mechanism in the main
         // window.
         //
         // So the deleted row's own element goes, and every other element keeps its own output.
@@ -3304,9 +3303,9 @@ TEST_CASE("outputs are parsed, and a bad one does not lose the good ones", "[ui]
     }
 
     SECTION("renaming an output in its row leaves the rules routed to it reaching it") {
-        // The operator's report of 2026-09-23: *"if I change the name of a target like an osc
-        // target, all the triggers pointed to it break, and I have to reassign them."* A rule
-        // is routed to an output's id, which the row keeps whatever is typed into its name.
+        // Renaming a target — an OSC one, say — broke every rule routed to it, and each had to be
+        // routed again. A rule is routed to an output's id, which the row keeps whatever is typed
+        // into its name.
         controller.editor().add();
         controller.editor().setOutputs("deck");
         const std::vector<std::string> routed = controller.editor().rules().back().outputs;
@@ -4169,8 +4168,8 @@ TEST_CASE("a loopback that goes quiet is waited for, and an interface that goes 
           "[ui]") {
     // Windows sends a loopback nothing at all while nothing plays on the output it captures, so
     // a paused player read as an unplugged interface: "No audio", a reopen, "Audio is back", and
-    // again, every few seconds, the tracker restarting each time. The operator's call: a
-    // loopback's silence is said as what it is and waited out; an interface's is still an outage.
+    // again, every few seconds, the tracker restarting each time. A loopback's silence is said as
+    // what it is and waited out; an interface's is still an outage.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     using Reading = takt4::audio::InputWatchdog::Reading;
@@ -4755,8 +4754,8 @@ TEST_CASE("what the window hands back is what it was given", "[ui][network]") {
 }
 
 TEST_CASE("the program carries its own weights and state space", "[ui]") {
-    // The user's ask of 2026-09-07: *"the exe should be entirely self contained. not relying
-    // on weights or whatever in some other directory. isolated exe that works anywhere."*
+    // The exe is entirely self-contained: it relies on no weights or anything else in another
+    // directory, and works anywhere.
     //
     // The blobs are compiled in, so this checks two separate things. That they *load* — the
     // format checks and the FNV-1a checksum both run over the embedded copy, which is what
@@ -4802,9 +4801,8 @@ TEST_CASE("the program carries its own weights and state space", "[ui]") {
 }
 
 TEST_CASE("settings export and import carry the rules and the outputs", "[ui][settings]") {
-    // The operator, 2026-09-12: "how do I force takt4 to save out the config? I made a lot
-    // of changes, but I am scared of closing it." Until then the only save was on the way
-    // out. This is the round trip the buttons do.
+    // The config can be saved without closing takt4: the only save used to be on the way out.
+    // This is the round trip the buttons do.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
 
@@ -5905,9 +5903,7 @@ TEST_CASE("a tap does not switch the fold on", "[ui]") {
     // takt4 is handed a *set* — one record after another — and a window that suited the last
     // track silently halves or doubles the next one. A tap used to turn the fold on and set
     // the window around the tapped tempo; that was taken out on 2026-09-08 and nothing tested
-    // it, so this is the guard. Asked again on 2026-09-16: "you're also still automatically
-    // enabling the 'keep bpm in range' option. why? will this not harm detection for the next
-    // song which could have a wildly different bpm range".
+    // it, so this is the guard.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     SyntheticRun run(tracker);
@@ -6074,10 +6070,10 @@ TEST_CASE("IDENTIFY lights a par without a dimmer that a rule left at nothing", 
 }
 
 TEST_CASE("an Art-Net row's delay slider moves that node's delay, as every row's does", "[ui]") {
-    // The operator's call of 2026-09-25, rather than taking the delay off the rows where it did
-    // nothing: every output has a delay that works the same way, and a node's is honoured — the
-    // node is sent the lighting that much later (`dmx::ArtNetPublisher`). Driven by real clicks:
-    // what is under test is what the row draws and where a click on it goes.
+    // Rather than the delay being taken off the rows where it did nothing, every output has one
+    // that works the same way, and a node's is honoured — the node is sent the lighting that
+    // much later (`dmx::ArtNetPublisher`). Driven by real clicks: what is under test is what the
+    // row draws and where a click on it goes.
     LiveTracker tracker(kWeights, kStateSpace);
     // Receivers of the test's own: this used to aim the node at 127.0.0.1:6454, which is where
     // the rig's own Art-Net input listens.
@@ -6123,10 +6119,10 @@ TEST_CASE("an Art-Net row's delay slider moves that node's delay, as every row's
 }
 
 TEST_CASE("a delay reading takes a typed number, and Escape leaves it as it was", "[ui]") {
-    // The operator's ask of 2026-09-25: *"make the latency display numbers next to the sliders
-    // clickable so you can then input a number directly, but dont make it always a big ugly
-    // entry box. just a underlined blue number like a URL"*. Driven by real clicks and keys —
-    // the reading clicked, a number typed, Enter — and read back from the output thread.
+    // The delay and latency readings beside the sliders are clickable, so a number can be typed
+    // in directly — an underlined number like a link, not a box that is always there. Driven by
+    // real clicks and keys — the reading clicked, a number typed, Enter — and read back from the
+    // output thread.
     LiveTracker tracker(kWeights, kStateSpace);
     const takt4::testing::LoopbackReceiver deckEnd; // the test's own, not a port nobody holds
     takt4::settings::Settings saved;
@@ -6671,11 +6667,11 @@ TEST_CASE("each import decides what the next launch uses, not the one before", "
 
 TEST_CASE("an import restores this machine's half too, and a file without one leaves it alone",
           "[ui][settings]") {
-    // The operator, 2026-10-03: export and import "should carry/restore EVERYTHING". Import
-    // applied the preset and left the input, the MIDI and OSC control and the layout as they
-    // were — by design, since they are the machine's half — so a rig restored from its own export
-    // came back without them. Every part of the machine half that can differ from a fresh window
-    // without hardware, from a file, back out of what the window would save.
+    // Export and import carry and restore everything. Import applied the preset and left the
+    // input, the MIDI and OSC control and the layout as they were — by design, since they are
+    // the machine's half — so a rig restored from its own export came back without them. Every
+    // part of the machine half that can differ from a fresh window without hardware, from a
+    // file, back out of what the window would save.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::settings::Settings before = controller.currentSettings();
@@ -7092,7 +7088,7 @@ TEST_CASE("a window opens no taller than the screen has room for", "[ui]") {
 }
 
 TEST_CASE("ABOUT opens the licence and the notices that are built in", "[ui]") {
-    // A licensing gap, and the user's answer to it: takt4 shipped with no notices for what is
+    // A licensing gap, and the answer to it: takt4 shipped with no notices for what is
     // built into it, and GPLv3 section 5(d) asks its interface to show them. takt4 is one file,
     // so they are inside it; the About box opens them. Driven by clicks — ABOUT in the status
     // line, then the About box's own buttons — with the file opener replaced, since a test must
@@ -7215,10 +7211,10 @@ TEST_CASE("a test process starts no text viewer and no browser, even with no ope
 
 TEST_CASE("the About box names its author, links to the source, and its words can be copied",
           "[ui]") {
-    // The operator, 2026-10-08: the source's address looked like a link and did nothing, and no
-    // word in the window could be selected — the version included, which is what a bug report
-    // wants. Driven as a person would: a click into the words, select all, copy; a click on the
-    // link. The browser is replaced, as the text viewer is above.
+    // The source's address looked like a link and did nothing, and no word in the window could
+    // be selected — the version included, which is what a bug report wants. Driven as a person
+    // would: a click into the words, select all, copy; a click on the link. The browser is
+    // replaced, as the text viewer is above.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     std::vector<std::string> links;
@@ -7997,7 +7993,7 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
 }
 
 TEST_CASE("the main window opens 800 wide and 934 tall", "[ui]") {
-    // The operator cut the width by a fifth, and kept the height with a scroll bar.
+    // The width cut by a fifth, and the height kept with a scroll bar.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     auto* const adapter = takt4::ui::headlessAdapterFor(controller.window().window());
@@ -8018,7 +8014,7 @@ TEST_CASE("folding a section takes its height off the window, keeps its heading 
     // height checked against the sheets measured off a render, not the controller's figures.
     LiveTracker tracker(kWeights, kStateSpace);
     // Both sections open to start with, which a fresh install no longer is: it folds Inputs
-    // (the operator, 2026-10-08; see the test after this one).
+    // (see the test after this one).
     takt4::settings::Settings bothOpen;
     bothOpen.machine.inputsFolded = false;
     WindowController controller(tracker, bothOpen);
@@ -8163,7 +8159,7 @@ TEST_CASE("folding a section takes its height off the window, keeps its heading 
 TEST_CASE("a window opens folded as it was left, shorter for it, and opening gives the height "
           "back",
           "[ui][settings]") {
-    // The operator's call of 2026-09-29: folds are remembered across launches. The second window
+    // Folds are remembered across launches. The second window
     // must open at the height the first reached by clicks, from a file read back as the next
     // launch reads it.
     constexpr int kWidth = 800;
@@ -8230,9 +8226,9 @@ TEST_CASE("a window opens folded as it was left, shorter for it, and opening giv
 
 
 TEST_CASE("a fresh window opens with the control inputs folded and the outputs open", "[ui]") {
-    // The operator, 2026-10-08: MIDI and OSC control are set once for a rig and then only looked
-    // at, so a fresh install opens with that section folded to its heading, which still says what
-    // each is doing. Outputs, which an operator works in, stay open.
+    // MIDI and OSC control are set once for a rig and then only looked at, so a fresh install
+    // opens with that section folded to its heading, which still says what each is doing.
+    // Outputs, which an operator works in, stay open.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     CHECK(controller.window().get_inputs_folded());
@@ -8243,10 +8239,10 @@ TEST_CASE("a fresh window opens with the control inputs folded and the outputs o
 TEST_CASE("opening a section takes its height from what the trace has to spare before the window "
           "grows, and folding it gives that back",
           "[ui]") {
-    // The operator, 2026-10-24: a window made taller gave the height to the trace, and opening
-    // Inputs then made the window taller still, or scrolled, rather than taking it back from the
-    // trace — the one part that stretches, and the one worth least. Driven by clicks on the real
-    // arrow, from a window opened folded as a launch opens it; every height off a render.
+    // A window made taller gave the height to the trace, and opening Inputs then made the window
+    // taller still, or scrolled, rather than taking it back from the trace — the one part that
+    // stretches, and the one worth least. Driven by clicks on the real arrow, from a window
+    // opened folded as a launch opens it; every height off a render.
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker); // a fresh install: Inputs folded, Outputs open
     REQUIRE(controller.window().get_inputs_folded());
@@ -8620,7 +8616,7 @@ TEST_CASE("the preset's library of fixture definitions is saved, grows with an i
 }
 
 TEST_CASE("a right-click puts each of the main window's sliders back to a fresh preset's", "[ui]") {
-    // The operator's ask of 2026-10-05: a right-click on any slider sets it back to its default —
+    // A right-click on any slider sets it back to its default —
     // here what a fresh preset has (`settings::freshTempoOptions`), and no delay on an output.
     // Each is moved off it, and the whole window is right-clicked on a grid: every slider must
     // come back, each to its own default, and nothing real is reached on the way.

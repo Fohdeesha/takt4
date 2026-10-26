@@ -527,9 +527,9 @@ TEST_CASE("a clean exit leaves no log and no dump behind", "[ui][crash]") {
 
 TEST_CASE("a crash ends the process at once and the message comes from a process of its own",
           "[ui][crash]") {
-    // The operator's call on 2026-09-24. The message used to be shown by the process that had
-    // crashed, and every thread it had left — the outputs, the window reopening the audio —
-    // ran on until somebody answered it. Here nobody answers, and the child has to end anyway.
+    // The message used to be shown by the process that had crashed, and every thread it had
+    // left — the outputs, the window reopening the audio — ran on until somebody answered it.
+    // Here nobody answers, and the child has to end anyway.
     const takt4::test::TempDir dir;
     DWORD crashed = 0;
     // A failure that reaches takt4's own handler under AddressSanitizer too; an access

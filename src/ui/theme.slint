@@ -14,9 +14,7 @@ import { LineEdit, Slider } from "std-widgets.slint";
 /// `changed has-focus` handler that writes what was typed — that is how clicking away from a
 /// box saves the edit instead of losing it — and a click on a button, a heading or the panel
 /// behind them moved the focus nowhere at all, so the box stayed lit and the edit stayed
-/// uncommitted. Reported from a rig on 2026-09-16: *"when I click outside of a box, that box
-/// stays selected as an entry box ... clicking save, etc other ui elements doesnt exit out of
-/// that box being in edit mode either."*
+/// uncommitted.
 ///
 /// Taking the focus is what makes the box let go and commit. **And the focus stays here**,
 /// which it did not until 2026-09-23: this used to `clear-focus()` straight after, so that no
@@ -209,8 +207,7 @@ export global Theme {
   out property <color> dim: #878d97;
   /// Secondary text that still has to be read at a glance — a label beside a control, a
   /// reading, a column heading. `dim` on the panel colour was too faint to read across a
-  /// room (the operator, 2026-09-25: "not light grey on grey"); `dim` is kept for what is
-  /// switched off.
+  /// room; `dim` is kept for what is switched off.
   out property <color> soft: #c5cad2;
   out property <color> accent: #60cdff;   // fluent's own dark accent, so the pickers agree
   out property <color> locked: #4ade80;
@@ -369,9 +366,7 @@ export component Splitter inherits Rectangle {
   }
 }
 
-/// A reading that can be typed into. The operator's call of 2026-09-25: *"make the latency
-/// display numbers next to the sliders clickable so you can then input a number directly, but
-/// dont make it always a big ugly entry box. just a underlined blue number like a URL"*.
+/// A reading that can be typed into, and not a box until it is clicked.
 ///
 /// At rest it is the reading, in the accent colour with a line under it and a hand for the
 /// pointer, which is what a link looks like anywhere. Clicked, a box opens in the same place

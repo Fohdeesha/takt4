@@ -59,7 +59,7 @@ public:
     /// deleted, and nothing ever sent it again: the node held its last frame, and the lamp
     /// stayed lit through Stop, quit and Blackout. Such a universe is `released()`: sent all
     /// zeros for `kReleasedSeconds`, a fresh frame at the 44 Hz ceiling so one dropped datagram
-    /// costs nothing, and then left alone — the operator's choice, so that anything else that
+    /// costs nothing, and then left alone, so that anything else that
     /// takes the universe over is not fought for it.
     ///
     /// Running effects **carry on**, re-aimed at the same fixture — by `Fixture::id`, so a
@@ -103,10 +103,10 @@ public:
     void holdChannel(PortAddress universe, std::uint16_t channel, std::uint8_t level,
                      double seconds, double now);
 
-    /// Stops every effect and **holds the levels where they are** — PANIC, as the
-    /// operator asked for it on 2026-09-16: the lights freeze rather than going dark.
+    /// Stops every effect and **holds the levels where they are** — PANIC: the lights freeze
+    /// rather than going dark.
     ///
-    /// The reasoning is theirs and it is a live-show one. takt4 may be one source among
+    /// The reasoning is a live-show one. takt4 may be one source among
     /// several on a rig, and a node may be merging it with a desk; a panic button that drove
     /// every channel to zero would fight the desk down and black out a stage that was not
     /// takt4's to black out. Freezing gives back control without taking anything away. A
@@ -116,16 +116,16 @@ public:
 
     /// **Every laser zone disarmed and its clip taken off** — arm, clip bank and clip select to
     /// zero, at once, on every fixture that has them — and nothing else touched. What PANIC does
-    /// to the lasers after freezing the lights, and what the input going quiet does to them (the
-    /// operator's calls of 2026-10-05): a frozen laser look is still a beam in the air, and a
+    /// to the lasers after freezing the lights, and what the input going quiet does to them: a
+    /// frozen laser look is still a beam in the air, and a
     /// laser holding its last clip through a silence is a beam nobody is driving. Nothing at all
     /// for a patch with no laser zone. The next clip effect arms a zone again.
     void disarm(double now);
 
     /// Every effect stopped and every light-emitting channel of every fixture taken to zero —
     /// what the Blackout effect does, to the whole patch at once, and nothing that configures a
-    /// fixture: a shutter or a head's position stays where it is. **Stop and quit**, the
-    /// operator's call of 2026-09-23; PANIC is `cancelAll`, which freezes.
+    /// fixture: a shutter or a head's position stays where it is. **Stop and quit**; PANIC is
+    /// `cancelAll`, which freezes.
     void blackout(double now);
 
     /// Every level back to its fixture's parked value, and every effect stopped. **Only the

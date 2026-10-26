@@ -36,7 +36,7 @@ endif()
 # This was the synthetic drum machine until 2026-10-03, ending locked at 128.3 — by luck: with the
 # window off the same build never locked on it, the decoder's tempo dipping as each beat arrived
 # and restarting the half second of agreement a lock needs. A pure drum machine now locks in about
-# eleven seconds, the operator's choice of the strict lock over one that also locks wrong tempi
+# eleven seconds under the strict lock, chosen over one that also locks wrong tempi
 # more often, and its ten seconds are not enough.
 if(NOT out MATCHES "\n([0-9]+) frames, ([0-9]+) beats \\(([0-9]+) downbeats\\), ending at ([0-9.]+) BPM in ([0-9]+)/4, (locked|hunting)")
   message(FATAL_ERROR "no summary line")

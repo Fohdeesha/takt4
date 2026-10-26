@@ -258,8 +258,8 @@ TEST_CASE("a field the file does not mention keeps its default", "[settings]") {
     CHECK(out.machine.oscControlLocalOnly);
     CHECK_FALSE(out.machine.oscRemoteSetup);
     CHECK(out.machine.oscRemoteFrom.empty());
-    // A file from before folding opens as a fresh install does — Inputs folded (the operator,
-    // 2026-10-08), Outputs open — and so does a fold that is not a yes or a no.
+    // A file from before folding opens as a fresh install does — Inputs folded, Outputs open —
+    // and so does a fold that is not a yes or a no.
     CHECK(out.machine.inputsFolded);
     CHECK_FALSE(out.machine.outputsFolded);
     const Settings odd =
@@ -1221,7 +1221,7 @@ TEST_CASE("a DMX rule survives the round trip", "[settings][dmx]") {
     rule.dmx.tilt.kind = takt4::trigger::GeneratorKind::Fixed;
     rule.dmx.tilt.fixed = takt4::trigger::Value::ofInt(40);
 
-    // A fade out two bars later, which is the operator's own first example.
+    // A fade out two bars later.
     takt4::trigger::FollowUp down;
     down.unit = takt4::trigger::DelayUnit::Bars;
     down.delayBeats = 2.0;
@@ -1313,7 +1313,7 @@ TEST_CASE("an Art-Net output survives the round trip through its own text line",
 
 TEST_CASE("an OSC output sent takt4's own messages is saved so, and an older file's are not",
           "[settings]") {
-    // `OutputTarget::sendsNamespace`, off until asked for (the operator, 2026-10-02): in the
+    // `OutputTarget::sendsNamespace`, off until asked for: in the
     // output's own line, and off unless that line says otherwise — the dev rig's own file, as it
     // was written, gets none.
     const Settings old = takt4::settings::fromJson(
@@ -1343,7 +1343,7 @@ TEST_CASE("an OSC output sent takt4's own messages is saved so, and an older fil
 }
 
 TEST_CASE("a preset written with the British spelling still loads", "[settings][dmx]") {
-    // takt4 said "colour" everywhere until a rig asked for the other spelling on 2026-09-16.
+    // takt4 said "colour" everywhere until 2026-09-16.
     // Three things in a saved preset carried that word — the effect name, a channel's role,
     // and the generator's own key — and a name that does not read back does not fail loudly:
     // it silently becomes the default. A colour rule would have come back as a *fade*, and a
@@ -1400,7 +1400,7 @@ TEST_CASE("a preset written with the British spelling still loads", "[settings][
 TEST_CASE("a file routed by name loads routed by id, and a rename afterwards moves nothing",
           "[settings][trigger]") {
     // Every settings file written before outputs and fixtures had ids routes rules by their
-    // *names* — the operator's report of 2026-09-23 was that renaming an output broke every rule
+    // *names* — and renaming an output broke every rule
     // on it. Such a file has to load exactly as routed as it was, and stop depending on names.
     const std::string text = R"({"preset":{
         "outputs":["deck = 127.0.0.1:7000", "wall = 127.0.0.1:7001"],

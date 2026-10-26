@@ -113,7 +113,7 @@ TEST_CASE("the forward filter's state space is madmom's bar-pointer model at 100
         REQUIRE(p == Approx(1.0 / 39319.0).epsilon(1e-9));
     }
 
-    SECTION("the default is a bar of four alone, as the operator chose on 2026-09-09") {
+    SECTION("the default is a bar of four alone") {
         const ForwardFilter four;
         CHECK(four.numMeters() == 1);
         CHECK(four.numStates() == 4 * 5617);
@@ -574,7 +574,7 @@ TEST_CASE("a plateau at the threshold is not a beat", "[tracking][forward]") {
 
 TEST_CASE("a flat activation is not evidence, so there is no tempo until a beat is heard",
           "[tracking][forward]") {
-    // Reported from the rig on 2026-10-03: 178.66 BPM, locked, confidence 0.95, with the input
+    // The tracker once read 178.66 BPM, locked, confidence 0.95, with the input
     // at -inf dB. Over digital zeros the network settles at P(beat) 0.21 and P(downbeat) 0.25,
     // and madmom's observation model reads any flat level other than 1/16 as evidence: the tempo
     // whose beat zone is the largest share of its interval — 3 of 33 frames, 181.8 BPM —

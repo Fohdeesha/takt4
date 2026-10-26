@@ -1,14 +1,13 @@
 // Weltformat dark — the look of the main window since 2026-09-29.
 //
 // The Swiss poster wall at night: flat square charcoal sheets on a near-black page, Archivo in
-// bold lowercase, DM Mono for every number and address, one red. The operator chose it over four
-// other directions and shaped it over thirteen rounds of renders, and every value here is the
+// bold lowercase, DM Mono for every number and address, one red. Every value here is the
 // approved mockup's.
 //
 // **Why the controls are built here rather than taken from std-widgets.** Slint 1.18.1's
 // `Palette.accent-background` is an `out` property with Fluent's `#60CDFF` compiled in, so a
 // ComboBox, a CheckBox, a Slider and a LineEdit keep Fluent's cyan whatever a theme says — the
-// grey-and-cyan the operator asked to be rid of. Everything here is drawn from Slint's own
+// grey-and-cyan look this one replaces. Everything here is drawn from Slint's own
 // elements instead: `TextInput`, `TouchArea`, `FocusScope`, `PopupWindow`, `Flickable`, `Path`.
 //
 // **And each one keeps what the std widgets taught the hard way:**
@@ -42,14 +41,13 @@ import "../../assets/fonts/archivo/Archivo-Bold.ttf";
 import "../../assets/fonts/archivo/Archivo-ExtraBold.ttf";
 import "../../assets/fonts/dm-mono/DMMono-Medium.ttf";
 // The rule editor's numbers, addresses and codes, and nothing in the main window: DM Mono's only
-// zero is slashed, which the operator found "really unreadable" in a colour code (2026-09-30).
+// zero is slashed, which is hard to read in a colour code.
 // Our copy has no `liga` feature, so the "ff" of "#20ff80" is two letters — Slint cannot switch
 // a feature off (tools/drop_font_feature.py).
 import "../../assets/fonts/chivo-mono/ChivoMono-Medium.ttf";
 
 /// The tokens of the approved mockup, and nothing else. Every text colour here was measured
-/// against the surface it sits on at 4.5:1 or better, and nothing is set under 13 px — the bar the
-/// operator accepted.
+/// against the surface it sits on at 4.5:1 or better, and nothing is set under 13 px.
 export global Wf {
     // --- the page and its sheets -------------------------------------------------------------
     out property <color> page: #0e0e0e;
@@ -1086,11 +1084,10 @@ export component Count inherits Rectangle {
     }
 }
 
-/// A reading that can be clicked and typed into: the number in red, underlined like a link (the
-/// operator's ask of 2026-09-25, "just a underlined blue number like a URL" — red since the
-/// redesign). Clicked, a box opens in its place holding the number alone, all of it selected;
-/// Enter or a click away sets it, Escape leaves it as it was. What was typed goes to the C++ side
-/// as text, which reads it and clamps it.
+/// A reading that can be clicked and typed into: the number in red, underlined like a link.
+/// Clicked, a box opens in its place holding the number alone, all of it selected; Enter or a
+/// click away sets it, Escape leaves it as it was. What was typed goes to the C++ side as text,
+/// which reads it and clamps it.
 ///
 /// Right-justified in its column, so it sits against whatever is at the end of its row.
 export component Reading inherits Rectangle {
@@ -1194,10 +1191,9 @@ export component Track inherits Rectangle {
     in property <bool> quiet;
     in property <bool> painted;
     in property <brush> paint;
-    /// **A right-click puts it back to `default-value`** — the operator's ask of 2026-10-05:
-    /// "right clicking on any slider should set it back to default value" — said through `moved`,
-    /// as a drag is, so the owner sets it as it sets any other value. Every slider in the windows
-    /// has one; a slider without (`has-default` false) ignores the right button.
+    /// **A right-click puts it back to `default-value`**, said through `moved`, as a drag is, so
+    /// the owner sets it as it sets any other value. Every slider in the windows has one; a
+    /// slider without (`has-default` false) ignores the right button.
     in property <bool> has-default;
     in property <float> default-value;
     out property <bool> dragging: touch.pressed;
@@ -1657,9 +1653,9 @@ export component SectionHead inherits Rectangle {
 /// The main window's scroller: vertical only, the content as wide as the view, and an 8 px bar
 /// centred in the page's 10 px right-hand margin — where std's Fluent scroll bar lay over the
 /// right 14 px of the content and took the clicks meant for it. The bar is grabbed anywhere in
-/// the margin and 5 px into the sheets' own empty edge beside it, 15 px in all (the operator:
-/// the first 6 px bar was "super small hard to grab"); a click on the margin above or below it
-/// moves the view a page that way, as a Windows scroll bar's track does.
+/// the margin and 5 px into the sheets' own empty edge beside it, 15 px in all (the first 6 px
+/// bar was too small to grab); a click on the margin above or below it moves the view a page
+/// that way, as a Windows scroll bar's track does.
 ///
 /// Like std's ScrollView it does not pan when the background is dragged with the mouse, and the
 /// wheel scrolls it wherever the pointer is.

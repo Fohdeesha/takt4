@@ -1,6 +1,6 @@
 // About takt4: what it is, the licence it is under, where its source is, and the notices of
-// everything built into it — in the Weltformat-dark look, as the operator approved it on
-// 2026-09-30: three sheets, and CLOSE at the bottom right.
+// everything built into it — in the Weltformat-dark look: three sheets, and CLOSE at the bottom
+// right.
 //
 // **GPLv3 §5(d) asks a program with an interactive interface to show "Appropriate Legal
 // Notices"** — a copyright notice, that there is no warranty, that it may be passed on under
@@ -28,9 +28,9 @@ component Sheet inherits Rectangle {
   }
 }
 
-/// Words that can be selected and copied — every one in this window (the operator, 2026-10-08:
-/// none of it could be, the version and the source's address included). A read-only `TextInput`,
-/// because Slint never lets a `Text` be selected; selected as the window's boxes are.
+/// Words that can be selected and copied — every one in this window (none of it could be, the
+/// version and the source's address included). A read-only `TextInput`, because Slint never lets
+/// a `Text` be selected; selected as the window's boxes are.
 component Copyable inherits TextInput {
   read-only: true;
   color: Wf.ink;
@@ -142,8 +142,8 @@ export component AboutWindow inherits Window {
         text: "takt4 is free software: you can pass it on and change it under the terms of the GNU General Public License, version 3. It comes with ABSOLUTELY NO WARRANTY. You are entitled to its complete source code under that licence.";
       }
       // **A link**, drawn as the window's links are and opened in the browser: it read as one and
-      // did nothing when clicked (the operator, 2026-10-08). The one thing here a click opens
-      // rather than selects; the browser it opens shows the address to copy.
+      // did nothing when clicked. The one thing here a click opens rather than selects; the
+      // browser it opens shows the address to copy.
       HorizontalLayout {
         spacing: 8px;
         alignment: start;

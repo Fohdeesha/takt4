@@ -492,12 +492,12 @@ std::filesystem::path existingSettingsFile() {
     // and until 2026-10-08 one was read whenever nothing was beside the executable, so a rig
     // kept its outputs across the move. A month on, all it still did was hand every copy started
     // in a new folder the rig as it stood that September — "keep BPM in" switched on with its
-    // window among it, which the operator met on each fresh build. A new folder is a new rig.
+    // window among it. A new folder is a new rig.
 #if defined(__APPLE__)
     // **Except on a Mac, where the per-user folder is where an app that could not write beside
     // itself kept its rig** (`settingsDirectory`): a download opened where it landed runs from a
     // read-only copy of itself until it is moved. Read from there while nothing is beside the
-    // moved app, the first save there takes the rig with it (the operator, 2026-10-08). Never in
+    // moved app, the first save there takes the rig with it. Never in
     // a process given a folder of its own.
     if (namedSettingsDirectory().empty()) {
         const std::filesystem::path user = userSettingsDirectory() / "settings.json";
@@ -962,8 +962,7 @@ Settings fromDocument(const json& document) {
     // **Everything a rule points at, by id.** A file written before outputs and fixtures had
     // ids routes rules by their names, and a hand-written line has no id: each gets one here,
     // and each rule is re-pointed from the name to that id — so the rig loads exactly as it
-    // was, and renaming an output or a fixture from now on moves no rule (the operator's report
-    // of 2026-09-23).
+    // was, and renaming an output or a fixture from now on moves no rule.
     assignIds(settings.preset);
     return settings;
 }
@@ -1067,7 +1066,7 @@ Startup openAtStartup(const std::filesystem::path& file, const std::filesystem::
                 (void)io::replaceFile(backupFile(file), *bytes);
             }
         }
-        // **Written by a newer takt4: not saved over without asking** (the operator, 2026-10-22).
+        // **Written by a newer takt4: not saved over without asking**.
         // Every field this one does not know was left out as it was read, and the first autosave
         // wrote the file back without them — a run of an older takt4 on another computer cost a
         // preset its timing source, its latencies and its CDJ settings, and the next start its

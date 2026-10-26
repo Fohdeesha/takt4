@@ -203,7 +203,7 @@ FixtureProfile mapDefinition(const Definition& definition) {
                 to.parked = byteOf(value, bytes, channel.byte);
 
                 // What the projection lost, said on the channel — in words for someone who has
-                // never opened a fixture file (the operator, 2026-10-05).
+                // never opened a fixture file.
                 if (channel.shared) {
                     notes.push_back((channel.sharedWith.empty()
                                          ? std::string("part of its range does something else")

@@ -80,8 +80,7 @@ enum class EffectKind : std::uint8_t {
     /// **One clip of a Liberation zone's deck**, by its place in deck order
     /// (`Payload::clip`, `liberation::indexOf`): the zone armed, its intensity at `level`, and
     /// its Gobo Bank and Gobo Select set to the clip — all four at once, because Liberation
-    /// renders a zone only when all of them say so (the operator, 2026-10-05: "it must be armed,
-    /// intensity set, then clip selection works"). No clip — `clip` 0 — disarms it and selects
+    /// renders a zone only when all of them say so. No clip — `clip` 0 — disarms it and selects
     /// none. A snap, whatever the duration: a fade through Gobo Select would play every clip in
     /// between. Reaches only fixtures with a clip select channel.
     Clip,
@@ -238,12 +237,11 @@ struct Payload {
     /// **Which heads move**, on a fixture with several (`dmx::headsOf`): bit n for head n + 1, and
     /// no bit at all for every head. Read by the kinds `takesMovement` names and by no other. What
     /// lets one rule move the left yoke and another the right, rather than every rule moving every
-    /// head the same way — the operator's ask of 2026-10-05: *"the ability for them to be driven
-    /// independently"*. A fixture with none of those heads is not reached, and counts towards
+    /// head the same way. A fixture with none of those heads is not reached, and counts towards
     /// `DmxEngine::missed`. Heads past the 32nd move only as every head.
     std::uint32_t heads = 0;
-    /// **How far apart the heads it moves are**, 0 to 1 — the operator's "stagger movement between
-    /// selected heads". Of the n heads a move reaches on one fixture, the kth (from 0) trails by
+    /// **How far apart the heads it moves are**, 0 to 1: how much the selected heads' movement is
+    /// staggered. Of the n heads a move reaches on one fixture, the kth (from 0) trails by
     /// `spread` × k / n: on a `Path`, that much of a turn round the figure, so at 1 they are spaced
     /// evenly round it; on a `Position` or `Home`, that much of the move's duration later, so at 1
     /// the last starts as the first nearly arrives. 0, the default, moves them together.

@@ -205,8 +205,8 @@ TEST_CASE("a move can name any set of heads", "[dmx][engine][heads]") {
 
 TEST_CASE("a pan two heads share is the first head's, so two rules never fight over it",
           "[dmx][engine][heads]") {
-    // The operator, 2026-10-05: one pan and two tilts "only send stuff to the first one dont let
-    // rules fight over it". The Crazy Pocket 8's 9-channel mode: a pan, two tilting bars.
+    // One pan and two tilts: the pan goes to the first head only, so rules never fight over it.
+    // The Crazy Pocket 8's 9-channel mode: a pan, two tilting bars.
     Fixture pocket;
     pocket.id = "f-pocket";
     pocket.name = "pocket";

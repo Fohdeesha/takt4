@@ -512,7 +512,7 @@ bool TriggerEngine::test(std::string_view id, const Context& context) {
     }
     // **And let go of a moment later, where nothing else will** — see the header. A rule that
     // cannot fire again on its own has nothing to take a laser's clip off or end a note, and a
-    // beam left in the air by a button that says "test" is the hazard the operator met.
+    // beam left in the air by a button that says "test" is a hazard.
     if (rule->enabled() && !rule->muted() && listening_) {
         return true;
     }

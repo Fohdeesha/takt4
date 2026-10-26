@@ -376,8 +376,7 @@ TEST_CASE("the Liberation plan stacks a zone per laser as Liberation does",
     CHECK(plan.where[3] == "universe 1 · 97-128");
     CHECK(plan.clips[0] == "101 clips");
 
-    // One clip rule each, aimed at its own zone, staggered as the operator asked: a beat, two
-    // beats, a bar, two bars.
+    // One clip rule each, aimed at its own zone, staggered: a beat, two beats, a bar, two bars.
     REQUIRE(plan.rules.size() == 4);
     const std::array<std::pair<takt4::trigger::Trigger, std::uint32_t>, 4> stagger{{
         {takt4::trigger::Trigger::Beat, 1},

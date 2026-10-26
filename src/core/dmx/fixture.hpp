@@ -18,8 +18,8 @@ namespace takt4::dmx {
 ///
 /// **The patch exists so that a rule can say "the moving heads, random position" instead of
 /// "universe 0, channel 11, and also channel 13, and the fine ones at 12 and 14".** That is
-/// the whole argument for this file. An operator asked for color on three channels, random
-/// pan and tilt on a moving head, and preset movement — none of which can be said in channel
+/// the whole argument for this file. Color on three channels, random
+/// pan and tilt on a moving head, and preset movement — none of these can be said in channel
 /// numbers without the operator holding the fixture's manual open while they build every
 /// rule, and re-checking all of them the day a fixture is re-addressed.
 ///
@@ -78,7 +78,7 @@ enum class Role : std::uint8_t {
     /// **A laser zone's safety gate** — Liberation's DMX Input renders a zone only while
     /// this is at 250 or more (`dmx::liberation`). Not aimable: a clip effect raises it with the
     /// clip it selects, and Stop, quit, a blackout, PANIC and the input going quiet take it back to
-    /// 0 (the operator, 2026-10-05) — so nothing can leave a laser armed on a level of its own.
+    /// 0 — so nothing can leave a laser armed on a level of its own.
     Arm,
     /// The page of a laser zone's clip deck, and the clip on it: the two channels a clip effect
     /// writes together (`liberation::goboOf`). **Never faded**: a fade through Gobo Select passes
@@ -144,8 +144,8 @@ constexpr bool isFine(Role role) noexcept {
 struct Fixture {
     /// What a rule aims at it by: generated once (`newFixtureId`), saved with it, never shown
     /// or edited. **Not the name** — a rule aimed at a fixture by name stopped reaching it the
-    /// moment it was renamed (the operator's call of 2026-09-23 that nothing may hang off a
-    /// name somebody can edit). Unique within a patch.
+    /// moment it was renamed, and nothing may hang off a name somebody can edit. Unique within a
+    /// patch.
     std::string id;
     /// What the patch editor and the rule editor show. The operator's to change.
     std::string name;
@@ -243,7 +243,7 @@ inline std::string_view channelLabel(const Fixture& fixture, std::size_t index) 
 /// their own rules; what they cannot be is *named* by one. `resolveFixtures` says so rather than
 /// failing quietly.
 ///
-/// **512 since 2026-09-28**, when the operator asked whether 64 was hard-coded: it was the width of
+/// **512**: 64 was the width of
 /// one machine word, and a rig of more than 64 lamps is not a large one. 512 is a universe's worth
 /// of single-channel fixtures, and a set of them is 64 bytes a message.
 inline constexpr std::size_t kMaxRoutableFixtures = 512;

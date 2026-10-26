@@ -493,8 +493,8 @@ TEST_CASE("a target's delay holds its datagrams and nobody else's", "[output][os
 }
 
 TEST_CASE("a negative offset lands ahead of the beat it belongs to", "[output][osc]") {
-    // The user's question of 2026-09-07: the whole-rig latency slider goes both ways, so why
-    // can a target's not? It can — and now it means what it says. The output thread fires a
+    // The whole-rig latency slider goes both ways, and so does a target's offset — and now
+    // it means what it says. The output thread fires a
     // locked beat ahead of time, and a message *about that beat* carries its moment: each target
     // has it at the moment plus its offset. See `OutputTarget::delaySeconds`.
     LoopbackReceiver early;

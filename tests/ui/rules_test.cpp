@@ -258,9 +258,9 @@ TEST_CASE("a random clip every fourth bar, built through the window's callbacks"
 }
 
 TEST_CASE("three Resolume layers, from one pick", "[ui][trigger]") {
-    // The ask this was built for, 2026-09-06: "send osc to resolume to randomly trigger
-    // clips on all three resolume layers". One pick in the rig picker, and the three rules
-    // that come out are checked against what 5.6 and 7.4 say they have to be.
+    // What the preset is for: clips triggered at random, over OSC, on all three of Resolume's
+    // layers. One pick in the rig picker, and the three rules that come out are checked against
+    // what Resolume needs of them.
     Rig rig;
     RulesController editor(rig.runner, {});
 
@@ -277,20 +277,18 @@ TEST_CASE("three Resolume layers, from one pick", "[ui][trigger]") {
 
     // **Highest layer first**, because that is the way Resolume stacks them: 3 above 2 above
     // 1, so a list running 1, 2, 3 down the screen is the operator's rig upside down.
-    // Reported on 2026-09-12 as "the order it adds them is backwards, which can be
-    // confusing"; the layer numbers, the periods and the seeds are unchanged.
+    // Only the order is reversed: the layer numbers, the periods and the seeds are unchanged.
     for (int row = 0; row < 3; ++row) {
         const int layer = 3 - row;
         const Rule::Config& rule = editor.rules()[static_cast<std::size_t>(row)];
         INFO("row " << row << " should be layer " << layer);
         CHECK(rule.address == "/composition/layers/{layer}/clips/{clip}/connect");
         REQUIRE(rule.segments.size() == 2);
-        // The layer is fixed and the clip is shuffled, which is what "randomly trigger clips
-        // on all three layers" means: three layers, each picking its own clip.
+        // The layer is fixed and the clip is shuffled: three layers, each picking its own clip.
         CHECK(rule.segments[0].kind == GeneratorKind::Fixed);
         CHECK(rule.segments[0].fixed.asInt() == layer);
         CHECK(rule.segments[1].kind == GeneratorKind::Shuffle);
-        // 7.4: connect is a mouse click, and without the release the clip stays held.
+        // Resolume's connect is a mouse click, and without the release the clip stays held.
         REQUIRE(rule.followUps.size() == 1);
         CHECK_FALSE(rule.followUps.front().kind.has_value());
         CHECK(rule.followUps.front().value.asInt() == 0);
@@ -313,8 +311,8 @@ TEST_CASE("three Resolume layers, from one pick", "[ui][trigger]") {
     }
 
     SECTION("adding the same rig twice keeps both, with ids that stay unique") {
-        // 5.7 addresses a rule by id and `TriggerEngine::find` takes the first of a pair,
-        // so a duplicate id would make `/ctl/rule/<id>/enable` mean the wrong rule.
+        // The control input addresses a rule by id and `TriggerEngine::find` takes the first of
+        // a pair, so a duplicate id would make `/ctl/rule/<id>/enable` mean the wrong rule.
         editor.addRig(1);
         REQUIRE(editor.rules().size() == 6);
         std::set<std::string> ids;
@@ -430,8 +428,8 @@ TEST_CASE("a rule is routed by naming outputs", "[ui][trigger]") {
     CHECK(std::string(editor.window().get_outputs_available()) == "reaches 2 outputs");
 
     SECTION("renaming an output leaves the rule routed to it") {
-        // The operator's report of 2026-09-23: renaming an OSC target broke every rule routed
-        // to it, and each had to be routed again by hand.
+        // Renaming an OSC target broke every rule routed to it, and each had to be routed again
+        // by hand.
         rig.runner.post(takt4::output::OutputCommand::outputs(targets));
         REQUIRE(rig.runner.triggers().rule(0).outputMask() == 0b11);
         targets[0].name = "media server";
@@ -670,10 +668,10 @@ TEST_CASE("the address and its chips stay in step", "[ui][trigger]") {
 }
 
 TEST_CASE("the host preset picker says what the rule is, and custom empties it", "[ui][trigger]") {
-    // Reported from a rig on 2026-09-06: pick the Resolume preset, change the picker back to
-    // "custom", and the Resolume address, its two chips and its press-then-release are all
-    // still there under a box that says "custom". Both halves of that were wrong — the box
-    // never followed the rule, and "custom" did nothing.
+    // Picking the Resolume preset, then changing the picker back to "custom", left the Resolume
+    // address, its two chips and its press-then-release all still there under a box that said
+    // "custom". Both halves of that were wrong — the box never followed the rule, and "custom"
+    // did nothing.
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();
@@ -762,8 +760,8 @@ TEST_CASE("a new rule arrives with a name, numbered", "[ui][trigger]") {
 }
 
 TEST_CASE("several rules are chosen at once, and acted on at once", "[ui][trigger]") {
-    // Asked for on 2026-09-08: "you should be able to ctrl click or shift click in this
-    // trigger list to duplicate or kill multiple of them at once".
+    // Control-click and shift-click in the rule list choose several rules, to copy or delete
+    // at once.
     Rig rig;
     RulesController editor(rig.runner, {});
     for (int i = 0; i < 5; ++i) {
@@ -1236,8 +1234,8 @@ TEST_CASE("the event log names a rule as the list does, not by its id", "[ui][tr
 }
 
 TEST_CASE("a rule firing does not rebuild the boxes being typed into", "[ui][trigger]") {
-    // Reported from a set: *"editing triggers, like the text input boxes etc, was almost
-    // impossible, every beat of the music, it would kick me out of the edit box"*.
+    // Editing a rule's text boxes during a set was almost impossible: every beat of the music
+    // took the keyboard out of the box being typed in.
     //
     // `tick` runs on the redraw timer and republishes the rules and their generator slots
     // every time a rule fires — which, for a rule on beats, is every beat. It did that with
@@ -1478,7 +1476,7 @@ TEST_CASE("a row the controller changes is told where it stands", "[ui][trigger]
     // Until 2026-09-30 a row whose dropdown or tick box the controller changed was built again
     // as a new element, a redraw later: a std `ComboBox` or `CheckBox` that had been used had
     // set its own value, dropped its binding, and would go on showing the last thing anybody
-    // picked anywhere ("when I edit the value range on trigger 1, it changes all the triggers").
+    // picked anywhere: a value range edited on one rule showed on every rule.
     // Every control in the window is weltformat.slint's now, and none of those sets its own value
     // (see `Pick`), so a row is told what changed where it stands — which is what keeps a box
     // just clicked into, and a picker being dragged, on the screen.
@@ -1766,10 +1764,8 @@ TEST_CASE("the editor survives being hammered", "[ui][trigger]") {
 }
 
 TEST_CASE("a trigger sends a note on and a real note off, from one rule", "[ui][trigger]") {
-    // The rig's ask, built by clicking: *"I need a note on trigger to trigger Liberation
-    // laser clips. when the beat is done, I need the option to send a note off. in the same
-    // trigger"* — and then, exactly right, *"we should just replace the 'then send' machinery
-    // with a more fleshed out second send box"*.
+    // A note on that triggers a Liberation laser clip and, when the beat is done, a note off
+    // from the same rule: its follow-up, a second send box, built by clicking.
     //
     // A **real** 0x80. The velocity-zero convention is widely understood and not universal;
     // that controller holds its clip until a note off arrives, so the rig never released.
@@ -1793,8 +1789,8 @@ TEST_CASE("a trigger sends a note on and a real note off, from one rule", "[ui][
     REQUIRE(editor.rules().front().followUps.size() == 1);
     CHECK_FALSE(editor.rules().front().followUps.front().kind.has_value());
 
-    // What the row says it will do, which is the line the editor added for the rig that read
-    // the old tick box as making note on and note off exclusive.
+    // What the row says it will do, which is the line the editor added because the old tick box
+    // read as making note on and note off exclusive.
     const auto follows = editor.window().get_follow_ups();
     REQUIRE(follows->row_count() == 1);
     CHECK(std::string(follows->row_data(0)->summary) == "note off, same note, ch 10");
@@ -1825,13 +1821,12 @@ TEST_CASE("a trigger sends a note on and a real note off, from one rule", "[ui][
 }
 
 TEST_CASE("a shuffled note is let go of on the note that was drawn", "[ui][trigger]") {
-    // The rig's second report, which is the first one's other half: *"its making me set a
-    // static note number to send note off to. I need it to send a note off to whatever note it
-    // just sent a note on to, which will change every trigger because its set to
-    // shuffle/random."* The rule above sends a fixed 36, so it could not tell these apart.
+    // The other half of the test above: the note off goes to whatever note the note on just
+    // sent, which changes at every fire when the note is shuffled — not to one static number.
+    // The rule above sends a fixed 36, so it could not tell these apart.
     //
-    // It was never missing — it is what "release" has always meant — but the editor let them
-    // pick the explicit *MIDI note off* instead, which comes with a box demanding one number,
+    // It was never missing — it is what "release" has always meant — but the editor offered
+    // the explicit *MIDI note off* instead, which comes with a box demanding one number,
     // and nothing on that row said the number would be wrong. So this checks the behaviour
     // **and** the three labels that now point at it.
     Rig rig;
@@ -1854,9 +1849,8 @@ TEST_CASE("a shuffled note is let go of on the note that was drawn", "[ui][trigg
     REQUIRE(kinds->row_count() >= 1);
     CHECK(std::string(*kinds->row_data(0)) == "release (same note)");
 
-    // And the row's own boxes say what they are. The value box held a bare 0 and nothing else:
-    // *"theres an unlabled box next to it with 0 in the field? wtf is that?"* — it is the
-    // release velocity, and now it says so.
+    // And the row's own boxes say what they are. The value box held a bare 0 and nothing else,
+    // no label to say what it was — it is the release velocity, and now it says so.
     {
         const auto rows = editor.window().get_follow_ups();
         REQUIRE(rows->row_count() == 1);
@@ -1867,7 +1861,7 @@ TEST_CASE("a shuffled note is let go of on the note that was drawn", "[ui][trigg
         CHECK(std::string(row.summary) == "note off, same note, ch 3");
     }
 
-    // Picking the explicit note off instead is the trap that was reported. It is still allowed
+    // Picking the explicit note off instead is the trap. It is still allowed
     // — a second, deliberate note off is a real thing to want — but the row now says what it
     // will really do, beside the fixed number it is asking for.
     editor.pickFollowKind(0, 2); // "MIDI note off" in `followKinds_` order, past release
@@ -1919,7 +1913,7 @@ TEST_CASE("a shuffled note is let go of on the note that was drawn", "[ui][trigg
         INFO("pair " << i << ": " << lines[i] << " | " << lines[i + 1]);
         REQUIRE(on >= 73);
         REQUIRE(on <= 104);
-        CHECK(off == on); // the whole ask: let go of the note that was actually played
+        CHECK(off == on); // the whole point: let go of the note that was actually played
         drawn = drawn == 0 || drawn == on ? on : -1;
     }
     // And it really was shuffling, or the check above passes on a rule that sends one note.
@@ -1933,8 +1927,8 @@ TEST_CASE("what was typed is kept when the operator clicks away", "[ui][trigger]
     // Every box here commits on Enter. That is the ordinary contract and it hides a trap: an
     // operator who types and then clicks something else has *finished*, not cancelled, and
     // until now what they typed sat in the box until the next publish wrote over it and the
-    // edit was gone without a word. Reported alongside "when I hit enter, nothing happens, it
-    // stays in edit mode", which is the same box seen from the other side.
+    // edit was gone without a word. Enter that did nothing, leaving the box in edit mode, is the
+    // same box seen from the other side.
     //
     // The cooldown box, because it holds one number: a digit typed at whatever position the
     // click leaves the caret in still makes a number, so the test does not depend on where
@@ -2200,9 +2194,7 @@ TEST_CASE("clicking a button finishes what was being typed", "[ui][trigger]") {
     // clicking away save the edit rather than lose it. Nothing in either window was willing
     // to *take* the focus, so a click on a heading, on the panel behind a row, or on a button
     // moved it nowhere: the box stayed lit and what was typed in it stayed uncommitted.
-    // Reported from a rig on 2026-09-16 — "when I click outside of a box, that box stays
-    // selected as an entry box ... clicking save, etc other ui elements doesnt exit out of
-    // that box being in edit mode either" — and answered by `FocusSink` in theme.slint.
+    // Answered by `FocusSink` in theme.slint.
     //
     // Driven by real pointer events, because what is under test is the markup: the controller
     // was right all along and a test that called the callback would pass either way.
@@ -2341,9 +2333,7 @@ TEST_CASE("a rule is only offered the outputs its kind can reach", "[ui][trigger
     // like routing and is silence. `RuleSink` already sends MIDI only to MIDI ports and OSC
     // only to OSC targets, and nothing routes to an Art-Net node by name at all — a lighting
     // rule picks its *fixtures* and the fixture says which universe it is in. The editor knew
-    // none of that and offered all three lists to all three kinds. Reported from a rig on
-    // 2026-09-16: "why is my rdm10 artnet destination showing up as an option for midi and
-    // OSC output!?"
+    // none of that and offered all three lists to all three kinds.
     Rig rig;
     RulesController editor(rig.runner, {});
     takt4::output::OutputTarget wall;
@@ -2440,8 +2430,7 @@ TEST_CASE("a color generator starts as a color rather than as the integers 1 to 
     // `Generator::Config`'s default is shuffle over 1 to 8, which is right for a clip index
     // and nonsense for a color: every draw is a number `parseColor` cannot read,
     // so every fire fell back to white while the editor showed a box asking which eight
-    // colors 1 through 8 were. Reported from a rig on 2026-09-16: "I define a range 1-9
-    // which maps to what!? it just stays the same #ffff color code".
+    // colors 1 through 8 were.
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();
@@ -2499,8 +2488,7 @@ TEST_CASE("a color generator starts as a color rather than as the integers 1 to 
 }
 
 TEST_CASE("dragging a color slider does not tear its own picker down", "[ui][trigger][dmx]") {
-    // **The crash.** Reported on 2026-09-16: *"the program completely crashed while I was
-    // using the color picker. I moved the hue slider and it completely crashed."*
+    // **The crash.** Moving the hue slider in the color picker crashed the program.
     //
     // The picker is a `PopupWindow` inside the palette repeater, so the swatch it belongs to
     // is one of the items that repeater owns. `setPaletteColor` republished the palette, and
@@ -2579,7 +2567,7 @@ TEST_CASE("the hue slider can be dragged the way it was when it crashed", "[ui][
     // **Driven by real pointer events**, because the thing that broke is a popup being
     // destroyed while the pointer has a grab on something inside it, and neither half of that
     // exists unless the gesture is real. The test above counts the cause; this one makes the
-    // gesture. Reverted, it does not fail — it takes the process down, which is the report.
+    // gesture. Reverted, it does not fail — it takes the process down, which is the crash itself.
     Rig rig;
     RulesController editor(rig.runner, {});
     auto& window = editor.window();
@@ -2744,7 +2732,7 @@ TEST_CASE("a new rule switched to MIDI waits for its number and says so", "[ui][
     // A new MIDI rule firing junk, the way an operator meets it: press +, pick "MIDI CC" to start
     // building, and the rule used to fire CC 1 to 8 at a value of one on every bar, to every MIDI
     // output.
-    // The operator's call is that it stays armed and waits for a number, in words.
+    // Now it stays armed and waits for a number, in words.
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();
@@ -5061,8 +5049,7 @@ TEST_CASE("B's tick switches ONLY IF on and off, folded or open", "[ui][trigger]
     shown.click(tx, ty);
     CHECK(on());
     CHECK(window.get_conditions_on());
-    // **Ticked, it opens** (the operator, 2026-10-06: "if you tick 'only if', that section should
-    // automatically expand"): what was just switched on is what is set next.
+    // **Ticked, it opens**: what was just switched on is what is set next.
     CHECK_FALSE(window.get_only_if_folded());
     CHECK(std::string(window.get_only_if_summary()) ==
           "on — nothing set yet, so it fires every time A comes round");
@@ -5330,9 +5317,8 @@ TEST_CASE("a fold arrow folds its section and keeps what was being typed in it",
 
 TEST_CASE("A's beat of the bar is typed into, and its wait is ticked and typed into",
           "[ui][trigger]") {
-    // The operator, 2026-10-06: "WHICH two beats ... one trigger firing on the first beat of a
-    // bar, another on the second beat" and "an optional delay setting default to unticked in the
-    // when section, where u can set it to static time in ms or beats / bars". Driven as a person
+    // Which beat of the bar a rule fires on — one on the first beat, another on the second — and
+    // an optional wait in A, unticked by default, in ms, beats or bars. Driven as a person
     // would: the box after "on beat", the "then wait" tick under it, and the box after that.
     Rig rig;
     RulesController editor(rig.runner, {});
@@ -5594,10 +5580,10 @@ TEST_CASE("the preset menu adds the rig picked, and Escape closes it without add
 
 TEST_CASE("RELEASE appears between the preset menu and PANIC, and the menu moves up for it",
           "[ui][trigger]") {
-    // The operator, 2026-09-30: RELEASE "should pop up above panic but below the select a preset
-    // dropdown, so move the preset dropdown up when panic is hit". PANIC itself never moves, so
-    // the second click of a double-click still lands on it. Real clicks: where the menu was
-    // before PANIC, a click releases; the menu is found again higher up.
+    // RELEASE pops up above PANIC and below the "select a preset" menu, which moves up when
+    // PANIC is hit. PANIC itself never moves, so the second click of a double-click still lands
+    // on it. Real clicks: where the menu was before PANIC, a click releases; the menu is found
+    // again higher up.
     Rig rig;
     RulesController editor(rig.runner, {});
     editor.add();
@@ -5957,8 +5943,8 @@ TEST_CASE("a double-click on a rule's copy mark makes one copy", "[ui][trigger]"
 
 TEST_CASE("a movement aimed at fixtures with several heads ticks which of them move",
           "[ui][trigger][dmx][heads]") {
-    // The operator's answer of 2026-10-05: a tick per head, all ticked being every head, and a
-    // spread under them that staggers the ticked heads, at 0 until it is slid.
+    // A tick per head, all ticked being every head, and a spread under them that staggers the
+    // ticked heads, at 0 until it is slid.
     using takt4::dmx::EffectKind;
     using takt4::trigger::Message;
     Rig rig;
@@ -6212,7 +6198,7 @@ TEST_CASE("sixteen heads are ticked on a grid, each click reaching its own head"
 TEST_CASE("a right-click puts each of the rule editor's sliders back to a new rule's, and does "
           "nothing anywhere else",
           "[ui][trigger][dmx][heads]") {
-    // The operator's ask of 2026-10-05: a right-click on any slider sets it back to its default.
+    // A right-click on any slider sets it back to its default.
     // Every slider of a rule is moved off what a new rule has, and the whole editor is
     // right-clicked on a grid: each slider must come back to a new rule's value, and nothing a
     // right-click lands on may change anything else. Two rules between them show every slider:
@@ -6478,9 +6464,8 @@ int indexIn(const auto& list, auto value) {
 
 TEST_CASE("the Liberation preset asks first, then adds the lasers it was told",
           "[ui][trigger][liberation]") {
-    // The operator's ask of 2026-10-05: choosing the Liberation preset asks how many lasers, and
-    // the rules come from the answers. Driven as a person would: the menu, its entry, the boxes,
-    // ADD.
+    // Choosing the Liberation preset asks how many lasers, and the rules come from the answers.
+    // Driven as a person would: the menu, its entry, the boxes, ADD.
     LiberationEditor rig;
     RulesController& editor = rig.editor;
     auto& window = editor.window();
@@ -6567,8 +6552,8 @@ TEST_CASE("the Liberation preset asks first, then adds the lasers it was told",
     REQUIRE(lasers.found());
     REQUIRE(window.get_lasers()->row_count() == 2);
 
-    // Liberation's port, beside its IP (the operator, 2026-10-06: "it has box for IP, but not
-    // port"): 7000, typed into its box. Before the clips, since a miss here resets them.
+    // Liberation's port, beside its IP: 7000, typed into its box. Before the clips, since a miss
+    // here resets them.
     const Spot port = sweep(
         560.0f, 780.0f, 20.0f, 250.0f, 330.0f, 6.0f,
         [&](float x, float y) {

@@ -913,8 +913,8 @@ void Rule::followUpsFor(const Context& context, const Message& fired,
             follow.kind = *owed.kind;
         } else if (fired.kind == Message::Kind::MidiNote) {
             // **A note's release is a real Note Off**, not the same Note On with velocity
-            // zero. The velocity-zero convention is widely understood and not universal: the
-            // operator's laser controller holds its clip until `0x80` arrives, so the rig
+            // zero. The velocity-zero convention is widely understood and not universal: a
+            // laser controller holds its clip until `0x80` arrives, so the rig
             // never released. See the note on `Message::Kind`. The configured value rides
             // along as the *release* velocity, which is a real field of Note Off.
             follow.kind = Message::Kind::MidiNoteOff;

@@ -104,7 +104,7 @@ public:
         /// for `noSignalSeconds` on end. Then the deck has stopped rather than paused: the
         /// decoder forgets the beat and calls no more (`BeatDecoder::silence`), the tracker drops
         /// the lock and says so (`TempoTracker::setNoSignal`), and the next sound is listened to
-        /// afresh. The operator's call of 2026-10-03: beats go on through any breakdown that
+        /// afresh. Beats go on through any breakdown that
         /// has sound, and stop after a few seconds of none.
         ///
         /// -60 dBFS because digital zero is -inf, and white noise at -70 dBFS — about where a

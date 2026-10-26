@@ -3,8 +3,8 @@
 # Identical to electronic-library-v2.yaml except that nothing is halved: every electronic
 # set is trained and validated at the octave Beat This! (and Raveform's and osu2beat's
 # annotators) put it at — `octave.py --min-bpm 1000` restores every relabelled track before
-# this runs. The operator said the half-time boundary is "whatever works better for
-# accuracy" (2026-09-09); v2 and v3 differ in that one thing, and the harness — scored
+# this runs. The half-time boundary is whatever works better for
+# accuracy; v2 and v3 differ in that one thing, and the harness — scored
 # against Beat This!, which counts the fast beat — plus the library's own validation decide
 # it. Halving a track whose kick has no parity (198 of the 269 the library halves) chooses
 # which half of the fast grid is the beat by a coin toss, and that is a label the network

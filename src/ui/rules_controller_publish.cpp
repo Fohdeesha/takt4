@@ -596,8 +596,7 @@ std::string RulesController::describeRoleReach(const trigger::DmxSend& send) con
     // **What the rule editor could not say, and should have.** A rule aimed at `dimmer` over
     // an RGB par used to be a rule that fired, logged, counted and lit nothing — the fixture
     // has no dimmer channel, so the effect reached no channel and the only trace was a number
-    // in `DmxEngine::missed()` that nothing shows. Reported from a rig on 2026-09-16:
-    // *"Choosing the closest thing available right now, dimmer, does absolutely nothing."*
+    // in `DmxEngine::missed()` that nothing shows.
     //
     // The engine now fakes a dimmer out of the color (see `dmx::aims`), so the honest line
     // says which of the two is happening — and still says "reaches nothing" for the aim that

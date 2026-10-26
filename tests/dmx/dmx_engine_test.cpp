@@ -436,7 +436,7 @@ TEST_CASE("panic stops the animation and holds the levels", "[dmx][engine]") {
     engine.cancelAll();
     CHECK(engine.running() == 0);
     engine.tick(6.0);
-    // Frozen where it was, per the operator's own call: takt4 may be one source among several
+    // Frozen where it was: takt4 may be one source among several
     // and a panic that blacked out the stage would take down lights that were not its to take.
     CHECK(at(engine, 0, 1) == held);
 }
@@ -704,8 +704,7 @@ TEST_CASE("a dimmer aimed at a fixture that has not got one drives its color", "
     // `Role::Dimmer` has promised since it was written that "a fixture without one has its
     // color scaled instead" and nothing implemented it, so a rule with the default effect on
     // the default channel aimed at the default fixture reached no channel and the lamp stayed
-    // dark. Reported from a rig on 2026-09-16: "Choosing the closest thing available right
-    // now, dimmer, does absolutely nothing - the light is not coming on at all."
+    // dark.
     DmxEngine engine;
     engine.setPatch({rgb("par", 1)});
     REQUIRE(at(engine, 0, 1) == 0);

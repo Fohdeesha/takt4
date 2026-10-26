@@ -118,9 +118,9 @@ void playBars(TriggerEngine& engine, int bars, double from = 0.0) {
 } // namespace
 
 TEST_CASE("a euclidean pattern is the rhythm its two numbers name", "[trigger]") {
-    // The user's ask on 2026-09-06 for "cool ... algorithmic settings". A Euclidean pattern
-    // is the one rhythm that is neither "every N" nor random, and the classics fall straight
-    // out of two numbers — which is what makes it worth a trigger rather than a preset.
+    // A Euclidean pattern is the one rhythm that is neither "every N" nor random, and the
+    // classics fall straight out of two numbers — which is what makes it worth a trigger rather
+    // than a preset.
     using takt4::trigger::euclidHit;
 
     const auto pattern = [](std::uint32_t pulses, std::uint32_t steps) {
@@ -312,10 +312,9 @@ TEST_CASE("a follow-up arrives after its delay and not before", "[trigger][engin
     }
 
     SECTION("a delay counted in beats is the same gesture at any tempo") {
-        // Asked for on 2026-09-08: "an optional beats/bars box, so you can have it send
-        // something after 2 beats for example, regardless of bpm". A device's own lag is a
-        // fixed number of milliseconds; a *release* is a length of music, and spelling it in
-        // milliseconds means retyping it whenever the record changes.
+        // A follow-up can wait a number of beats or bars — two beats, say — whatever the tempo.
+        // A device's own lag is a fixed number of milliseconds; a *release* is a length of
+        // music, and spelling it in milliseconds means retyping it whenever the record changes.
         Recorder musical;
         TriggerEngine beats(musical);
         config.followUps[0].unit = takt4::trigger::DelayUnit::Beats;
@@ -459,7 +458,7 @@ TEST_CASE("the triggers that do not wait for a beat fire on a round", "[trigger]
 TEST_CASE("nothing fires before a lock but a hand on a button", "[trigger][engine]") {
     // Before a lock has been earned the tempo is the hunt's, octave flips and all, and an onset
     // or an intensity is read off whatever is playing. Beats and declared bars already waited
-    // for the lock (the operator, 2026-10-03); an onset, a tempo change and an intensity change
+    // for the lock; an onset, a tempo change and an intensity change
     // fired from the first frame. A lock change fires on the lock itself, which is when a lock
     // has been earned; manual and the test button are a hand on a button and go whenever.
     Recorder sink;
@@ -1170,7 +1169,7 @@ TEST_CASE("the ONLY IF stage is asked on every fire, not only the first", "[trig
 }
 
 TEST_CASE("a cooldown on a beat or a bar rule changes nothing", "[trigger][engine]") {
-    // The consequence accepted with the cooldown's move to A on 2026-09-30: the editor shows it
+    // The consequence of the cooldown's move to A on 2026-09-30: the editor shows it
     // switched off on the steady triggers, so a saved "every 1 beat" rule whose cooldown was
     // longer than a beat — quietly thinning it — fires on every beat again. A cooldown on a bar
     // rule never did anything, and still does not.
@@ -1275,9 +1274,9 @@ TEST_CASE("an observer is told which values a fire produced, and which sends are
 }
 
 TEST_CASE("a rule names which beat of the bar it fires on", "[trigger][engine][beat-of-bar]") {
-    // The operator, 2026-10-06: "not just fire every two beats, but WHICH two beats. for example
-    // I want one trigger firing on the first beat of a bar, another on the second beat, another
-    // on the third". Eight bars of 4/4; where each rule's fires landed, as heard.
+    // Not just every two beats, but which two: one rule firing on the first beat of a bar,
+    // another on the second, another on the third. Eight bars of 4/4; where each rule's fires
+    // landed, as heard.
     Recorder sink;
     TriggerEngine engine(sink);
     const auto onBeat = [](std::string id, Trigger trigger, std::uint32_t every,
@@ -1368,8 +1367,7 @@ TEST_CASE("a rule names which beat of the bar it fires on", "[trigger][engine][b
 }
 
 TEST_CASE("a rule's wait holds its fire, and its follow-ups after it", "[trigger][engine][delay]") {
-    // The other half of the operator's ask of 2026-10-06: "an optional delay setting default to
-    // unticked in the when section, where u can set it to static time in ms or beats / bars".
+    // An optional wait in the WHEN stage, off by default, set in milliseconds, beats or bars.
     Recorder sink;
     TriggerEngine engine(sink);
     Rule::Config rule = simple("late", Trigger::Manual);

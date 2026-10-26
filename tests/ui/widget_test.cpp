@@ -715,8 +715,7 @@ TEST_CASE("a slider steps with the arrows and goes to its ends with Home and End
 }
 
 TEST_CASE("a right-click puts a slider back to its default, and drags nothing", "[ui][widgets]") {
-    // The operator, 2026-10-05: "right clicking on any slider should set it back to default
-    // value". The bench's default is 25.
+    // A right-click on any slider sets it back to its default value. The bench's default is 25.
     Bench b;
     b.click(trackX(-50.0f), kTrackY);
     REQUIRE(b.ui->get_track_value() == Catch::Approx(-50.0f).margin(1.0f));
@@ -888,7 +887,7 @@ TEST_CASE("the scroller scrolls on the wheel and by its bar, and keeps in range 
 TEST_CASE("the scroller's bar is drawn 8 px wide, is grabbed 15 px wide, and a click on its track "
           "moves a page",
           "[ui][widgets]") {
-    // The operator: the first 6 px bar was "super small hard to grab". The bench's scroller runs
+    // The first 6 px bar was hard to grab. The bench's scroller runs
     // x 20 to 320; its bar is drawn at 311 to 318 and taken anywhere from 305 to 319.
     Bench b;
     const takt4::tests::Shot shot = takt4::tests::render(*b.ui, 900, 720);

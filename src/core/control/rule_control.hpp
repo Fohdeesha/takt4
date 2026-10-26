@@ -42,8 +42,7 @@ public:
     /// `id` may be `output::kAllRules` — "all" — meaning every rule at once.
     virtual void setRuleEnabled(std::string_view id, bool enabled) = 0;
 
-    /// `/ctl/rule/<id>/mute <0|1>`, added on the operator's ask of 2026-09-16 for live
-    /// per-rule control from a control surface.
+    /// `/ctl/rule/<id>/mute <0|1>`, for live per-rule control from a control surface.
     ///
     /// **Not the same as disabling, and both are wanted.** A disabled rule stops running: its
     /// shuffle bag stands still and it restarts when it comes back. A muted rule keeps running

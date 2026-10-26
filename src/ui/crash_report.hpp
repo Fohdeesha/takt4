@@ -15,8 +15,7 @@ namespace takt4::ui {
 /// — this executable again, started with `kAfterCrashOption` — which waits for the old one to
 /// be gone before it says anything. Until 2026-09-24 the message was shown by the process that
 /// had crashed, and every thread it had left went on running while the message sat unanswered:
-/// the outputs kept sending, the window kept reopening the audio interface. The operator's call
-/// was to end it at once.
+/// the outputs kept sending, the window kept reopening the audio interface.
 ///
 /// **Why it exists.** takt4 crashed on a rig on 2026-09-16 and the only reason the cause was
 /// ever found is that Windows Error Reporting happened to be configured to keep a dump. Nothing

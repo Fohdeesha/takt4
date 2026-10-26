@@ -83,7 +83,7 @@ public:
     static constexpr double kMinBpm = 20.0;
     static constexpr double kMaxBpm = 999.0;
     /// No two beats closer than this: 1000 BPM, past any grid an operator's ×2 makes of a tempo a
-    /// source has (the operator, 2026-10-22).
+    /// source has.
     static constexpr std::int64_t kLeastBeatMicros = 60'000;
     /// A tempo that moves by more than this share between two readings — a DJ halving the Link
     /// session — starts the beats' own rate (`TempoState::beatsBpm`) again: the gaps before it are

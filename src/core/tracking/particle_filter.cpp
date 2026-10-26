@@ -45,7 +45,7 @@ constexpr double kMinimumBeatFraction = 0.4; ///< of a beat period, between emis
 /// **This was 0.95, and the note here used to say 0.98 bought six fewer changes and no
 /// accuracy — which was true of the excerpts and false of real tracks.** Measured again
 /// over the seventeen full tracks in `references/audio`, 68 minutes of the material the
-/// operator's report came from, and with `kMeterMargin` in place:
+/// meter changes were seen on, and with `kMeterMargin` in place:
 ///
 /// | memory | meter changes in 68 min |
 /// |---|---|
@@ -73,8 +73,7 @@ constexpr double kMeterMemory = 0.98;
 /// be read as two twos — leave their scores within a per cent of each other, so the leader
 /// still changes whenever the cloud breathes. Measured over the seventeen full tracks in
 /// `references/audio`, 68 minutes: 322 meter changes with the memory alone, one every
-/// thirteen seconds, which is what the report "the time signature still changes more than
-/// it should" was about.
+/// thirteen seconds — a time signature that still changes more than it should.
 ///
 /// So the meter in force keeps it until something is ahead by this much:
 ///

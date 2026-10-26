@@ -708,9 +708,8 @@ TEST_CASE("a push button that sends 1 then 0 taps once a press", "[control]") {
     }
 
     SECTION("and panic/release lets go, where a panic 0 no longer does") {
-        // A 0 to panic was a release, so a push button's own release undid the halt. The
-        // operator's call: a panic engages whatever it carries; letting go is an action of its
-        // own.
+        // A 0 to panic was a release, so a push button's own release undid the halt. Now a
+        // panic engages whatever it carries; letting go is an action of its own.
         const takt4::control::ControlTarget panic(ControlAction::Panic);
         const takt4::control::ControlTarget release(ControlAction::PanicRelease);
         CHECK(surface.apply(panic, 1.0, 30.0));

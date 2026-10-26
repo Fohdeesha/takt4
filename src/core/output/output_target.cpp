@@ -295,7 +295,7 @@ std::string formatOutputTarget(const OutputTarget& target) {
         text += "off ";
     }
     // **Quoted only when it has to be**, so every name a file held before reads as it did, and
-    // most still read as they were typed (the operator's call, rather than refusing such names).
+    // most still read as they were typed (rather than refusing such names).
     text += misreadUnquoted(target.name) ? quoted(target.name) : target.name;
     text += " = ";
     text += formatOutputAddress(target);

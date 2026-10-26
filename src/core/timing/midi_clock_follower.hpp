@@ -71,7 +71,7 @@ public:
     /// ...or this long, whichever is longer.
     static constexpr std::int64_t kAbsentMicros = 100'000;
     /// The tempi a clock is followed at. The tempo window's own limits (`settings`), the MIDI
-    /// clock's sanity range (the operator, 2026-10-22).
+    /// clock's sanity range.
     static constexpr double kMinBpm = 20.0;
     static constexpr double kMaxBpm = 400.0;
     /// How far from the tempo the clock last ran at its first beats may be, either way.

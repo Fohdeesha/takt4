@@ -29,8 +29,8 @@ namespace takt4::ui {
 ///
 /// Only the first show. Whatever the operator drags a window to afterwards is theirs.
 ///
-/// 800 wide since the Weltformat-dark redesign of 2026-09-29: the operator cut the width by a
-/// fifth, and every row of the outputs table is laid out to read whole at it.
+/// 800 wide since the Weltformat-dark redesign of 2026-09-29, which cut the width by a fifth,
+/// and every row of the outputs table is laid out to read whole at it.
 inline constexpr float kMainWindowWidth = 800.0f;
 /// It opens at this with a scroll bar rather than sized to its content (1146 px with five
 /// outputs and their peers): the redesign kept the height it had, which opens whole on a
@@ -38,16 +38,15 @@ inline constexpr float kMainWindowWidth = 800.0f;
 inline constexpr float kMainWindowHeight = 934.0f;
 /// The markup's `min-height` — what folding a section never shrinks the window below.
 inline constexpr float kMainWindowMinHeight = 420.0f;
-/// The rule editor as the operator locked it on 2026-09-30: 1000 wide — the log left its column
-/// for a sheet along the bottom, and the list took 46 px of that room — and the 872 a rig
-/// measured and asked to open at.
+/// The rule editor since the redesign of 2026-09-30: 1000 wide — the log left its column
+/// for a sheet along the bottom, and the list took 46 px of that room — and 872 tall, measured
+/// on a rig.
 inline constexpr float kRulesWindowWidth = 1000.0f;
 inline constexpr float kRulesWindowHeight = 872.0f;
 /// And the patch editor, which had no size of its own at all and so opened at its markup
 /// minimum — 820x520, which is too short to see a twelve-channel head's map and the movement
-/// limits under it without scrolling. Measured from the shot a rig sent on 2026-09-16 asking
-/// for "at least as big as the attached screenshot". 1000 wide since the redesign of 2026-09-30,
-/// the rule editor's width, as the approved mockup has it.
+/// limits under it without scrolling. Measured from a screenshot. 1000 wide since the redesign
+/// of 2026-09-30, the rule editor's width, as the approved mockup has it.
 inline constexpr float kFixturesWindowWidth = 1000.0f;
 inline constexpr float kFixturesWindowHeight = 800.0f;
 /// The About box, as its approved mockup of 2026-09-30: three sheets and CLOSE, whole at this
@@ -294,8 +293,8 @@ std::string describePair(const audio::InputDevice& device, int first);
 std::string fixed(double value, int places);
 
 /// The version as the status bar's corner shows it, on two lines: the version, and under it
-/// "release" for a release or "dev" for a build between releases — the operator's call of
-/// 2026-09-29, "always two lines". A dev build's full label, commit and all, is in the title bar
+/// "release" for a release or "dev" for a build between releases.
+/// A dev build's full label, commit and all, is in the title bar
 /// and the About box; see `MainWindow.version-short` for why the corner cannot hold it.
 std::string shortVersionLabel(std::string_view version, std::string_view commit);
 

@@ -18,9 +18,7 @@ public:
 
 /// A MIDI port that **is** on this machine and would not open. On Windows that is nearly always
 /// another program holding it — a WinMM port is one program's at a time — and saying "no such
-/// device" about a device the operator can see plugged in sends them looking for the wrong fault
-/// (2026-09-28: "if it can't bind ... it should say so in the UI so it doesn't just silently
-/// fail").
+/// device" about a device the operator can see plugged in sends them looking for the wrong fault.
 class MidiPortBusy : public std::runtime_error {
 public:
     /// `prefix` is who is saying it ("MIDI output: "), and `detail` the driver's own words, which

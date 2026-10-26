@@ -117,7 +117,7 @@ TEST_CASE("a stereo pair is judged by how its two sides go together", "[audio][s
     }
 
     SECTION("a leg wired back is never called unrelated on the way to fine") {
-        // 2026-10-08, the operator: "share almost nothing" came up once a flipped pair had been
+        // "share almost nothing" came up once a flipped pair had been
         // put right, and stayed. On the way from −0.9 to +0.9 the short window passes through
         // zero while the long one straddles both — and that is no stranger, it is the same music.
         const auto flipped = [&](std::size_t) {

@@ -1241,8 +1241,7 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
             window->set_beats_bpm(93.8f);
         } else if (options.state == "doubled" || options.state == "doubled-before") {
             // A ×2 left in force: the number doubled, the grid not, so the dots go on at the
-            // music's tempo — the operator's report of 2026-10-06, as the window shows it now and
-            // as it showed it then.
+            // music's tempo — as the window shows it now and as it showed it then.
             const float music = window->get_bpm();
             window->set_bpm(2.0f * music);
             if (options.state == "doubled") {

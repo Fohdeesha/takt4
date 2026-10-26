@@ -93,8 +93,7 @@ TEST_CASE("the latency offset round-trips and is what the transports fire on", "
 }
 
 TEST_CASE("the latency offset reaches OSC and not only the two clocks", "[output][osc]") {
-    // The user's report of 2026-09-07: *"I was going to use it to make the resolume clip
-    // changing end up on beat but it didn't seem to work how I expected."* It did not,
+    // The latency offset could not put Resolume's clip changes on the beat,
     // because it moved Link and the MIDI clock and never touched the publisher — and
     // Resolume listens to OSC. This is the wiring that closed that.
     const LoopbackReceiver server; // the test's own, not a port nobody holds
@@ -464,8 +463,8 @@ TEST_CASE("picking a lost MIDI port again reopens it at once", "[output][midi]")
 
 TEST_CASE("a MIDI device another program holds is said to be held, not missing",
           "[output][midi]") {
-    // 2026-09-28: "if it can't bind ... it should say so in the UI so it doesn't just silently
-    // fail". A WinMM port is one program's at a time, so a DAW with every output open is the
+    // A MIDI port that cannot be bound has to say so on screen, not fail silently. A WinMM
+    // port is one program's at a time, so a DAW with every output open is the
     // usual reason a MIDI row reaches nothing — and the row said "no MIDI device called ... plug
     // it in" of a device the operator could see plugged in. Each reason is now its own, by row,
     // with the output's id so a window can put it on the row it is about.
@@ -1087,7 +1086,7 @@ Fit fit(const TimedWire& wire, const Music& music, double delay, std::size_t fro
 } // namespace
 
 TEST_CASE("every MIDI clock output ticks on the beat plus its own delay", "[output][midi]") {
-    // The operator's call of 2026-09-25: a MIDI clock is an output like any other, as many of
+    // A MIDI clock is an output like any other, as many of
     // them as there are things to clock, each with a delay that works as every output's does —
     // a DAW that plays 80 ms late wants its clock 80 ms later, a drum machine that is quick
     // wants it 60 ms early, and one number for the rig could not give both.
@@ -1377,7 +1376,7 @@ TEST_CASE("the Link output's delay moves the timeline under the beat", "[output]
 
 TEST_CASE("each Art-Net node has a beat's lighting on the beat plus its own delay",
           "[output][dmx][trigger]") {
-    // The operator's call of 2026-09-25, end to end. Three nodes — one set 100 ms early, one on
+    // Each node's own delay, end to end. Three nodes — one set 100 ms early, one on
     // time, one 50 ms late — and a colour rule fired on a beat in the music at 1.0, fired at 0.8
     // on a prediction as the output thread does while the tracker is locked. The lighting
     // starts 100 ms early, for the early node, and each other node is sent it its own delay

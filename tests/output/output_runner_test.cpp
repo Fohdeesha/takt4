@@ -236,7 +236,7 @@ TEST_CASE("the output thread drains every beat the tracker called", "[output]") 
 }
 
 TEST_CASE("each beat fired is handed to the window with when the rig plays it", "[output]") {
-    // The beat dots ran behind outputs that were on time (the operator, 2026-10-08): they moved
+    // The beat dots ran behind outputs that were on time: they moved
     // when the tracker's state showed a beat, a detection and a redraw after its moment. The
     // runner says, for every beat it fires, when the rig plays it — its moment plus the latency
     // every output is moved by — so the window can light the dot then.
@@ -616,7 +616,7 @@ TEST_CASE("the fired log keeps the newest messages, in order, when nobody drains
 }
 
 TEST_CASE("the octave fold reaches the wire, not just the readout", "[output][trigger]") {
-    // The user's report of 2026-09-06, at the far end of the chain it actually mattered at.
+    // The octave fold at the far end of the chain, where it actually matters.
     // A fold that moves the number and leaves `TrackedFrame::emitted` alone is invisible in
     // the tracker's own tests and *deafening* here: the readout says 93 and every OSC
     // datagram, MIDI clock tick and trigger rule fires at 186. So this asserts the halving
@@ -672,8 +672,7 @@ TEST_CASE("the octave fold reaches the wire, not just the readout", "[output][tr
 }
 
 TEST_CASE("rules still fire after a stop and a start", "[output][trigger]") {
-    // Reported from a rig on 2026-09-12: *"when hitting stop on the main window, when I hit
-    // start again, none of the triggers started firing again."*
+    // After STOP and START in the main window, none of the triggers fired again.
     //
     // `elapsed()` — which is `Context::now` — used to be taken from `start()`, so it went
     // back to zero on every Start while `Rule::lastFired_` kept the time of the last fire of
@@ -784,8 +783,8 @@ TEST_CASE("a DOWNBEAT pressed just after a beat fires that bar's downbeat rules"
 
 TEST_CASE("a DOWNBEAT pressed before the first lock fires nothing until there is one",
           "[output][trigger]") {
-    // Nothing reaches the rig until the tracker has earned a lock (`TempoState::acquired`, the
-    // operator's call of 2026-10-03), and a bar a press declares is no exception: a downbeat rule
+    // Nothing reaches the rig until the tracker has earned a lock (`TempoState::acquired`),
+    // and a bar a press declares is no exception: a downbeat rule
     // fired for it would be the one flash in seconds of a hunt. "The Galaxist" has a downbeat at
     // 0.6 s and other beats after it, under this configuration, long before its first lock at 3.8.
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
@@ -1007,8 +1006,7 @@ TEST_CASE("stopping sends the releases it still owes", "[output][trigger]") {
 }
 
 TEST_CASE("an output switched off or deleted is sent what it is owed first", "[output][trigger]") {
-    // The operator, 2026-09-30: "if I uncheck a midi target for instance, it immediately dies, so
-    // it never sends the note off, and the midi device keeps playing that note". Unticking a row
+    // A MIDI device whose row was unticked kept playing its note. Unticking a row
     // closed its port with the note off still owed to it, and the note off went nowhere a beat
     // later. Now what is owed to an output that is going — a rule's release, a note held for the
     // output's delay, an OSC datagram held for its — goes to it before it goes. What is owed to
@@ -1998,7 +1996,7 @@ TEST_CASE("the outputs run with the tracker stopped", "[output][dmx]") {
     CHECK(sawRgb(node, 255, 0, 0));
 
     SECTION("and a Stop blacks the lights out and goes on sending") {
-        // The operator's call of 2026-09-23: Stop is a blackout — every light-emitting
+        // Stop is a blackout — every light-emitting
         // channel to zero — and the node goes on hearing takt4, so it does not fall back to a
         // failsafe of its own.
         runner.setTracking(true);
@@ -2020,7 +2018,7 @@ TEST_CASE("the outputs run with the tracker stopped", "[output][dmx]") {
     }
 
     SECTION("and PANIC freezes rather than blacking out") {
-        // PANIC keeps the operator's call of 2026-09-16: the lights stay where they are.
+        // PANIC leaves the lights where they are.
         runner.post(OutputCommand::panic(true));
         REQUIRE(runner.sync());
         const std::vector<std::uint8_t> levels =
@@ -2036,8 +2034,8 @@ TEST_CASE("the outputs run with the tracker stopped", "[output][dmx]") {
 TEST_CASE("a node whose only fixture is switched off is sent dark frames, then left alone",
           "[output][dmx][slow]") {
     // One par on a node, on the wire: switching it off took its universe out of the patch,
-    // nothing was ever sent there again, and the node held the lamp lit. The operator's call:
-    // zeros for a few seconds, then leave it.
+    // nothing was ever sent there again, and the node held the lamp lit. Now it is sent
+    // zeros for a few seconds, and then left alone.
     LoopbackReceiver node;
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     Transports::Config config = parOnNode(node.port());
@@ -2230,7 +2228,7 @@ TEST_CASE("STOP leaves the lights out, fires nothing after it and lets go of wha
     // STOP blacked the lights out once — and then up to two predicted beats still fired their
     // rules, because nothing reset the scheduler and the engine's last locked state stays
     // published after it stops; and a lighting release owed went on to relight a lamp at its
-    // release level. The operator's call: the lights have to go out and stay out; what is owed
+    // release level. The lights have to go out and stay out; what is owed
     // to a media server or a laser — a clip's release — goes out at once, as it does on quit, so
     // nothing is left latched.
     //
@@ -2569,7 +2567,7 @@ TEST_CASE("the MIDI clock keeps its time while every core is busy",
 TEST_CASE("PANIC leaves a lamp where it is, whatever its release would have done",
           "[output][dmx]") {
     // PANIC pays out every release it owes, so that a clip or a laser note lets go, and then
-    // freezes the lights (the operator's call, 2026-09-16). A lighting release is the fired
+    // freezes the lights. A lighting release is the fired
     // effect again at the release level over the rule's own fade time, so paying it could turn
     // off a lamp whose rule snapped while leaving one whose rule faded. Here the rule snaps to
     // full with a release owed, and an OSC rule owes one too.
@@ -2857,7 +2855,7 @@ TEST_CASE("a delay slider moves one output's delay and drops nothing held", "[ou
 
 TEST_CASE("a release owed to an output follows it when another is added above it",
           "[output][trigger]") {
-    // The operator's rule that nothing hangs off something editable: a follow-up carries its
+    // The rule that nothing hangs off something editable: a follow-up carries its
     // routing as a bit, and the bit is the output's place in the list. An output added above it
     // moved every place below — so a release owed to the deck went to whatever took the
     // deck's place.
@@ -3027,7 +3025,7 @@ TEST_CASE("the input going quiet disarms the lasers and leaves the lamps",
 
 TEST_CASE("Liberation hears the clip a rule picked, armed and lit, on the wire",
           "[output][dmx][liberation]") {
-    // Verified as the operator asked on 2026-10-05: not by launching Liberation, but by a listener
+    // Verified not by launching Liberation, but by a listener
     // of the test's own on a loopback port, reading every ArtDmx frame and decoding it with the
     // formula Liberation's own document gives. Two zones, at 1 and 33; only the first is fired.
     namespace liberation = takt4::dmx::liberation;
@@ -3165,11 +3163,11 @@ std::vector<std::string> releasesLogged(OutputRunner& runner) {
 } // namespace
 
 TEST_CASE("a rule that stops sending lets go of what it holds", "[output][trigger][release]") {
-    // The operator, 2026-10-06: "if I mute a trigger by clicking its green circle in the rules
-    // editor, the laser will sometimes still play. might do this for midi shit too, anything that
-    // needs an excpicit release/disarm". A Liberation clip arms its zone until something takes it
-    // off, and a note on sounds until its note off; a rule muted, switched off, deleted or aimed
-    // elsewhere would never send either again. Not started, so every post applies at once.
+    // Muting a rule by its dot in the rules editor could leave its laser playing, and the same
+    // went for MIDI and anything else that needs an explicit release or disarm. A Liberation
+    // clip arms its zone until something takes it off, and a note on sounds until its note off;
+    // a rule muted, switched off, deleted or aimed elsewhere would never send either again. Not
+    // started, so every post applies at once.
     auto cable = std::make_shared<Bytes>();
     auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
     OutputRunner runner(*engine, heldRig(cable));
@@ -3371,7 +3369,7 @@ TEST_CASE("an input outage disarms the lasers and lets go of the notes", "[outpu
     // An interface unplugged delivers no audio at all, so the tracker never hears the silence
     // that says "no signal" — and the lasers held their last clip, and the notes stayed on, for
     // the whole of the outage. The window tells the runner the input is lost, and it lets go of
-    // the rig as the silence does (the operator, 2026-10-05).
+    // the rig as the silence does.
     SECTION("the lasers") {
         auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
         OutputRunner runner(*engine, zoneBesideLamp());
@@ -3403,10 +3401,10 @@ TEST_CASE("an input outage disarms the lasers and lets go of the notes", "[outpu
 
 TEST_CASE("an Art-Net node switched off is sent zeros: its lights dark, its lasers disarmed",
           "[output][dmx][liberation][release]") {
-    // The operator, 2026-10-06: "unchecking the liberation artnet output in the main window
-    // doesnt disarm them either" — the node held the last frame it was sent, which armed the zone
-    // — and then "untickng artnet should black out lights / send zeroed". Read off the wire with
-    // a listener of the test's own, never Liberation (the operator's rule).
+    // Unticking the Liberation Art-Net output in the main window did not disarm the lasers: the
+    // node held the last frame it was sent, which armed the zone. An Art-Net output unticked
+    // should black out its lights and send zeros. Read off the wire with a listener of the
+    // test's own, never Liberation.
     LoopbackReceiver node;
     Transports::Config config = zoneBesideLamp();
     takt4::output::OutputTarget target;

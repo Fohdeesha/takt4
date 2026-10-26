@@ -42,7 +42,7 @@ struct HostPreset {
 /// nothing, on the reasoning that an operator who had typed an address and then brushed the
 /// picker had not asked to lose it — but the picker did not show which preset the rule *was*
 /// either, so going back to "custom" after a Resolume preset left the Resolume address, its
-/// two chips and its release sitting under a box that said "custom". Reported from a rig.
+/// two chips and its release sitting under a box that said "custom".
 /// The picker now follows the address (`presetOf`), so "custom" is a state as well as a
 /// choice, and choosing it is choosing an empty one.
 inline const std::array<HostPreset, 5> kHostPresets{{
@@ -93,12 +93,12 @@ inline constexpr std::array<const char*, 5> kRigPresets{
 /// nothing by itself: it opens the prompt.
 inline constexpr std::size_t kLiberationPreset = 5;
 
-/// Up to four lasers (the operator's call: 1 to 4).
+/// Up to four lasers (1 to 4).
 inline constexpr int kMaxLasers = 4;
 
 /// When a laser's clip changes, as the prompt offers it. **Staggered by default** — laser 1 every
-/// beat, laser 2 every two, laser 3 every bar, laser 4 every two bars (the operator's own
-/// stagger) — so four lasers do not all change on one beat.
+/// beat, laser 2 every two, laser 3 every bar, laser 4 every two bars — so four lasers do not
+/// all change on one beat.
 struct LaserTiming {
     const char* label;
     trigger::Trigger trigger;
@@ -122,7 +122,7 @@ inline constexpr std::array<const char*, 4> kLaserMoves{"circle", "figure 8", "s
 struct LiberationAsk {
     int lasers = 1;
     /// Each laser's clips, as typed: "1-1" to "21-1" — every clip between them in Liberation's
-    /// deck order (the operator's example and their choice of reading, 2026-10-05).
+    /// deck order.
     std::array<std::string, kMaxLasers> from{"1-1", "1-1", "1-1", "1-1"};
     std::array<std::string, kMaxLasers> to{"21-1", "21-1", "21-1", "21-1"};
     /// An index into `kLaserTimings` for each.
@@ -130,7 +130,7 @@ struct LiberationAsk {
     /// Where Liberation runs: this computer, unless the operator says otherwise.
     std::string host = "127.0.0.1";
     /// And the port its DMX input listens on: Art-Net's own unless Liberation was told otherwise
-    /// (asked beside the IP since 2026-10-06 — *"it has box for IP, but not port"*). A test aims
+    /// (asked beside the IP). A test aims
     /// it at a listener of its own, so nothing it adds reaches a Liberation running here.
     std::uint16_t port = dmx::kArtNetPort;
     /// **Liberation's numbering**, from 1 — what is typed into Liberation's own window. The zones

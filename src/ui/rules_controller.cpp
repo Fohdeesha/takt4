@@ -461,7 +461,7 @@ void RulesController::show() {
     visible_ = true;
     // **And brought forward**, which `show()` does not do for a window that is already up: it
     // leaves it exactly where it was in the Z order, so pressing TRIGGERS with the editor
-    // behind the main window looked like a button that did nothing. Reported from a rig.
+    // behind the main window looked like a button that did nothing.
     //
     // By a substring of the title, which is how `bringWindowToFront` finds a window at all —
     // "triggers" appears in this window's title and in no other of ours. A no-op away from
@@ -893,8 +893,7 @@ void RulesController::add() {
     // result was wrong. A rule with no address is invalid, so it cannot fire whatever this
     // says (`Rule::problem`); what "off" actually bought was every new rule and every preset
     // arriving inert, behind an unlabelled tick box, with nothing on screen saying why
-    // nothing happened. Reported from a rig: "it's not obvious that they're entirely
-    // disabled". The box is labelled now, and a rule an operator asked for is armed.
+    // nothing happened. The box is labelled now, and a rule an operator asked for is armed.
     rule.enabled = true;
     // **And its ONLY IF switched off, and folded**: nothing optional is on by default.
     // `conditionsOn` starts off in the struct; the fold is the window's.
@@ -1335,8 +1334,8 @@ void RulesController::setConditionsOn(bool on) {
         commit();
         window_->set_conditions_on(on);
         // Ticked, it opens: what was switched on is what is to be set next, and a section that
-        // stays folded over it hides the very thing the tick asked for (the operator,
-        // 2026-10-06). Unticked, it stays as it is — folding it under the hand would be a second
+        // stays folded over it hides the very thing the tick asked for.
+        // Unticked, it stays as it is — folding it under the hand would be a second
         // thing nobody asked for.
         if (on) {
             window_->set_only_if_folded(false);
@@ -1472,7 +1471,7 @@ void RulesController::pickSend(int index) {
     }
     const trigger::Message::Kind was = rule->sendKind;
     rule->sendKind = trigger::kMessageKinds[static_cast<std::size_t>(index)];
-    // **A number nobody chose does not go out** (the operator's call: the rule stays armed and
+    // **A number nobody chose does not go out** (the rule stays armed and
     // waits). A rule switched to a note or a controller used to fire at once with whatever the
     // number generator held — a shuffle over 1 to 8 by default, so CC 7 at one on channel 1, to
     // every MIDI output, on some bar: a synth's volume gone. A number carries over only where it

@@ -1,5 +1,5 @@
-# PortAudio's ASIO host, patched at configure time — the operator's call of 2026-09-23: keep
-# PortAudio as the ASIO host and give it the three things it lacks.
+# PortAudio's ASIO host, patched at configure time — PortAudio kept as the ASIO host and given
+# the three things it lacks.
 #
 #   1. The device's "default sample rate" is the rate the interface is **running at now**.
 #      Upstream reports the first rate the driver accepts from a fixed list that starts at

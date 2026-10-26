@@ -609,8 +609,7 @@ bool DmxEngine::buildFor(std::size_t index, const Payload& payload, Running& run
     /// color, scaled. `Role::Dimmer` has said so since it was written — *"a fixture without
     /// one has its color scaled instead"* — and nothing implemented it, so the commonest rig
     /// in the world (an RGB par, the default effect, the default channel) fired and the lamp
-    /// stayed dark. Reported from a rig on 2026-09-16: *"Choosing the closest thing available
-    /// right now, dimmer, does absolutely nothing — the light is not coming on at all."*
+    /// stayed dark.
     ///
     /// The color is kept apart and scaled by this (`Virtual`), so "fade to half" on a fixture
     /// lit red is half red, and a flash after a flash is still red. A fixture that has no color

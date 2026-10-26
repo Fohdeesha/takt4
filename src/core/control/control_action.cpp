@@ -190,7 +190,7 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
     // DOWNBEAT snapped late on the release. An explicit zero to a button is its release, and it
     // is accepted — the message was understood — and does nothing. The four actions that hold a
     // state read zero as "off" below, as they always did. PANIC is the exception: every message
-    // to it engages, a 0 included (the operator's call of 2026-09-26) — a 0 read as a release
+    // to it engages, a 0 included — a 0 read as a release
     // is what let a push button's own release undo the halt.
     if (!takesArgument(target.action) && target.action != ControlAction::Panic && argument &&
         *argument == 0.0) {
@@ -206,7 +206,7 @@ bool ControlSurface::apply(const ControlTarget& target, std::optional<double> ar
         }
         const std::optional<double> tapped = taps_.tap(nowSeconds);
         if (tapped) {
-            // A seed, not an override — the operator's call of 2026-09-04, and the same thing
+            // A seed, not an override — the same thing
             // the window's TAP and the console's space bar do.
             return beats_.post(Command::seedTempo(*tapped));
         }

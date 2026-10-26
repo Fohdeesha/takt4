@@ -17,8 +17,8 @@ namespace takt4::output {
 ///
 /// Out here rather than inside the .cpp so a test can state the mapping directly. It is the
 /// half of the note-off fix that a counter cannot see: a rule can decide to release and
-/// still put `0x90` on the cable, which is exactly the bug that left the operator's laser
-/// clip latched on.
+/// still put `0x90` on the cable, which is exactly the bug that left a laser clip latched
+/// on.
 unsigned char midiStatusFor(trigger::Message::Kind kind, int channel) noexcept;
 
 /// How many bytes that kind occupies. Program change is two; everything else is three.
@@ -93,7 +93,7 @@ public:
     void dropQueuedHolds() noexcept;
     /// While true, lighting is not sent: for the moment a PANIC pays out every release it owes,
     /// which it does so that a clip or a laser note lets go. The lights are to be frozen where
-    /// they are (the operator's call, 2026-09-16), and a lighting release is the fired effect
+    /// they are, and a lighting release is the fired effect
     /// again at the release level — on a rule that snaps, a lamp turned off.
     /// Most are held here until their moment and dropped with `dropQueuedLighting`; this is
     /// for the rest — a release owed a little ahead on a rig whose offset is further ahead

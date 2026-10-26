@@ -69,7 +69,7 @@ public:
         /// together — in phase or flipped — and "unrelated" waits a whole `unrelatedSeconds` after
         /// the last one. Without it, a flipped leg wired back read as two strangers: on the way
         /// from −0.9 to +0.9 the short window passes through zero while the long one straddles
-        /// both and sums to nothing (2026-10-08, the operator: the warning would not go).
+        /// both and sums to nothing (the warning would not go).
         double relatedBeyond = 0.3;
         /// Below this, a side is nothing — and if both are, nothing is judged.
         double silentBelowDb = -60.0;

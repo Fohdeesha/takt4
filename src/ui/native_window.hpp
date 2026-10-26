@@ -7,8 +7,7 @@
 
 namespace takt4::ui {
 
-/// The two things a Slint window cannot do for itself, both of them Windows' own behaviour
-/// and both reported from a rig.
+/// The two things a Slint window cannot do for itself, both of them Windows' own behaviour.
 ///
 /// Slint's C++ `Window` offers `show`, `hide`, `is_visible`, `position` and `request_redraw`
 /// — and no way to reach the platform window under it (there is no handle accessor in 1.17).
@@ -25,7 +24,7 @@ namespace takt4::ui {
 ///
 /// `show()` on a window that is already up does **nothing** on Windows: it stays exactly where
 /// it was in the Z order. So pressing TRIGGERS on the main window while the editor sat behind
-/// it looked like a button that did not work — reported on 2026-09-08. Matched on a substring
+/// it looked like a button that did not work. Matched on a substring
 /// so the caller need not spell the em dash in the editor's title.
 bool bringWindowToFront(std::string_view titleContains);
 

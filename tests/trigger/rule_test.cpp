@@ -206,7 +206,7 @@ TEST_CASE("a MIDI rule clamps to what MIDI can carry", "[trigger][rule]") {
 
     SECTION("a follow-up on a note is a real note off, on the note that fired") {
         // **Not the same note on with velocity zero.** That convention is widely understood
-        // and not universal: the operator's laser controller holds its clip until 0x80
+        // and not universal: Liberation, a laser controller, holds its clip until 0x80
         // arrives, so a rig built on it never released. See `trigger::Message::Kind`.
         config.number = fixedAt(36);
         config.value = fixedAt(100);
@@ -396,7 +396,7 @@ TEST_CASE("the ONLY IF stage excludes only what it was set to exclude", "[trigge
 }
 
 TEST_CASE("the ONLY IF stage applies only while it is switched on", "[trigger][rule]") {
-    // The tick on the editor's B heading (decided 2026-09-30). Off — as a new rule
+    // The tick on the editor's B heading (since 2026-09-30). Off — as a new rule
     // starts — the rule fires every time its trigger comes round, whatever the conditions hold;
     // they are kept, set for later, and switching B on is what makes them apply.
     Rule::Config config;
@@ -706,7 +706,7 @@ TEST_CASE("what a fire records is what the kind actually sends", "[trigger][rule
 
 TEST_CASE("a MIDI rule waits for a number somebody chose", "[trigger][rule]") {
     // A rule switched to MIDI CC fired CC 1 to 8 at a value of one on every bar, to every MIDI
-    // output — CC 7 at one is a synth's volume gone. The operator's call: the rule stays armed,
+    // output — CC 7 at one is a synth's volume gone. Now the rule stays armed,
     // does nothing, and says what it is waiting for.
     Rule::Config config;
     config.id = "stab";

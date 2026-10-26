@@ -44,8 +44,7 @@ enum class Trigger : std::uint8_t {
     /// A Euclidean rhythm: `pulses` hits spread as evenly as they go over `every` beats,
     /// counted from the first beat of the pattern.
     ///
-    /// **Not in the list above**, and added on the user's ask for *"cool randomization or
-    /// algorithmic settings ... based on the bpm of the song and downbeat"*. It earns its
+    /// **Not in the list above**: it earns its
     /// place because it is the one pattern that is neither "every N" nor random: 3-in-8 is
     /// the tresillo, 5-in-8 the cinquillo, 5-in-16 the bossa. An operator gets those by
     /// typing two numbers, and they are locked to the tracker's own beat rather than to a
@@ -87,8 +86,8 @@ inline constexpr double kMaxFireDelaySeconds = 300.0;
 /// bursts — an onset, a tempo, lock or intensity change, the M key. **Not** beats, bars, the
 /// downbeat or a Euclidean pattern, which come round at the music's own pace: a cooldown there
 /// only ever thinned a steady pattern into an irregular one, and on a bar it never did anything
-/// at all. The editor switches the control off for them and the engine ignores it (the rule
-/// editor's design, locked 2026-09-30) — a control shown switched off must do nothing.
+/// at all. The editor switches the control off for them and the engine ignores it — a control
+/// shown switched off must do nothing.
 bool takesCooldown(Trigger trigger) noexcept;
 
 /// How a rule's optional follow-up value after a delay counts that delay.
@@ -173,7 +172,7 @@ struct Message {
     /// **Note On and Note Off are separate kinds, and that is not tidiness.** Until
     /// 2026-09-12 the only note status on the wire was `0x90`, and a release was that with
     /// velocity zero — which `rule_sink.cpp` justified as "a note-off on every device made
-    /// since 1983". It is not: the operator's laser controller (Liberation) holds
+    /// since 1983". It is not: a laser controller (Liberation) holds
     /// its clip until a real `0x80` arrives, so a rig built on the velocity-zero convention
     /// never released. The convention is common, not universal, and a sender cannot tell
     /// which end it has. So takt4 sends what the standard says, and a release of a `MidiNote`
@@ -363,7 +362,7 @@ double musicalSeconds(const Context& context, DelayUnit unit, double clockSecond
 /// that runs the lights knows nothing about rules.
 ///
 /// **The color and the level are generators like everything else**, which is not a
-/// flourish: it is what makes *"a random color from my palette, never the same one twice"*
+/// flourish: it is what makes a random color from a palette, never the same one twice,
 /// fall out of the machinery the clip triggers already use, rather than being a second
 /// random-color feature with its own bag and its own bugs. A palette is a `Shuffle` over a
 /// `List` of text values — `#ff2040`, `#20ff80` — and no code here knows that is what it is
@@ -385,7 +384,7 @@ enum class ColorMode : std::uint8_t {
     /// `DmxSend::red`, `green` and `blue` decide it, one generator each, 0 to 255.
     ///
     /// Three generators rather than a "random color" tick box, because that is what makes
-    /// *"within limits I set for r g and b specifically"* fall out of machinery that already
+    /// limits set for red, green and blue separately fall out of machinery that already
     /// exists — a limit is a `Random` over a range — and because it costs nothing to let the
     /// other kinds in: a `Ramp` on red over four bars, or a `Live` green that follows the
     /// intensity, are gestures nobody had to write code for.
@@ -403,8 +402,7 @@ std::optional<ColorMode> colorModeOf(std::string_view name) noexcept;
 /// `Generator::Config`'s own default — shuffle over the integers 1 to 8 — is
 /// right for a clip index and nonsense for a color: every draw is a number `dmx::parseColor`
 /// cannot read, so every fire fell back to white and the editor showed a range box asking
-/// which eight colors 1 through 8 were. Reported from a rig on 2026-09-16: *"I define a range
-/// 1-8 which maps to what!? it just stays the same #ffff color code"*.
+/// which eight colors 1 through 8 were.
 Generator::Config paletteOf(dmx::Color color) noexcept;
 
 /// And the palette a color generator seeds when it is switched to a kind that draws from a
@@ -428,7 +426,7 @@ Generator::Config componentMix() noexcept;
 Generator::Config fixedNumber(int value) noexcept;
 
 /// The clip generator a lighting rule starts with: **a shuffle over Liberation clips 1-1 to 21-1**
-/// in deck order (`dmx::liberation::indexOf`), the operator's own example of 2026-10-05. A clip is
+/// in deck order (`dmx::liberation::indexOf`). A clip is
 /// held as its place in deck order, so a range is two of them and a shuffle over it is every clip
 /// between, as Liberation counts them.
 Generator::Config clipShuffle(dmx::liberation::Clip from, dmx::liberation::Clip to) noexcept;
@@ -501,7 +499,7 @@ struct DmxSend {
     /// n + 1, none for every head — so one rule can move the left yoke and another the right. See
     /// `dmx::Payload::heads`. Read by the kinds `dmx::takesMovement` names.
     std::uint32_t heads = 0;
-    /// How far apart those heads move, 0 to 1 — "stagger movement between selected heads". See
+    /// How far apart those heads move, 0 to 1: how much their movement is staggered. See
     /// `dmx::Payload::spread`. 0, together, unless the operator asks.
     double spread = 0.0;
 
@@ -510,7 +508,7 @@ struct DmxSend {
 
 /// What a follow-up replaces of a DMX rule's own effect.
 ///
-/// Present for the case the operator asked for first: *"fade in and fade out"* is one rule
+/// Present for fading in and out, which is one rule
 /// with a fade up and a follow-up two bars later that fades down. The follow-up needs a
 /// duration of its own — a two-bar fade out is not the same number as the two-bar wait before
 /// it — and a kind of its own, because the way out of a flash is not another flash.
@@ -533,9 +531,8 @@ struct DmxFollow {
 ///
 /// **It was one value and a delay, and that was not enough.** Resolume's press-then-release is
 /// the case it was written for, and it reads as a tick box with a number beside it: send a 1,
-/// send a 0 fifty milliseconds later. A rig then asked for the thing a tick box cannot say —
-/// *"I need a note on trigger to trigger Liberation laser clips. when the beat is done, I
-/// need the option to send a note off. in the same trigger"* — and the honest answer is that
+/// send a 0 fifty milliseconds later. What a tick box cannot say is a note on that starts a laser
+/// clip and a note off from the same trigger when the beat is done — and the honest answer is that
 /// a rule sends a **sequence**, of which press-then-release is the shortest interesting one.
 /// So each entry says what it sends rather than only what value it carries.
 ///
@@ -665,9 +662,8 @@ public:
         /// trigger. Zero is silence and is left as the operator typed it — a pattern being
         /// built up from nothing passes through it.
         std::uint32_t pulses = 3;
-        /// **Which beat of the bar**, 1 to `kMaxBeatOfBar` — the operator's ask of 2026-10-06:
-        /// *"not just fire every two beats, but WHICH two beats ... one trigger firing on the
-        /// first beat of a bar, another on the second, another on the third"*.
+        /// **Which beat of the bar**, 1 to `kMaxBeatOfBar` — not only every two beats but which
+        /// two, so one rule can fire on the first beat of a bar and another on the second.
         ///
         /// For `Bar`, the beat of every Nth bar it fires on: every bar on beat 3. For `Beat`, the
         /// beat its every-N count is laid from, **on the bar's grid** rather than from whichever
@@ -675,9 +671,8 @@ public:
         /// every 8 from beat 5 is the downbeat of every second bar. One is the downbeat, which is
         /// what every rule meant before this existed. Ignored where `takesBeatOfBar` is false.
         std::uint32_t onBeat = 1;
-        /// **A wait between the trigger and the send** — the operator's ask of the same day, in
-        /// the same breath: *"an optional delay setting default to unticked in the when section,
-        /// where u can set it to static time in ms or beats / bars"*. Off by default, as nothing
+        /// **A wait between the trigger and the send**, in milliseconds or in beats or bars. Off
+        /// by default, as nothing
         /// optional is on until asked for. On, every fire is held this long before it goes, and
         /// its follow-ups after it; with `onBeat` it reaches the places between the beats — every
         /// bar on beat 2, half a beat late, is the "and" of 2.
@@ -706,8 +701,8 @@ public:
         /// then still has it there (`settings::rulesFromJson` reads both).
         double cooldownSeconds = 0.0;
 
-        /// Whether the ONLY IF stage applies at all — the tick on the editor's B heading (the
-        /// rule editor's design, locked 2026-09-30). **Off by default**: nothing optional is on
+        /// Whether the ONLY IF stage applies at all — the tick on the editor's B heading.
+        /// **Off by default**: nothing optional is on
         /// until somebody switches it on, and off is a rule that fires every time its trigger
         /// comes round. The conditions are kept while it is off, so it can be set for later and
         /// switched on.
@@ -793,8 +788,7 @@ public:
     bool enabled() const noexcept { return enabled_; }
     void setEnabled(bool on) noexcept { enabled_ = on; }
 
-    /// Whether this rule is **muted** — `/ctl/rule/<id>/mute`, added on the operator's
-    /// ask of 2026-09-16 for live per-rule control.
+    /// Whether this rule is **muted** — `/ctl/rule/<id>/mute`, for live per-rule control.
     ///
     /// **Muted is not disabled, and the difference is the whole reason both exist.** A
     /// disabled rule does not run: its shuffle bag stands still, its cooldown stops, and when

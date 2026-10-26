@@ -99,8 +99,8 @@ bool remode(std::vector<dmx::Fixture>& patch, std::size_t index, const FixturePr
             std::string_view modeName);
 
 /// What takt4 drives in a mode, every part of it, in the words the import sheet's list of modes
-/// uses: "dimmer ×2 · RGBW ×7 · pan/tilt 16-bit · strobe ×2 · color wheel · zoom · speed" (the
-/// operator approved the words and the order, 2026-10-05). A colour family that every cell has —
+/// uses: "dimmer ×2 · RGBW ×7 · pan/tilt 16-bit · strobe ×2 · color wheel · zoom · speed".
+/// A colour family that every cell has —
 /// red, green and blue alike, white and amber with them — is one word and a count; a fixture with
 /// several heads says how many ("pan/tilt ×2", `dmx::headsOf`). "nothing takt4 drives" when every
 /// channel is unused.

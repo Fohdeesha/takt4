@@ -1,6 +1,6 @@
 // The patch editor's import: a fixture brought in from its GDTF or Open Fixture Library file, or
 // from the preset's library of definitions imported before — in the editor's place, the editor
-// kept behind it (the operator's decisions of 2026-10-04 and 2026-10-05).
+// kept behind it.
 //
 // What the readers and the library do is `tests/fixtures/`'s. These are about the window: what it
 // shows of a definition, what its gestures do to the patch and the library, and that nothing typed
@@ -518,9 +518,9 @@ float cancelButtonX(FixturesController& patch) {
 
 TEST_CASE("IMPORT takes the editor's place, and nothing typed in the editor is lost to it",
           "[ui][dmx][import]") {
-    // The operator, 2026-10-05: the import should "take editors place but be sure to not lose
-    // edits that were made in the editor it replaces". A name typed and never entered, then
-    // IMPORT clicked: the name is the fixture's, and CANCEL brings the editor back holding it.
+    // The import takes the editor's place without losing an edit made in the editor it replaces.
+    // A name typed and never entered, then IMPORT clicked: the name is the fixture's, and CANCEL
+    // brings the editor back holding it.
     // Driven by real pointer and key events — the bugs this guards against live in the markup.
     Rig rig;
     FixturesController patch(rig.runner, onePar());

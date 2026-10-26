@@ -449,7 +449,7 @@ TEST_CASE("a library read back is never trusted for more than it says",
 TEST_CASE("a mode says what takt4 drives in it, in the import sheet's words",
           "[fixtures][library]") {
     using takt4::fixtures::drivesOf;
-    // The Rayzor 760's "Pixels" mode as the mockup the operator approved shows it (2026-10-05):
+    // The Rayzor 760's "Pixels" mode as the mockup shows it:
     // two dimmers, seven RGBW cells, a 16-bit head, two shutters, a wheel, a zoom, a speed.
     std::vector<ProfileChannel> pixels;
     pixels.push_back(ch(Role::Pan, "pan"));

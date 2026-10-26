@@ -112,9 +112,9 @@ public:
         /// **Four alone is the default since 2026-09-09.** With bars of three and four the
         /// meter chains explain electronic material about equally and the three-beat chain
         /// wins whole passages at three quarters of the tempo (daOooooh at 78 for a 103
-        /// track); four alone was measured +0.02 beat F over the 23 tracks and the
-        /// operator, whose material is 4/4, chose it for the rig. Ballroom's waltzes lose
-        /// under it, which is the trade the operator made; `settings::Preset::meters` puts
+        /// track); four alone was measured +0.02 beat F over the 23 tracks and suits material
+        /// that is 4/4. Ballroom's waltzes lose
+        /// under it, and that is the trade; `settings::Preset::meters` puts
         /// three back for anyone whose set has them.
         std::array<std::uint8_t, 4> meters{4, 0, 0, 0};
         /// λ of the tempo-change distribution at beat boundaries; madmom's default.

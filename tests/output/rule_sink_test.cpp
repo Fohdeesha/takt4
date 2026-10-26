@@ -116,7 +116,7 @@ TEST_CASE("a rule with nowhere to send is counted, not silent", "[output][trigge
 
 TEST_CASE("a released note puts a real note off on the wire, not a note on of zero",
           "[output][trigger][midi]") {
-    // The operator's laser controller (Liberation) holds its clip until 0x80
+    // Liberation, a laser controller, holds its clip until 0x80
     // arrives. This file used to assert the opposite in a comment — "a note with velocity
     // zero is a note-off on every device made since 1983" — and the rig never released.
     CHECK(takt4::output::midiStatusFor(Message::Kind::MidiNote, 1) == 0x90);

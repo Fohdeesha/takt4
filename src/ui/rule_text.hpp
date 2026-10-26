@@ -89,9 +89,8 @@ std::string join(const std::vector<std::string>& names);
 /// fixture says which universe it is in, so the node never has to be chosen.
 ///
 /// The editor did not know any of that and offered all three lists to all three kinds.
-/// Reported from a rig on 2026-09-16: *"why is my rdm10 artnet destination showing up as an
-/// option for midi and OSC output!?"* A choice that cannot do anything is worse than no
-/// choice: ticking it looks like routing and is silence.
+/// A choice that cannot do anything is worse than no choice: ticking it looks like routing
+/// and is silence.
 bool targetTakes(trigger::Message::Kind kind, const output::OutputTarget& target) noexcept;
 
 /// What a rule's routing currently reaches, beside the field the names were typed into.
@@ -169,17 +168,15 @@ std::string describeDmxRelease(const trigger::DmxSend& send);
 /// A release is the whole reason this exists. The row says "release", and what that means
 /// depends on the rule it hangs off — a note off on the note that was drawn, the same address
 /// with a different argument, the same CC with a different value. Without this the editor
-/// looked like it made note on and note off exclusive, which is how it was read on a rig:
-/// *"you made note on and note off exclusive!? that will not work."* They are not, and this
+/// looked like it made note on and note off exclusive. They are not, and this
 /// is the line that says so.
 ///
 /// Blank for an explicit kind, whose own row already spells out everything it sends — except
 /// for the one explicit kind that is a release with the inheritance taken out. A rule that
 /// *draws* its note and is followed by a hand-typed note off releases a note it never played,
 /// and the row cannot show that by listing its fields: both boxes are filled in and look
-/// right. Reported from a rig, which read the fixed box as the feature being absent — *"its
-/// making me set a static note number ... I need it to send a note off to whatever note it
-/// just sent a note on to"*. It is not absent; it is the entry above, and this says so.
+/// right. And the fixed box reads as though a note off to whatever note was just sent were
+/// absent. It is not absent; it is the entry above, and this says so.
 std::string describeFollowUp(const trigger::FollowUp& entry, const Rule::Config& rule);
 
 /// A Euclidean pattern as something a person can hear before it plays: "x..x..x.".

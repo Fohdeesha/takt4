@@ -2,8 +2,7 @@
 
 #include <cstdint>
 
-/// **The test binaries' sandbox: nothing a test does reaches the rig** (the operator's call of
-/// 2026-09-26).
+/// **The test binaries' sandbox: nothing a test does reaches the rig**.
 ///
 /// The machine the tests run on is the one the show runs from. A window test pressed
 /// [+ ADD OUTPUT] and sent real OSC to 127.0.0.1:9000, the port this rig's own receiver listens

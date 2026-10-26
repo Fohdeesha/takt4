@@ -56,7 +56,6 @@ if(TAKT4_BUILD_UI)
     # **A window application, not a console one.** Launched from Explorer, a console-subsystem
     # binary is given a console of its own — so takt4 opened a black cmd box beside its window
     # and left it there for the whole session, filling with whatever Slint felt like logging.
-    # Reported from a rig on 2026-09-08.
     #
     # `/ENTRY:mainCRTStartup` keeps `main(argc, argv)` as the entry point, so nothing here has
     # to grow a `WinMain` or a second argument parser; the linker's subsystem is the only thing

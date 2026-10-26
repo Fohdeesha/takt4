@@ -44,7 +44,7 @@ struct Clip {
 
 /// A clip's place in **deck order**: down the five rows of a column, then on to the next column —
 /// Liberation's own slot order, so "1-1 to 21-1" is every clip between the two as Liberation
-/// counts them (the operator's choice of 2026-10-05). 0-0 is 0, 0-4 is 4, 1-0 is 5.
+/// counts them. 0-0 is 0, 0-4 is 4, 1-0 is 5.
 constexpr int indexOf(Clip clip) noexcept {
     return clip.column * kRows + clip.row;
 }
@@ -108,12 +108,12 @@ constexpr int liberationUniverseOf(PortAddress universe) noexcept {
 }
 
 /// The Extended 32ch profile's channel count. The Basic 16ch profile is its first sixteen; takt4
-/// patches the extended one only (the operator, 2026-10-05).
+/// patches the extended one only.
 inline constexpr std::size_t kZoneChannels = 32;
 
 /// One zone's channel map, its parked levels and its channel names, in Liberation's order.
 ///
-/// Parked at Liberation's own recommended defaults except where the operator chose otherwise: Arm,
+/// Parked at Liberation's own recommended defaults except for these: Arm,
 /// Intensity and the clip all at 0, so a zone is disarmed until a clip fires; and **Colour Blend at
 /// 0**, the clip's own colours, where Liberation recommends 255 — which with its white desk colour
 /// tints every clip white. Scale is 255 on both axes, the clip at its authored size: 128 is a scale

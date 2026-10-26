@@ -1,6 +1,5 @@
 // The lighting patch — what fixtures there are, where they are addressed, and what each of
-// their channels does — in the Weltformat-dark look of the rule editor, as the operator approved
-// it on 2026-09-30.
+// their channels does — in the Weltformat-dark look of the rule editor.
 //
 // **A window of its own, for the reason the rule editor is one.** A patch is set up once and
 // then not touched for the rest of the night, while the rules are edited during the set; one
@@ -688,7 +687,7 @@ export component FixturesWindow inherits Window {
               overflow: elide;
             }
             // A fixture from its definition — a GDTF or Open Fixture Library file, or one this
-            // preset has imported before — in the editor's place (the operator's decision 9).
+            // preset has imported before — in the editor's place.
             Btn {
               height: 28px;
               text: "import";
@@ -853,8 +852,7 @@ export component FixturesWindow inherits Window {
 
                 // **The import's own row, in the same place** — and the editor's kept under it,
                 // hidden: its boxes commit what was typed into them a turn after the click that
-                // opened the import, and the operator asked that nothing typed there be lost
-                // (2026-10-05).
+                // opened the import, and nothing typed there may be lost.
                 import-row := HorizontalLayout {
                   x: 0;
                   y: 0;
@@ -1169,8 +1167,7 @@ export component FixturesWindow inherits Window {
                       vertical-alignment: center;
                     }
                     // What the definition calls each channel, in a column of its own before what
-                    // takt4 does with it (the operator's pick of the two drawn, 2026-10-05) — only
-                    // for a fixture an import made.
+                    // takt4 does with it — only for a fixture an import made.
                     if root.has-labels: Text {
                       horizontal-stretch: 1;
                       min-width: 66px;
@@ -1183,8 +1180,8 @@ export component FixturesWindow inherits Window {
                       font-weight: 700;
                       vertical-alignment: center;
                     }
-                    // Which head each pan and tilt moves, on a fixture with several (approved
-                    // 2026-10-05): what a rule's ticks for heads 1, 2… mean on this one.
+                    // Which head each pan and tilt moves, on a fixture with several: what a
+                    // rule's ticks for heads 1, 2… mean on this one.
                     if root.has-heads: Text {
                       width: 40px;
                       text: "head";
@@ -1585,8 +1582,8 @@ export component FixturesWindow inherits Window {
                     wrap: word-wrap;
                   }
 
-                  // **A file the library has another version of asks before it changes anything**
-                  // (decision 12): replace, keep both, or cancel.
+                  // **A file the library has another version of asks before it changes
+                  // anything**: replace, keep both, or cancel.
                   Rectangle {
                     height: root.import-asking ? ask.preferred-height : 0px;
                     min-width: root.import-asking ? ask.min-width : 0px;
