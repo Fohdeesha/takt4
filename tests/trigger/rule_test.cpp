@@ -184,6 +184,51 @@ TEST_CASE("a rule sends a Resolume clip's press and then its release", "[trigger
     }
 }
 
+TEST_CASE("a follow-up in whole beats or bars belongs to the beat that many after its fire's",
+          "[trigger][rule]") {
+    // The beat a release is handed over on, whatever its seconds say (`Rule::followUpBeat`).
+    Rule::Config config = resolumeClip();
+    config.followUps.front().unit = DelayUnit::Beats;
+    config.followUps.front().delayBeats = 1.0;
+    FollowUp twoBars;
+    twoBars.unit = DelayUnit::Bars;
+    twoBars.delayBeats = 2.0;
+    config.followUps.push_back(twoBars);
+    FollowUp half;
+    half.unit = DelayUnit::Beats;
+    half.delayBeats = 0.5;
+    config.followUps.push_back(half);
+    FollowUp clock;
+    clock.unit = DelayUnit::Milliseconds;
+    clock.delaySeconds = 0.05;
+    config.followUps.push_back(clock);
+    const Rule rule(config);
+    REQUIRE(rule.valid());
+
+    Context onBeat;
+    onBeat.beats = 17;
+    onBeat.meter = 3;
+    onBeat.moment = 12.5;
+    CHECK(rule.followUpBeat(onBeat, 0) == 18);
+    CHECK(rule.followUpBeat(onBeat, 1) == 23); // two bars of three
+    CHECK(rule.followUpBeat(onBeat, 2) == 0);  // half a beat is no beat of its own
+    CHECK(rule.followUpBeat(onBeat, 3) == 0);  // milliseconds are milliseconds
+    CHECK(rule.followUpBeat(onBeat, 4) == 0);  // nothing there
+
+    SECTION("a bar with no meter yet, or a fire on no beat, belongs to none") {
+        Context noMeter = onBeat;
+        noMeter.meter = 0;
+        CHECK(rule.followUpBeat(noMeter, 1) == 0);
+        CHECK(rule.followUpBeat(noMeter, 0) == 18);
+        Context between = onBeat;
+        between.moment.reset();
+        CHECK(rule.followUpBeat(between, 0) == 0);
+        Context before = onBeat;
+        before.beats = 0;
+        CHECK(rule.followUpBeat(before, 0) == 0);
+    }
+}
+
 TEST_CASE("a MIDI rule clamps to what MIDI can carry", "[trigger][rule]") {
     // Configurable note or CC messages on beat and downbeat, for MIDI-learn targets. A
     // generator can produce anything; seven bits is what fits.

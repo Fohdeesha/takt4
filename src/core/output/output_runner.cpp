@@ -1272,7 +1272,7 @@ trigger::Context OutputRunner::contextAt(double now) const {
 void OutputRunner::fireBeat(const ScheduledBeat& beat, double now) {
     // The releases owed about this beat first, and those owed a hair after it: see
     // `kReleaseFirstSeconds`.
-    triggers_.sendFollowUpsAbout(beat.moment + kReleaseFirstSeconds);
+    triggers_.sendFollowUpsAbout(beat.moment + kReleaseFirstSeconds, beat.beats, beat.moment);
     transports_.publishBeat(beat.event, beat.moment, now, beat.beats);
     // For the window's dots: when the rig plays this beat (see `shownBeat`).
     shown_.publish(ShownBeat{beat.moment, beat.moment + transports_.latencySeconds(),

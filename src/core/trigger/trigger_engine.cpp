@@ -230,7 +230,9 @@ bool TriggerEngine::dispatch(Rule& rule, const Context& context, bool force) {
     owed_.clear();
     rule.followUpsFor(context, *message, owed_);
     delayed_.clear();
+    delayedBeats_.clear();
     for (auto& [index, follow] : owed_) {
+        delayedBeats_.push_back(rule.followUpBeat(context, index));
         // Never in the past, however the delay was configured: a follow-up due before the
         // message it follows would be sent in the same round and read as a rule that sends
         // its release first. `Rule::followUpDelay` is what turns "two beats" into seconds,
@@ -257,7 +259,13 @@ bool TriggerEngine::dispatch(Rule& rule, const Context& context, bool force) {
         return true;
     }
     deliver(*message, rule.id(), false, rule.lastSlots());
+    const std::size_t first = pending_.size();
     queueFollowUps(delayed_, *message, context.now, rule.id());
+    // Only a fire that went now is owed on a beat: one held for its rule's wait counts its
+    // follow-ups from when it goes, which is not a beat.
+    for (std::size_t i = first; i < pending_.size() && i - first < delayedBeats_.size(); ++i) {
+        pending_[i].beat = delayedBeats_[i - first];
+    }
     return true;
 }
 
@@ -324,15 +332,23 @@ void TriggerEngine::drainDue(double now) {
     }
 }
 
-void TriggerEngine::sendFollowUpsAbout(double moment) {
+void TriggerEngine::sendFollowUpsAbout(double moment, std::uint64_t beat, double beatMoment) {
     if (pending_.empty()) {
         return;
     }
     std::vector<Pending> owed;
     std::size_t kept = 0;
     for (std::size_t i = 0; i < pending_.size(); ++i) {
-        if (!pending_[i].press && pending_[i].message.moment <= moment) {
-            owed.push_back(std::move(pending_[i]));
+        Pending& waiting = pending_[i];
+        const bool onThisBeat = beat != 0 && waiting.beat != 0 && waiting.beat <= beat;
+        if (!waiting.press && (waiting.message.moment <= moment || onThisBeat)) {
+            if (onThisBeat) {
+                // About this beat, as its press is: a queue sends a release before a press it
+                // shares a moment with.
+                waiting.message.moment =
+                    std::max(waiting.pressMoment, std::min(waiting.message.moment, beatMoment));
+            }
+            owed.push_back(std::move(waiting));
             continue;
         }
         if (kept != i) {

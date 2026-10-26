@@ -920,6 +920,17 @@ public:
     /// rule has not got.
     double followUpDelay(const Context& context, std::size_t index) const noexcept;
 
+    /// **The beat follow-up `index` belongs to**, for a fire on a beat: that beat's count
+    /// (`Context::beats`) plus the follow-up's whole number of beats, or of bars at the meter
+    /// reported; zero for a fire that is not on a beat, a delay that is not whole, a bar with no
+    /// meter yet, or an index the rule has not got.
+    ///
+    /// The seconds `followUpDelay` gives are only as right as the tempo at the fire, and a release
+    /// "after one beat" timed by a tempo shown a few per cent slow came due after the next beat's
+    /// press, and cut the note that press had just started. This is the beat it means, which the
+    /// release is handed over on whatever the seconds say: see `TriggerEngine::sendFollowUpsAbout`.
+    std::uint64_t followUpBeat(const Context& context, std::size_t index) const noexcept;
+
     /// How long a fire now is held before it is sent, in seconds: `Config::delayOn`'s wait,
     /// settled against the tempo in `context` like a follow-up's, and at most
     /// `kMaxFireDelaySeconds`. Zero while the delay is off.

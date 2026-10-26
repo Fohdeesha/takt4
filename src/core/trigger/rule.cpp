@@ -989,6 +989,25 @@ double Rule::followUpDelay(const Context& context, std::size_t index) const noex
     return musicalSeconds(context, owed.unit, owed.delaySeconds, owed.delayBeats);
 }
 
+std::uint64_t Rule::followUpBeat(const Context& context, std::size_t index) const noexcept {
+    if (index >= config_.followUps.size() || !context.moment || context.beats == 0) {
+        return 0;
+    }
+    const FollowUp& owed = config_.followUps[index];
+    if (owed.unit == DelayUnit::Milliseconds || !std::isfinite(owed.delayBeats) ||
+        owed.delayBeats < 1.0 || owed.delayBeats > 1e6 || std::floor(owed.delayBeats) != owed.delayBeats) {
+        return 0;
+    }
+    auto beats = static_cast<std::uint64_t>(owed.delayBeats);
+    if (owed.unit == DelayUnit::Bars) {
+        if (context.meter == 0) {
+            return 0;
+        }
+        beats *= context.meter;
+    }
+    return context.beats + beats;
+}
+
 double Rule::fireDelay(const Context& context) const noexcept {
     if (!config_.delayOn) {
         return 0.0;

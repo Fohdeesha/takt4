@@ -126,7 +126,12 @@ public:
     /// fires as it is heard or ahead of it on a prediction, so jitter decided which went first. A
     /// fixed MIDI note was cut the instant it started, and a DMX clip went to nothing. The sink
     /// still holds each for its own moment; this only puts the release in the queue first.
-    void sendFollowUpsAbout(double moment);
+    ///
+    /// **And every follow-up owed on beat `beat` or before** (`Rule::followUpBeat`), whatever moment
+    /// its seconds put it at — brought forward to `beatMoment`, the beat's own, and never before
+    /// its press. A tempo shown a few per cent slow put "release after one beat" a few
+    /// milliseconds after the next press, and the next press cut the note it had just started.
+    void sendFollowUpsAbout(double moment, std::uint64_t beat = 0, double beatMoment = 0.0);
 
     /// One round of the output thread: the triggers that do not wait for a beat, then any
     /// follow-up that has come due. Call it every round even when nothing has happened —
@@ -266,6 +271,8 @@ private:
         /// A follow-up's: the moment of the press it follows. A release sent early is held to
         /// no earlier than this, so it cannot overtake its own press in a target's queue.
         double pressMoment = 0.0;
+        /// A follow-up's: the beat it belongs to (`Rule::followUpBeat`), or zero.
+        std::uint64_t beat = 0;
     };
 
     /// Fires one rule that has already passed its trigger and its conditions: builds the
@@ -298,6 +305,8 @@ private:
     /// each one's delay settled.
     std::vector<std::pair<std::size_t, Message>> owed_;
     std::vector<std::pair<double, Message>> delayed_;
+    /// Beside `delayed_`: the beat each is owed on.
+    std::vector<std::uint64_t> delayedBeats_;
     bool panicked_ = false;
     bool listening_ = true;
     std::uint64_t sent_ = 0;
