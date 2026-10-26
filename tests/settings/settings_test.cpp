@@ -191,6 +191,22 @@ TEST_CASE("a file with Link and the MIDI clock as settings of their own loads th
         const Settings again = roundTrip(old);
         CHECK(again.preset.outputs == old.preset.outputs);
     }
+
+    SECTION("a Link row the old switch disagrees with, or one with no switch, reads as the row says, "
+            "and saves as it read") {
+        // The switch held the file's own word, and a save wrote the row's into it: the settings
+        // read and the settings saved were two different ones, and the next read a third.
+        for (const char* file : {R"({"preset": {"link": false, "outputs": ["Link = link"]}})",
+                                 R"({"preset": {"link": true, "outputs": ["off Link = link"]}})",
+                                 R"({"preset": {"outputs": ["Link = link"]}})"}) {
+            INFO(file);
+            const Settings read = takt4::settings::fromJson(file);
+            REQUIRE_FALSE(read.preset.outputs.empty());
+            REQUIRE(read.preset.outputs[0].kind == takt4::output::OutputTarget::Kind::Link);
+            CHECK(read.preset.link == read.preset.outputs[0].enabled);
+            CHECK(roundTrip(read).preset == read.preset);
+        }
+    }
 }
 
 TEST_CASE("the two layers stay apart in the file", "[settings]") {

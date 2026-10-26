@@ -53,6 +53,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -11448,6 +11449,300 @@ numbered(const char* address, std::initializer_list<std::string_view> words, std
 }
 
 } // namespace
+
+TEST_CASE("whatever a show controller sends, the window stays up, answers and saves what it was "
+          "left with",
+          "[ui][remote][fuzz]") {
+    // Everything on the control port came off the network. Remote setup on, which is when a
+    // message can reach the window's own functions: well-formed changes, half-right ones, every
+    // argument of every type in every place, strings that are not UTF-8 — which Slint aborts the
+    // whole process on — and bytes that are not OSC at all. The bar is the show's: takt4 still up
+    // afterwards, still answering, and what it was left with saved and read back.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    listenForRemote(controller);
+    takt4::testing::LoopbackReceiver showController;
+    const std::filesystem::path file = takt4::settings::settingsFile();
+    REQUIRE_FALSE(file.empty());
+
+    // A longer campaign, or another one: TAKT4_FUZZ_MESSAGES and TAKT4_FUZZ_SEED.
+    const auto envNumber = [](const char* name, std::uint32_t otherwise) {
+        std::string text;
+#if defined(_MSC_VER)
+        char buffer[32] = {};
+        std::size_t length = 0;
+        if (getenv_s(&length, buffer, sizeof buffer, name) == 0 && length > 1) {
+            text = buffer;
+        }
+#else
+        if (const char* value = std::getenv(name)) {
+            text = value;
+        }
+#endif
+        return text.empty() ? otherwise : static_cast<std::uint32_t>(std::stoul(text));
+    };
+    const std::uint32_t messages = envNumber("TAKT4_FUZZ_MESSAGES", 400);
+    std::uint32_t state = envNumber("TAKT4_FUZZ_SEED", 0x9E3779B9U) | 1U;
+    INFO("seed " << state);
+    const auto next = [&state] {
+        state ^= state << 13U;
+        state ^= state >> 17U;
+        state ^= state << 5U;
+        return state;
+    };
+    const auto pick = [&next](std::size_t count) { return static_cast<std::size_t>(next() % count); };
+
+    const std::array<std::string_view, 27> verbs = {
+        "status",        "audio/devices", "outputs",          "audio/start",   "audio/stop",
+        "audio/restart", "audio/device",  "audio/channel",    "source",        "output/add",
+        "output/1/enable", "output/1/delay", "output/1/global", "output//enable", "output/",
+        "output/\xff/delay", "tap",       "downbeat",         "tempo/halve",   "tempo/double",
+        "lock",          "panic",         "panic/release",    "manual",        "rule/x/enable",
+        "",              "audio"};
+    const std::array<std::string, 22> words = {
+        "",
+        "audio",
+        "link",
+        "prolink",
+        "midiclock",
+        "osc",
+        "artnet",
+        "127.0.0.1",
+        "256.1.1.1",
+        "localhost",
+        "::1",
+        "\xff\xfe",
+        "\xc0\x80",
+        "\xed\xa0\x80",
+        "abc\x80",
+        "\xf4\x90\x80\x80",
+        "\t\r\n\x01",
+        "\xF0\x9F\x8E\xB5 \xE2\x80\xAE",
+        "a/b%s%n",
+        std::string(200, 'A'),
+        std::string(300, '\xff'),
+        "ASIO"};
+    const std::array<std::int32_t, 9> ints = {0, 1, -1, 2, 65535, 65536,
+                                              std::numeric_limits<std::int32_t>::min(),
+                                              std::numeric_limits<std::int32_t>::max(), 7};
+    const std::array<float, 9> floats = {0.0f,
+                                         1.0f,
+                                         -1.0f,
+                                         std::numeric_limits<float>::quiet_NaN(),
+                                         std::numeric_limits<float>::infinity(),
+                                         -std::numeric_limits<float>::infinity(),
+                                         1e30f,
+                                         1e-40f,
+                                         0.5f};
+
+    // A message byte by byte, so any type tag can be sent — T and F included, which the
+    // builder takt4 sends with has no call for.
+    const auto padded = [](std::vector<std::byte>& out, std::string_view text) {
+        for (const char c : text) {
+            out.push_back(static_cast<std::byte>(c));
+        }
+        do {
+            out.push_back(std::byte{0});
+        } while (out.size() % 4 != 0);
+    };
+    const auto word32 = [](std::vector<std::byte>& out, std::uint32_t value) {
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            out.push_back(static_cast<std::byte>((value >> shift) & 0xFFU));
+        }
+    };
+    // The ids of the outputs the window has now, so a change can name a real one.
+    const auto someId = [&]() -> std::string {
+        const auto rows = controller.window().get_outputs_list();
+        if (rows->row_count() == 0 || pick(4) == 0) {
+            return "o-" + std::to_string(next() % 100);
+        }
+        return std::string(rows->row_data(pick(rows->row_count()))->id);
+    };
+    // Half are the shape a change takes — the right types in the right places — with values
+    // chosen to hurt; the rest anything at all.
+    const auto shaped = [&]() {
+        std::vector<std::byte> out;
+        std::string tags = ",";
+        std::vector<std::byte> payload;
+        const auto text = [&] {
+            tags += 's';
+            padded(payload, words[pick(words.size())]);
+        };
+        const auto whole = [&] {
+            tags += 'i';
+            word32(payload, static_cast<std::uint32_t>(ints[pick(ints.size())]));
+        };
+        const auto real = [&] {
+            tags += 'f';
+            std::uint32_t bits = 0;
+            const float value = floats[pick(floats.size())];
+            std::memcpy(&bits, &value, sizeof bits);
+            word32(payload, bits);
+        };
+        const auto seq = [&] {
+            if (pick(2) == 0) {
+                tags += 'i';
+                word32(payload, next() % 1000);
+            }
+        };
+        std::string address = "/takt4/ctl/";
+        switch (pick(8)) {
+        case 0:
+            address += std::array<const char*, 3>{"audio/start", "audio/stop", "audio/restart"}[pick(3)];
+            seq();
+            break;
+        case 1:
+            address += "audio/device";
+            text();
+            text();
+            seq();
+            break;
+        case 2:
+            address += "audio/channel";
+            whole();
+            if (pick(2) == 0) {
+                tags += 'i';
+                word32(payload, next() % 2);
+            }
+            seq();
+            break;
+        case 3:
+            address += "source";
+            text();
+            seq();
+            break;
+        case 4:
+        case 5:
+            address += "output/add";
+            text();
+            text();
+            text();
+            whole();
+            seq();
+            break;
+        case 6:
+            address += "output/" + someId() + "/delay";
+            real();
+            seq();
+            break;
+        default:
+            address += "output/" + someId() + (pick(2) == 0 ? "/enable" : "/global");
+            tags += 'i';
+            word32(payload, next() % 2);
+            seq();
+            break;
+        }
+        padded(out, address);
+        padded(out, tags);
+        out.insert(out.end(), payload.begin(), payload.end());
+        return out;
+    };
+    const auto message = [&]() {
+        if (pick(2) == 0) {
+            return shaped();
+        }
+        std::vector<std::byte> out;
+        const std::size_t roll = pick(20);
+        if (roll == 0) {
+            // Not OSC at all.
+            const std::size_t length = pick(300);
+            for (std::size_t i = 0; i < length; ++i) {
+                out.push_back(static_cast<std::byte>(next() & 0xFFU));
+            }
+            return out;
+        }
+        std::string address = roll == 1 ? "/takt4/" : roll == 2 ? "/elsewhere/ctl/" : "/takt4/ctl/";
+        address += verbs[pick(verbs.size())];
+        padded(out, address);
+        std::string tags = ",";
+        std::vector<std::byte> payload;
+        const std::size_t count = pick(7);
+        for (std::size_t a = 0; a < count; ++a) {
+            switch (pick(5)) {
+            case 0:
+                tags += 'i';
+                word32(payload, static_cast<std::uint32_t>(ints[pick(ints.size())]));
+                break;
+            case 1: {
+                tags += 'f';
+                std::uint32_t bits = 0;
+                const float value = floats[pick(floats.size())];
+                std::memcpy(&bits, &value, sizeof bits);
+                word32(payload, bits);
+                break;
+            }
+            case 2:
+                tags += 's';
+                padded(payload, words[pick(words.size())]);
+                break;
+            case 3:
+                tags += 'T';
+                break;
+            default:
+                tags += 'F';
+                break;
+            }
+        }
+        padded(out, tags);
+        out.insert(out.end(), payload.begin(), payload.end());
+        if (pick(10) == 0 && !out.empty()) {
+            // A byte of a well-formed message changed in flight.
+            out[pick(out.size())] = static_cast<std::byte>(next() & 0xFFU);
+        }
+        return out;
+    };
+
+    const auto seen = [&controller] {
+        const auto& osc = controller.oscControl();
+        return osc.handled() + osc.ignored() + osc.queriesAnswered() + osc.commandsQueued() +
+               osc.remoteRefused();
+    };
+    for (std::uint32_t sent = 0; sent < messages; ++sent) {
+        const std::vector<std::byte> packet = message();
+        if (packet.empty()) {
+            continue;
+        }
+        const std::uint64_t before = seen();
+        REQUIRE(showController.send(controller.oscControlPort(), packet));
+        // Until the control thread has counted it, and the window has carried out whatever it
+        // queued; the answers drained so the sender's socket never fills.
+        for (int turn = 0; turn < 40 && (turn < 2 || seen() == before); ++turn) {
+            controller.tick();
+            slint::platform::update_timers_and_animations();
+            while (showController.ready(0)) {
+                (void)showController.receive();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    for (int turn = 0; turn < 20; ++turn) {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    }
+    while (showController.ready(0)) {
+        (void)showController.receive();
+    }
+    INFO(controller.oscControl().handled() << " handled, " << controller.oscControl().ignored()
+                                           << " ignored, " << controller.oscControl().commandsQueued()
+                                           << " changes queued, "
+                                           << controller.oscControl().remoteRefused() << " refused");
+    // Every one of them was looked at: none slipped past the counts.
+    CHECK(controller.oscControl().commandsQueued() > 0);
+    CHECK(controller.oscControl().remoteRefused() > 0);
+
+    // Still answering, the status it gives is well-formed, and what it was left with saves and
+    // reads back — every name in it UTF-8, whatever bytes it arrived as.
+    takt4::output::OscMessage status("/takt4/ctl/status");
+    CHECK_FALSE(ask(controller, showController, status).empty());
+    controller.setRemoteSetup(false);
+    REQUIRE(controller.saveNow());
+    const takt4::settings::Settings saved = takt4::settings::load(file);
+    for (const auto& output : saved.preset.outputs) {
+        INFO("output " << output.id);
+        CHECK(takt4::io::validUtf8(output.name) == output.name);
+        CHECK(takt4::io::validUtf8(output.host) == output.host);
+    }
+}
 
 TEST_CASE("a show controller's change of source while the CDJs' lists are open holds neither list "
           "back afterwards",

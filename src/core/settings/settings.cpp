@@ -511,8 +511,12 @@ std::filesystem::path existingSettingsFile() {
 
 void migrateTransportOutputs(Settings& settings) {
     std::vector<output::OutputTarget>& outputs = settings.preset.outputs;
-    // Link was a switch of its own; it is the first output now, carrying that switch.
+    // Link was a switch of its own; it is the first output now, carrying that switch. And the
+    // old field says what that output says from here on, which is what a save writes into it:
+    // it held the file's own, so a file whose Link row and field disagreed — or that had no field
+    // — read as one setting and saved as another.
     (void)output::ensureLinkOutput(outputs, settings.preset.link);
+    settings.preset.link = outputs.front().enabled;
     // And the MIDI clock was one port of its own; it is an output now, unless the file already
     // has a clock output on that device (one this build wrote, where the port is only there
     // for an older build).

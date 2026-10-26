@@ -49,6 +49,7 @@ add_executable(takt4_tests
   fixtures/library_test.cpp
   fixtures/mapper_test.cpp
   fixtures/ofl_reader_test.cpp
+  fuzz/mutation_test.cpp
   features/feature_extractor_test.cpp
   features/filterbank_test.cpp
   features/intensity_test.cpp
