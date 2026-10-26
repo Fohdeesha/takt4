@@ -4434,8 +4434,9 @@ void WindowController::publishState() {
 }
 
 void WindowController::publishBeatDots(const tracking::TempoState& state) {
-    if (state.beatInBar == 0) {
-        // Stopped, reset, or no beat yet: nothing fired before this holds.
+    if (state.beatInBar == 0 || state.waitingForPulse) {
+        // Stopped, reset, or no beat yet: nothing fired before this holds — after a silence
+        // either, when it waits for a beat again and the last one fired would be lit over "no beat".
         dotBeatInBar_ = 0;
         dotTimer_.stop();
         return;

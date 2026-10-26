@@ -73,9 +73,13 @@ TracePoint tracePoint(const engine::EngineFrame& frame) {
 }
 
 void publishTempoState(MainWindow& window, const tracking::TempoState& state) {
-    window.set_bpm(static_cast<float>(state.bpm));
-    window.set_raw_bpm(static_cast<float>(state.rawBpm));
-    window.set_called_bpm(static_cast<float>(state.calledBpm));
+    // **Nothing while it says "no beat"**: the tempo, the bar and its beat are the hunt's guesses
+    // at sound that has no beat, and a number, a lit dot and "bar 13" beside the words said
+    // otherwise. The number reads "–" and the dots and the bar go until a beat is heard.
+    const bool guessing = state.waitingForPulse;
+    window.set_bpm(guessing ? 0.0f : static_cast<float>(state.bpm));
+    window.set_raw_bpm(guessing ? 0.0f : static_cast<float>(state.rawBpm));
+    window.set_called_bpm(guessing ? 0.0f : static_cast<float>(state.calledBpm));
     window.set_locked(state.locked);
     window.set_pinned(state.pinned);
     window.set_holding(state.holding);
@@ -84,12 +88,12 @@ void publishTempoState(MainWindow& window, const tracking::TempoState& state) {
     window.set_waiting_for_pulse(state.waitingForPulse);
     window.set_refined(state.refined);
     window.set_confidence(static_cast<float>(state.confidence));
-    window.set_beats_per_bar(static_cast<int>(state.beatsPerBar));
-    window.set_beat_in_bar(static_cast<int>(state.beatInBar));
-    window.set_bars(static_cast<int>(state.bars));
+    window.set_beats_per_bar(guessing ? 0 : static_cast<int>(state.beatsPerBar));
+    window.set_beat_in_bar(guessing ? 0 : static_cast<int>(state.beatInBar));
+    window.set_bars(guessing ? 0 : static_cast<int>(state.bars));
     window.set_beat_divisor(static_cast<int>(state.beatDivisor));
     window.set_octave_shift(static_cast<int>(state.octaveShift));
-    window.set_beats_bpm(static_cast<float>(state.beatsBpm));
+    window.set_beats_bpm(guessing ? 0.0f : static_cast<float>(state.beatsBpm));
 }
 
 void publishTempoOptions(MainWindow& window, const tracking::TempoTracker::Options& options,

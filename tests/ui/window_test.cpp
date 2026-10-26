@@ -405,9 +405,21 @@ TEST_CASE("the readouts say what the tempo state says", "[ui]") {
     takt4::ui::publishTempoState(*window, state);
     CHECK(window->get_waiting_for_pulse());
     CHECK(std::string(window->get_lock_word()) == "no beat");
+    // And no tempo, bar or beat beside it: those are the hunt's guesses at sound with no beat, and
+    // a number, a lit dot and "bar 17" beside "no beat" said there was one.
+    CHECK(window->get_bpm() == 0.0f);
+    CHECK(window->get_called_bpm() == 0.0f);
+    CHECK(window->get_beats_per_bar() == 0);
+    CHECK(window->get_beat_in_bar() == 0);
+    CHECK(window->get_bars() == 0);
     state.waitingForPulse = false;
     takt4::ui::publishTempoState(*window, state);
     CHECK(std::string(window->get_lock_word()) == "hunting");
+    // Heard, the guesses are shown again, as they always were while hunting.
+    CHECK_THAT(window->get_bpm(), WithinAbs(128.25, 1e-4));
+    CHECK(window->get_beats_per_bar() == 3);
+    CHECK(window->get_beat_in_bar() == 2);
+    CHECK(window->get_bars() == 17);
 
     // A deck that stopped: the lock readout says "no signal" over the tempo it holds — and the
     // wait for a beat starts again behind it, which "no signal" is the truer word for.
@@ -2339,6 +2351,103 @@ TEST_CASE("a stereo warning in the first seconds joins what the window met start
     CHECK(joined.find("are out of phase") != std::string::npos);
     play(4.0, 0.009); // wired back
     CHECK(std::string(controller.window().get_status()) == held);
+}
+
+TEST_CASE("no beat draws no number, no dots and no bar, where hunting draws its guesses",
+          "[ui]") {
+    // The picture itself, not the properties: the same guesses drawn twice, waiting for a beat and
+    // hunting. The number is a dash, and the row the dots, the meter and the bar sit on is empty.
+    auto window = MainWindow::create();
+    window->set_running(true);
+    TempoState state;
+    state.bpm = 74.07;
+    state.calledBpm = 74.07;
+    state.confidence = 0.57;
+    state.beatsPerBar = 4;
+    state.beatInBar = 4;
+    state.bars = 13;
+    const auto drawn = [&](bool waiting) {
+        state.waitingForPulse = waiting;
+        takt4::ui::publishTempoState(*window, state);
+        return takt4::tests::render(*window, 800, 934);
+    };
+    const takt4::tests::Shot hunting = drawn(false);
+    const takt4::tests::Shot waiting = drawn(true);
+    const std::vector<std::pair<int, int>> sheets = sheetsDown(hunting);
+    REQUIRE(sheets.size() >= 2);
+    REQUIRE(sheetsDown(waiting)[1] == sheets[1]);
+    const int top = sheets[1].first; // the tempo panel
+    // How many pixels are drawn bright: the panel is black under a grid of #0f0f0f and #1e1e1e
+    // lines, and the words, the number and the dots are all far brighter than those.
+    const auto bright = [](const takt4::tests::Shot& shot, int y0, int y1, int x0, int x1) {
+        int count = 0;
+        for (int y = y0; y <= y1; ++y) {
+            for (int x = x0; x < x1; ++x) {
+                const slint::Rgb8Pixel p = shot.at(x, y);
+                count += std::max({p.r, p.g, p.b}) > 0x50 ? 1 : 0;
+            }
+        }
+        return count;
+    };
+    // The row of dots, the meter and the bar, right of the number and under the confidence.
+    const auto dots = [&](const takt4::tests::Shot& shot) {
+        return bright(shot, top + 60, top + 86, 390, 780);
+    };
+    // The number and its "bpm": five big digits, or a dash.
+    const auto number = [&](const takt4::tests::Shot& shot) {
+        return bright(shot, top + 10, top + 70, 24, 380);
+    };
+    INFO("hunting: dots " << dots(hunting) << " px, number " << number(hunting) << " px");
+    INFO("waiting: dots " << dots(waiting) << " px, number " << number(waiting) << " px");
+    CHECK(dots(hunting) > 100);
+    CHECK(dots(waiting) == 0);
+    CHECK(number(waiting) > 0);
+    CHECK(number(waiting) * 4 < number(hunting));
+}
+
+TEST_CASE("a beat fired before a silence is not lit again while it waits for a beat", "[ui]") {
+    // The dots follow the beats the output thread fired, and keep the last one lit between them.
+    // After a silence takt4 waits for a beat again, and that beat — fired before the silence —
+    // was lit again over "no beat", with its bar, while the tracker's own guesses were not.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    using Shown = takt4::output::OutputRunner::ShownBeat;
+    Shown shown;
+    shown.serial = 1; // a beat fired, its time come
+    shown.beatInBar = 3;
+    shown.bars = 9;
+    controller.setShownBeatSource([&shown] { return shown; });
+    const auto redraw = [&controller](const takt4::tracking::TempoState& drawn) {
+        takt4::ui::publishTempoState(controller.window(), drawn);
+        controller.publishBeatDots(drawn);
+    };
+
+    TempoState state;
+    state.bpm = 128.0;
+    state.locked = true;
+    state.beatsPerBar = 4;
+    state.beatInBar = 2;
+    state.bars = 9;
+    redraw(state);
+    REQUIRE(controller.window().get_beat_in_bar() == 3); // the one fired, not the one heard
+    REQUIRE(controller.window().get_bars() == 9);
+
+    // A silence, and sound back with no beat yet heard in it.
+    state.locked = false;
+    state.waitingForPulse = true;
+    redraw(state);
+    CHECK(controller.window().get_beat_in_bar() == 0);
+    CHECK(controller.window().get_bars() == 0);
+    CHECK(controller.window().get_beats_per_bar() == 0);
+
+    // Heard again, and a new beat fired: that one is lit.
+    state.waitingForPulse = false;
+    shown.serial = 2;
+    shown.beatInBar = 1;
+    shown.bars = 1;
+    redraw(state);
+    CHECK(controller.window().get_beat_in_bar() == 1);
+    CHECK(controller.window().get_bars() == 1);
 }
 
 TEST_CASE("the beat dots move when the rig plays the beat, not when the window hears of it",
