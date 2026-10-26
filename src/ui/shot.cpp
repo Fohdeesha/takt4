@@ -139,10 +139,30 @@ void writeBmp(const std::filesystem::path& path, const std::vector<slint::Rgb8Pi
 /// generic` prints the same run, so the picture and that line can be checked against each
 /// other.
 void fillFromSyntheticRun(MainWindow& window,
-                          const std::shared_ptr<slint::VectorModel<TracePoint>>& traceModel) {
+                          const std::shared_ptr<slint::VectorModel<TracePoint>>& traceModel,
+                          bool beatless, bool waitForPulse) {
     const std::filesystem::path wav =
         std::filesystem::path(TAKT4_TEST_DATA_DIR) / "features" / "synthetic.wav";
-    const io::WavData audio = io::readWavFile(wav);
+    io::WavData audio = io::readWavFile(wav);
+    if (beatless) {
+        // Twelve seconds of loud pink noise from a fixed seed, about -12 dBFS: a crowd or a pad, no
+        // beat in it — what the tracker says while it waits for one (`tracking::PulseGate`).
+        audio.samples.assign(static_cast<std::size_t>(12.0 * audio::kInternalSampleRate), 0.0f);
+        std::uint32_t state = 2463534242U;
+        double b0 = 0.0;
+        double b1 = 0.0;
+        double b2 = 0.0;
+        for (float& sample : audio.samples) {
+            state ^= state << 13U;
+            state ^= state >> 17U;
+            state ^= state << 5U;
+            const double white = static_cast<double>(state) / 4294967295.0 * 2.0 - 1.0;
+            b0 = 0.99765 * b0 + white * 0.0990460;
+            b1 = 0.96300 * b1 + white * 0.2965164;
+            b2 = 0.57000 * b2 + white * 1.0526913;
+            sample = static_cast<float>(0.12 * (b0 + b1 + b2 + white * 0.1848));
+        }
+    }
     const model::ModelWeights weights =
         model::ModelWeights::fromFile(std::filesystem::path(TAKT4_WEIGHTS_DIR) / "generic.bin");
     const tracking::StateSpaceModel space = tracking::StateSpaceModel::fromFile(
@@ -158,7 +178,10 @@ void fillFromSyntheticRun(MainWindow& window,
     // Not called `engine`: that would read as the namespace two lines down. Qualified
     // lookup would still find the namespace — it only considers namespaces and types —
     // but a reader should not have to know that rule to follow this.
-    auto beatEngine = std::make_unique<engine::BeatEngine>(weights, space);
+    // Without the pulse wait, the tracker as it was before there was one: what loud noise did to it.
+    engine::BeatEngine::Options engineOptions;
+    engineOptions.waitForPulse = waitForPulse;
+    auto beatEngine = std::make_unique<engine::BeatEngine>(weights, space, engineOptions);
     std::vector<TracePoint> trace(kTraceLength);
     bool beatPending = false;
     for (std::size_t h = 0; h < hops; ++h) {
@@ -199,9 +222,12 @@ void fillFromSyntheticRun(MainWindow& window,
     }
     // Pinned, so the picture shows the one control that has an on-state: every other
     // button looks the same lit or not, and this is the only way to see that a held LOCK
-    // reads as held rather than as merely another dark rectangle.
-    (void)beatEngine->post(engine::Command::setLockPinned(true));
-    (void)beatEngine->step();
+    // reads as held rather than as merely another dark rectangle. Not while it waits for a beat,
+    // which is what that picture is of.
+    if (!beatless) {
+        (void)beatEngine->post(engine::Command::setLockPinned(true));
+        (void)beatEngine->step();
+    }
 
     publishTempoState(window, beatEngine->state());
     publishTempoOptions(window, beatEngine->tempoOptions());
@@ -447,8 +473,11 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
         sources->push_back(slint::SharedString(std::string(trigger::labelOf(source))));
     }
     window.set_live_sources(sources);
-    window.set_host_presets(strings({"custom", "Resolume 7 - clip", "Resolume 7 - resync",
-                                     "TouchDesigner", "MadMapper - cue"}));
+    auto hosts = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    for (const rule_presets::HostPreset& preset : rule_presets::kHostPresets) {
+        hosts->push_back(slint::SharedString(preset.label));
+    }
+    window.set_host_presets(hosts);
     window.set_host_preset_index(1);
     window.set_rig_presets(
         strings({"Resolume: clips on 3 layers", "Resolume: tempo and resync",
@@ -768,6 +797,35 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
             slint::SharedString("every 2 beats from beat 2 of the bar · 16× slower"));
     } else if (state == "log") {
         window.set_log_open(true);
+    } else if (state == "qlc") {
+        // QLC+'s preset just picked, as `RulesController::pickHostPreset` leaves the rule: its
+        // address, one slot shuffling over eight buttons, a press at 255 and its release, and what
+        // QLC+ needs doing said on the message line.
+        const rule_presets::HostPreset& qlc = rule_presets::kHostPresets.back();
+        window.set_host_preset_index(static_cast<int>(rule_presets::kHostPresets.size()) - 1);
+        window.set_address(slint::SharedString(qlc.address));
+        SlotRow button{};
+        button.label = slint::SharedString("{button}");
+        button.kind_index = 0; // Shuffle
+        button.takes_pool = true;
+        button.low = 1;
+        button.high = 8;
+        button.no_repeat = 2;
+        button.last = slint::SharedString("5");
+        auto qlcSlots = std::make_shared<slint::VectorModel<SlotRow>>();
+        qlcSlots->push_back(button);
+        SlotRow press{};
+        press.label = slint::SharedString("value");
+        press.kind_index = 4; // Fixed
+        press.fixed = slint::SharedString(std::to_string(qlc.press));
+        press.is_fixed = true;
+        press.last = slint::SharedString(std::to_string(qlc.press));
+        qlcSlots->push_back(press);
+        window.set_slots(qlcSlots);
+        window.set_slot_label_width(9.0f * 8.0f + 4.0f); // "{button}", as the controller sizes it
+        window.set_status(slint::SharedString(qlc.howTo));
+        window.set_status_is_error(false);
+        window.set_send_summary(slint::SharedString("OSC to deck \xC2\xB7 /qlc/{button}"));
     } else if (state == "remote" || state == "remote-learn" || state == "remote-off") {
         // E open, the others folded so it is in view: a pad bound; LEARN armed on mute; and the
         // MIDI input not open, so nothing can be learned.
@@ -1263,7 +1321,9 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         std::make_shared<slint::VectorModel<TracePoint>>(std::vector<TracePoint>(kTraceLength));
     window->set_trace(traceModel);
     if (options.running) {
-        fillFromSyntheticRun(*window, traceModel);
+        fillFromSyntheticRun(*window, traceModel,
+                             options.state == "no-beat" || options.state == "no-beat-before",
+                             options.state != "no-beat-before");
         // The tempo banner's two states of 2026-10-06: a ÷2 in force, and the dots going out an
         // octave from the number — each as the tracker would publish it.
         // A ÷2 divides the grid with the number, so the beats go out at the halved tempo.
@@ -1486,6 +1546,10 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         window->set_status(slint::SharedString("pick an input and press Start."));
     }
     window->set_status_is_error(false);
+    // The timing row as it was before it had beats per bar, running or not, for a before-and-after.
+    if (options.state == "no-meter") {
+        window->set_meter_offered(false);
+    }
     // The timing input's states: following a source rather than the audio.
     if (followingState(options.state)) {
         fillFollowing(*window, *traceModel, options.state, options.running);
