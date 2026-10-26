@@ -7436,6 +7436,7 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
         [&](const slint::SharedString& t) { note("latency-typed " + std::string(t)); });
     window->on_midi_in_picked([&](int i) { note("midi-in " + std::to_string(i)); });
     window->on_timing_picked([&](int i) { note("timing " + std::to_string(i)); });
+    window->on_meter_picked([&](int i) { note("meter " + std::to_string(i)); });
     window->on_clock_in_picked([&](int i) { note("clock-in " + std::to_string(i)); });
     window->on_clock_obey_toggled([&](bool on) { note(std::string("obey ") + (on ? "1" : "0")); });
     window->on_timing_beats_per_bar_edited([&](int n) { note("beats " + std::to_string(n)); });
@@ -7706,13 +7707,17 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     const int timingRow = sheets[4].first + 73;
     const auto timing = occupied(shot, timingRow - 17, timingRow + 16, 20, kWidth - 20, kSheet, 5);
     INFO("timing: " << spans(timing));
-    // timing, from, its picker, and the words saying the audio input is picked at the top.
-    REQUIRE(timing.size() == 4);
+    // timing, from, its picker, beats per bar and its box, and the words saying the audio input
+    // is picked at the top.
+    REQUIRE(timing.size() == 6);
     click(middleOf(timing[2]), timingRow);
     key(kDown);
     key("\n");
-    click(middleOf(timing[3]), timingRow);
-    expect({}, "the timing picker while running, and the words beside it");
+    click(middleOf(timing[4]), timingRow);
+    key(kDown);
+    key("\n");
+    click(middleOf(timing[5]), timingRow);
+    expect({}, "the timing picker and beats per bar while running, and the words beside them");
 
     const int midiRow = sheets[4].first + 117;
     const auto midi = occupied(shot, midiRow - 17, midiRow + 16, 20, kWidth - 20, kSheet, 5);
@@ -8025,6 +8030,22 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     click(static_cast<float>(how[3].first + 20), howRow);
     expect({"obey 1", "obey 0"}, "the obey box, then its words");
     window->set_timing_index(0);
+
+    // --- beat detection, stopped: its beats per bar, live --------------------------------------
+    settle();
+    shot = takt4::tests::render(*window, kWidth, kHeight);
+    handle.dispatch_window_active_changed_event(true);
+    sheets = sheetsDown(shot);
+    REQUIRE(sheets.size() == 7);
+    const int detectRow = sheets[4].first + 73;
+    const auto detecting =
+        occupied(shot, detectRow - 17, detectRow + 16, 20, kWidth - 20, kSheet, 5);
+    INFO("beat detection, stopped, timing row: " << spans(detecting));
+    REQUIRE(detecting.size() == 6);
+    click(middleOf(detecting[4]), detectRow);
+    key(kDown);
+    key("\n");
+    expect({"meter 1"}, "beats per bar, stopped");
 }
 
 TEST_CASE("the main window opens 800 wide and 934 tall", "[ui]") {
@@ -8897,37 +8918,180 @@ TEST_CASE("closing the main window applies what is being typed, the OSC control 
     CHECK(controller.oscControlPort() == 0); // a number, not a socket: listening was off
 }
 
-TEST_CASE("an import with other meters keeps them for the next launch and says so",
+TEST_CASE("an import with other meters puts them in between runs, and says so under one",
           "[ui][settings]") {
-    // The forward filter is built with its meters, as the engine is with its decoder: an import
-    // that carried others kept them for the next launch and said nothing, so the bars went on
-    // being counted in the old ones with nothing on screen to say why.
+    // The forward filter is built for its bars. An import that carried others kept them for the
+    // next launch, and before that said nothing, so the bars went on being counted in the old
+    // ones with nothing on screen to say why. Now they go in at once while stopped, and under a
+    // run as it ends — said then, since until START the old ones go on.
+    using Meters = std::array<std::uint8_t, 4>;
     LiveTracker tracker(kWeights, kStateSpace);
     WindowController controller(tracker);
     const takt4::test::TempDir dir;
-    const std::array<std::uint8_t, 4> running = tracker.engine().meters();
+    const Meters four = tracker.engine().meters();
+    REQUIRE(four == Meters{4, 0, 0, 0});
+    const auto fileWith = [&](const Meters& meters, const char* name) {
+        takt4::settings::Settings settings = controller.currentSettings();
+        settings.preset.meters = meters;
+        const std::filesystem::path file = dir.path() / name;
+        REQUIRE(takt4::settings::save(settings, file));
+        return file;
+    };
 
-    takt4::settings::Settings waltz = controller.currentSettings();
-    REQUIRE(waltz.preset.meters == running);
-    waltz.preset.meters = {3, 4, 0, 0};
-    const std::filesystem::path waltzFile = dir.path() / "waltz.json";
-    REQUIRE(takt4::settings::save(waltz, waltzFile));
-    REQUIRE(controller.importFrom(waltzFile));
-    const std::string said(controller.window().get_status());
-    INFO(said);
-    CHECK(said.find("Restart takt4 for the meters to take effect.") != std::string::npos);
-    CHECK(controller.currentSettings().preset.meters == waltz.preset.meters);
-    CHECK(tracker.engine().meters() == running);
+    // Stopped: in place, and nothing to say about it.
+    REQUIRE(controller.importFrom(fileWith(Meters{3, 4, 0, 0}, "waltz.json")));
+    {
+        const std::string said(controller.window().get_status());
+        INFO(said);
+        CHECK(said.find("Restart") == std::string::npos);
+        CHECK(said.find("Beats per bar") == std::string::npos);
+    }
+    CHECK(tracker.engine().meters() == Meters{3, 4, 0, 0});
+    CHECK(controller.currentSettings().preset.meters == Meters{3, 4, 0, 0});
+    CHECK(controller.window().get_meter_index() == 1);
 
-    // A file with the meters already running says nothing about them.
-    takt4::settings::Settings four = waltz;
-    four.preset.meters = running;
-    const std::filesystem::path fourFile = dir.path() / "four.json";
-    REQUIRE(takt4::settings::save(four, fourFile));
-    REQUIRE(controller.importFrom(fourFile));
-    const std::string again(controller.window().get_status());
-    INFO(again);
-    CHECK(again.find("meters") == std::string::npos);
+    // Under a run — its engine started, as a START starts it — they wait for its end, and it
+    // says when they come.
+    tracker.engine().start();
+    REQUIRE(controller.importFrom(fileWith(four, "four.json")));
+    {
+        const std::string said(controller.window().get_status());
+        INFO(said);
+        CHECK(said.find("Beats per bar change at the next START.") != std::string::npos);
+    }
+    CHECK(tracker.engine().meters() == Meters{3, 4, 0, 0});
+    CHECK(controller.currentSettings().preset.meters == four);
+    CHECK(controller.window().get_meter_index() == 0);
+    tracker.stop();
+    CHECK(tracker.engine().meters() == four);
+
+    // And a file with the bars already in place says nothing about them, running or not.
+    tracker.engine().start();
+    REQUIRE(controller.importFrom(fileWith(four, "four-again.json")));
+    {
+        const std::string said(controller.window().get_status());
+        INFO(said);
+        CHECK(said.find("Beats per bar") == std::string::npos);
+    }
+    tracker.stop();
+}
+
+TEST_CASE("beats per bar offers four, three or four and three, and a file's own list as itself",
+          "[ui][settings]") {
+    // A set with waltzes used to mean editing the settings file. The picker offers what a set
+    // needs, and a file's list that is none of them is shown as what it is rather than as one of
+    // the three it is not.
+    using Meters = std::array<std::uint8_t, 4>;
+    LiveTracker tracker(kWeights, kStateSpace);
+    const auto choices = [](WindowController& controller) {
+        std::vector<std::string> out;
+        const auto model = controller.window().get_meter_choices();
+        for (std::size_t i = 0; i < model->row_count(); ++i) {
+            out.emplace_back(*model->row_data(i));
+        }
+        return out;
+    };
+    {
+        WindowController controller(tracker);
+        CHECK(choices(controller) == std::vector<std::string>{"4", "3 or 4", "3"});
+        CHECK(controller.window().get_meter_index() == 0);
+        CHECK(controller.window().get_meter_offered());
+
+        controller.window().invoke_meter_picked(1);
+        CHECK(tracker.engine().meters() == Meters{3, 4, 0, 0});
+        CHECK(controller.window().get_meter_index() == 1);
+        CHECK(controller.currentSettings().preset.meters == Meters{3, 4, 0, 0});
+        controller.window().invoke_meter_picked(2);
+        CHECK(tracker.engine().meters() == Meters{3, 0, 0, 0});
+        CHECK(controller.window().get_meter_index() == 2);
+        // Past the end of the list, as nothing on screen can send: nothing changes.
+        controller.window().invoke_meter_picked(7);
+        controller.window().invoke_meter_picked(-1);
+        CHECK(tracker.engine().meters() == Meters{3, 0, 0, 0});
+        CHECK(controller.window().get_meter_index() == 2);
+        controller.window().invoke_meter_picked(0);
+        CHECK(tracker.engine().meters() == Meters{4, 0, 0, 0});
+    }
+    {
+        takt4::settings::Settings settings;
+        settings.preset.meters = {2, 3, 4, 0};
+        WindowController controller(tracker, settings);
+        CHECK(choices(controller) == std::vector<std::string>{"4", "3 or 4", "3", "2, 3 or 4"});
+        CHECK(controller.window().get_meter_index() == 3);
+        // The window was built with the file's bars, as the application's engine is.
+        CHECK(tracker.engine().meters() == Meters{2, 3, 4, 0});
+        // Picking it again is picking what is in force.
+        controller.window().invoke_meter_picked(3);
+        CHECK(tracker.engine().meters() == Meters{2, 3, 4, 0});
+        CHECK(controller.window().get_meter_index() == 3);
+        // Another, and the file's own leaves the list: it is no longer anything to go back to.
+        controller.window().invoke_meter_picked(1);
+        CHECK(tracker.engine().meters() == Meters{3, 4, 0, 0});
+        CHECK(choices(controller) == std::vector<std::string>{"4", "3 or 4", "3"});
+        CHECK(controller.window().get_meter_index() == 1);
+    }
+}
+
+TEST_CASE("beats per bar is not offered where the tracker keeps its own bars", "[ui][settings]") {
+    // The particle filter, picked in a settings file, models its bars from its own state space:
+    // a box that changed nothing is a box that lies.
+    LiveTracker::Options options;
+    options.engine.decoder = takt4::tracking::Decoder::ParticleFilter;
+    LiveTracker tracker(kWeights, kStateSpace, options);
+    WindowController controller(tracker);
+    CHECK_FALSE(controller.window().get_meter_offered());
+    const auto before = tracker.engine().meters();
+    controller.window().invoke_meter_picked(1);
+    CHECK(tracker.engine().meters() == before);
+}
+
+TEST_CASE("beats per bar is picked by clicking it, and not while a run holds it locked",
+          "[ui][settings]") {
+    // The box itself, clicked where the picture puts it and picked from with the keys, as the
+    // timing list is: a pick the controller takes proves the controller, not the box.
+    using Meters = std::array<std::uint8_t, 4>;
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    if (controller.window().get_inputs_folded()) {
+        controller.toggleFold(0);
+    }
+    controller.tick();
+    auto& window = controller.window().window();
+    const int height = 1400;
+    takt4::tests::Shot shot = takt4::tests::render(controller.window(), 800, height);
+    window.dispatch_window_active_changed_event(true);
+    const float top = controller.window().get_timing_row_y();
+    REQUIRE(top > 0.0f);
+    // The boxes in the timing row by their top edges, which no word reaches: the source's list
+    // and then beats per bar.
+    const int edge = static_cast<int>(top) + 2;
+    const auto boxes = occupied(shot, edge, edge + 3, 90, 790, kSheet, 5);
+    INFO("box edges along the timing row: " << spans(boxes));
+    REQUIRE(boxes.size() >= 2);
+    const float x = middleOf(boxes[1]);
+    const float y = top + 17.0f;
+    CHECK(boxes[1].second - boxes[1].first + 1 >= 80);
+    CHECK(boxes[1].second - boxes[1].first + 1 <= 120);
+
+    clickAt(window, x, y);
+    slint::platform::update_timers_and_animations();
+    press(window, kDown);
+    press(window, "\n");
+    slint::platform::update_timers_and_animations();
+    controller.tick();
+    CHECK(tracker.engine().meters() == Meters{3, 4, 0, 0});
+    CHECK(controller.window().get_meter_index() == 1);
+
+    // Running, the box is the run's and opens to nothing: the same click and keys pick nothing.
+    controller.window().set_running(true);
+    shot = takt4::tests::render(controller.window(), 800, height);
+    clickAt(window, x, y);
+    slint::platform::update_timers_and_animations();
+    press(window, kDown);
+    press(window, "\n");
+    slint::platform::update_timers_and_animations();
+    CHECK(tracker.engine().meters() == Meters{3, 4, 0, 0});
+    CHECK(controller.window().get_meter_index() == 1);
 }
 
 TEST_CASE("the Liberation preset says it drops a half-done fixture import before it does",
@@ -9063,8 +9227,9 @@ TEST_CASE("where the beats come from is picked with the pointer, and the window 
     int y = 0;
     const auto audio = inputsRow(controller, 73, y);
     INFO("timing row: " << spans(audio));
-    // timing, from, the picker, and the words saying the audio input is picked at the top.
-    REQUIRE(audio.size() == 4);
+    // timing, from, the picker, beats per bar and its box, and the words saying the audio input is
+    // picked at the top.
+    REQUIRE(audio.size() == 6);
     clickAt(window, middleOf(audio[2]), static_cast<float>(y));
     slint::platform::update_timers_and_animations();
     press(window, kDown);
@@ -9631,7 +9796,7 @@ TEST_CASE("the CDJs are picked with the pointer: the follow list fills with the 
     int y = 0;
     const auto audio = inputsRow(controller, 73, y);
     INFO("timing row: " << spans(audio));
-    REQUIRE(audio.size() == 4);
+    REQUIRE(audio.size() == 6);
     clickAt(window, middleOf(audio[2]), static_cast<float>(y));
     slint::platform::update_timers_and_animations();
     press(window, kDown);

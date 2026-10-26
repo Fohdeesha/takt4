@@ -11,6 +11,7 @@
 #include <portaudio.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -76,6 +77,42 @@ TEST_CASE("LiveTracker comes up stopped, with the engine built and a device list
     // Stopping something that never started is what a window does on the way out.
     tracker.stop();
     CHECK_FALSE(tracker.running());
+}
+
+TEST_CASE("bars asked for under a run go in as it stops, and at once while stopped", "[audio]") {
+    // Beats per bar picked while stopped is in place for the next run at once; one asked for
+    // under a run — an import — waits for the run to end, and the filter tracking it is never
+    // built again beneath its thread. Every start stops first, so the next run has them.
+    using Meters = std::array<std::uint8_t, 4>;
+    LiveTracker tracker(kWeights, kStateSpace);
+    REQUIRE(tracker.engine().meters() == Meters{4, 0, 0, 0});
+    CHECK(tracker.setMeters(Meters{3, 4, 0, 0}));
+    CHECK(tracker.engine().meters() == Meters{3, 4, 0, 0});
+
+    // A run: its engine started, as `start` starts it before the stream opens.
+    tracker.engine().start();
+    CHECK(tracker.setMeters(Meters{3, 0, 0, 0}));
+    CHECK(tracker.engine().meters() == Meters{3, 4, 0, 0});
+    tracker.stop();
+    CHECK_FALSE(tracker.engine().running());
+    CHECK(tracker.engine().meters() == Meters{3, 0, 0, 0});
+
+    // Asked for twice under one run: the second is what the next run gets.
+    tracker.engine().start();
+    CHECK(tracker.setMeters(Meters{4, 0, 0, 0}));
+    CHECK(tracker.setMeters(Meters{3, 4, 0, 0}));
+    tracker.stop();
+    CHECK(tracker.engine().meters() == Meters{3, 4, 0, 0});
+
+    // A list no filter can be built for is refused whatever the engine is doing, and leaves
+    // nothing waiting for the next stop.
+    tracker.engine().start();
+    CHECK_FALSE(tracker.setMeters(Meters{0, 0, 0, 0}));
+    tracker.stop();
+    CHECK(tracker.engine().meters() == Meters{3, 4, 0, 0});
+    // And a stop with nothing asked for changes nothing.
+    tracker.stop();
+    CHECK(tracker.engine().meters() == Meters{3, 4, 0, 0});
 }
 
 TEST_CASE("LiveTracker names the asset it could not read", "[audio]") {

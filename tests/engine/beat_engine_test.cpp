@@ -16,6 +16,7 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -226,6 +227,70 @@ TEST_CASE("the meter is steady enough to read", "[engine][meter]") {
     // tie differently without leaving room for the old behaviour, which was 166.
     INFO("total meter changes across " << std::size(kExcerpts) << " excerpts: " << total);
     CHECK(total <= 70);
+}
+
+TEST_CASE("the bars it may find are built again between runs, and never under one",
+          "[engine][meter]") {
+    // Beats per bar in the window: a set with waltzes asks for three or four, and the engine is
+    // built for them between runs rather than at the next launch. What is asked for has to be what
+    // the bars are then counted in — a list kept and never built into the filter reads the same
+    // from `meters()` and changes nothing — so this counts the bars.
+    using Meters = std::array<std::uint8_t, 4>;
+    const std::vector<float> signal = excerpt("synthetic.wav");
+    const std::size_t hops = signal.size() / kHopSize;
+    const std::unique_ptr<BeatEngine> engine = makeEngine();
+    REQUIRE(engine->meters() == Meters{4, 0, 0, 0});
+
+    // The run's last word on the bar, from a run begun afresh.
+    const auto barOfARun = [&] {
+        engine->start();
+        engine->stop();
+        std::uint32_t last = 0;
+        for (std::size_t h = 0; h < hops; ++h) {
+            engine->processHop(signal.data() + h * kHopSize, h);
+            (void)engine->step();
+            EngineFrame frame;
+            while (engine->popFrame(frame)) {
+                last = frame.state.beatsPerBar;
+            }
+        }
+        return last;
+    };
+    CHECK(barOfARun() == 4);
+
+    // Three alone: the drum machine's bars of four counted in threes, which a filter built for
+    // nothing else can only do.
+    REQUIRE(engine->setMeters(Meters{3, 0, 0, 0}));
+    CHECK(engine->meters() == Meters{3, 0, 0, 0});
+    CHECK(barOfARun() == 3);
+
+    // Three or four: back on its four, the drum machine's own.
+    REQUIRE(engine->setMeters(Meters{3, 4, 0, 0}));
+    CHECK(engine->meters() == Meters{3, 4, 0, 0});
+    CHECK(barOfARun() == 4);
+
+    SECTION("not under a run, and not a list that is no list of bars") {
+        engine->start();
+        CHECK_FALSE(engine->setMeters(Meters{3, 0, 0, 0}));
+        engine->stop();
+        CHECK(engine->meters() == Meters{3, 4, 0, 0});
+        for (const Meters& bad : {Meters{0, 0, 0, 0}, Meters{17, 0, 0, 0}, Meters{4, 0, 3, 0}}) {
+            INFO(int{bad[0]} << ", " << int{bad[1]} << ", " << int{bad[2]} << ", " << int{bad[3]});
+            CHECK_FALSE(takt4::engine::validMeters(bad));
+            CHECK_FALSE(engine->setMeters(bad));
+        }
+        CHECK(engine->meters() == Meters{3, 4, 0, 0});
+        // Sixteen is the longest bar a settings file may name, and four lengths the most.
+        CHECK(engine->setMeters(Meters{16, 2, 3, 4}));
+        CHECK(engine->meters() == Meters{16, 2, 3, 4});
+    }
+
+    SECTION("and the particle filter, which keeps its own, takes none") {
+        const std::unique_ptr<BeatEngine> particle = makeParticleEngine();
+        const Meters before = particle->meters();
+        CHECK_FALSE(particle->setMeters(Meters{3, 0, 0, 0}));
+        CHECK(particle->meters() == before);
+    }
 }
 
 TEST_CASE("a manual downbeat moves the bar under the real filter", "[engine]") {

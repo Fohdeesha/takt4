@@ -10,6 +10,7 @@
 #include "core/engine/beat_engine.hpp"
 #include "core/tracking/state_space.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -221,6 +222,12 @@ public:
     BeatEngine& engine() noexcept { return *engine_; }
     const BeatEngine& engine() const noexcept { return *engine_; }
 
+    /// The bar lengths beat detection models (`BeatEngine::setMeters`): put in place now while
+    /// the engine is stopped, and otherwise as the run stops — **never under a run**, whose
+    /// decoder would be pulled out from under its thread. False for a list `validMeters` refuses,
+    /// and for an engine that will not take one (the particle filter's), which keeps its own.
+    bool setMeters(const std::array<std::uint8_t, 4>& meters);
+
     /// The input level, hop by hop, for the window's input meter. Drain it on the drawing
     /// timer: it is a ring like the engine's, and one nobody drains fills up and starts
     /// dropping. 50 of them arrive a second.
@@ -286,6 +293,8 @@ private:
     audio::AudioThread::Ticket rescanning_;
     std::chrono::steady_clock::time_point rescanBegan_;
     std::optional<Running> current_;
+    /// Bar lengths asked for while a run was going, for the next one: see `setMeters`.
+    std::optional<std::array<std::uint8_t, 4>> nextMeters_;
     /// See `setDeviceListHook` and `setStartHook`.
     std::function<void(std::vector<audio::InputDevice>&)> deviceListHook_;
     std::function<void()> startHook_;

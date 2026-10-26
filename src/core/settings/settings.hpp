@@ -190,7 +190,7 @@ struct Preset {
     /// its default: four alone, measured as the better decoder on electronic material.
     /// Written as `"meters": [4]`; `[3, 4]` puts the waltz back for a set that has one. Up
     /// to four bar lengths of 1 to 16, zero-filled; a file that names none keeps the
-    /// default. No control in the window yet, like `decoder`.
+    /// default. The window's "beats per bar", in the timing row, offers 4, 3 or 4, and 3.
     std::array<std::uint8_t, 4> meters{4, 0, 0, 0};
     /// Link's switch in a file written before 2026-09-25, which `load` turns into the Link
     /// output's. `outputs` holds it since; still written, as that output's switch, for an

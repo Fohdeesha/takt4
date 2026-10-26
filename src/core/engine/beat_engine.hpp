@@ -53,6 +53,10 @@ struct EngineFrame {
     double pulseBar = 0.0;
 };
 
+/// Whether `BeatEngine::setMeters` takes a list of bar lengths: one to four of 1 to 16, with
+/// any zeros after the last — the shape a settings file writes (`settings::Preset::meters`).
+bool validMeters(const std::array<std::uint8_t, 4>& meters) noexcept;
+
 /// The inference thread, and the thing both the UI and the console drive.
 ///
 /// The chain from a hop of audio to a beat, in one object:
@@ -213,10 +217,15 @@ public:
     /// inference thread; the commands are the way in otherwise.
     const tracking::BeatDecoder& decoder() const noexcept { return *decoder_; }
     tracking::Decoder decoderKind() const noexcept { return decoderKind_; }
-    /// The bar lengths the forward filter was built to model (`ForwardFilter::Options::meters`).
-    /// Fixed for the engine's life, as the decoder is: a preset with others takes effect at the
-    /// next launch.
+    /// The bar lengths the forward filter is built to model (`ForwardFilter::Options::meters`):
+    /// the options' at first, then whatever `setMeters` last put in place.
     std::array<std::uint8_t, 4> meters() const noexcept { return meters_; }
+    /// Builds the forward filter again to model these bar lengths, for the runs from the next
+    /// `start` on: "beats per bar" in the window, where a set with waltzes asks for 3 or 4.
+    /// **Only while stopped**, since the decoder is replaced, and only on the thread that
+    /// starts and stops this. False, with nothing changed, while running, for the particle
+    /// filter, which has no such list, and for a list `validMeters` refuses.
+    bool setMeters(const std::array<std::uint8_t, 4>& meters);
     /// One frame of the decoder's clock, in seconds: what `EngineFrame`s and beats are
     /// timed in. 0.02 for the particle filter, 0.01 for the forward filter.
     double secondsPerFrame() const noexcept { return decoder_->secondsPerFrame(); }
@@ -266,6 +275,9 @@ private:
     std::unique_ptr<model::ActivationEngine> activations_;
     tracking::Decoder decoderKind_;
     std::array<std::uint8_t, 4> meters_;
+    /// What the forward filter is built from, so that `setMeters` builds it again the same way
+    /// but for the bars.
+    tracking::ForwardFilter::Options forward_;
     /// Before `tempo_`, which is built at its frame rate.
     std::unique_ptr<tracking::BeatDecoder> decoder_;
     tracking::TempoTracker tempo_;

@@ -413,6 +413,15 @@ export component MainWindow inherits Window {
   /// quantum too.
   in-out property <int> timing-beats-per-bar: 4;
   callback timing-beats-per-bar-edited(int);
+  /// Beat detection's beats per bar: the bar lengths the tracker may find — "4", "3 or 4", "3",
+  /// and a list from a settings file that is none of those, said as it is. Picked only while
+  /// stopped: the tracker is built for them as a run starts.
+  in-out property <[string]> meter-choices: ["4", "3 or 4", "3"];
+  in-out property <int> meter-index;
+  /// False where the tracker keeps its own bars (the particle filter, picked in a settings file),
+  /// and a pick would change nothing.
+  in-out property <bool> meter-offered: true;
+  callback meter-picked(int);
   /// The MIDI clock's input, listed as the control port's are — "select input" first.
   in-out property <[string]> clock-in-ports;
   in-out property <int> clock-in-port-index;
@@ -1980,6 +1989,21 @@ export component MainWindow inherits Window {
                     selected(index) => {
                       root.clock-in-port-index = index;
                       root.clock-in-picked(index);
+                    }
+                  }
+                  // Beat detection's bars: what the tracker may find. In this row rather than one
+                  // of its own, which the followed sources have, so the inputs do not grow for it.
+                  if !root.following && root.meter-offered: Label { text: "beats per bar"; }
+                  if !root.following && root.meter-offered: Pick {
+                    model: root.meter-choices;
+                    current-index: root.meter-index;
+                    locked: root.running;
+                    min-width: 80px;
+                    preferred-width: 96px;
+                    max-width: 120px;
+                    selected(index) => {
+                      root.meter-index = index;
+                      root.meter-picked(index);
                     }
                   }
                   if !root.following: Text {

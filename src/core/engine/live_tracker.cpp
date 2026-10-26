@@ -172,6 +172,18 @@ void LiveTracker::readyForRun() {
     engine_->start();
 }
 
+bool LiveTracker::setMeters(const std::array<std::uint8_t, 4>& meters) {
+    if (!validMeters(meters) || engine_->decoderKind() != tracking::Decoder::Forward) {
+        return false;
+    }
+    if (engine_->running()) {
+        nextMeters_ = meters;
+        return true;
+    }
+    nextMeters_.reset();
+    return engine_->setMeters(meters);
+}
+
 std::function<void()> LiveTracker::openJob(std::shared_ptr<OpenSlot> slot,
                                            const audio::InputDevice& device,
                                            const audio::ChannelSelection& selection) {
@@ -419,6 +431,16 @@ void LiveTracker::stop() noexcept {
     // After the stream, so the hops still in the queue are tracked rather than binned.
     engine_->stop();
     current_.reset();
+    // Bars asked for while the run went on, now that nothing tracks through the decoder: every
+    // start stops first, so the next run has them, and so does an input reopened after an outage.
+    if (nextMeters_) {
+        try {
+            (void)engine_->setMeters(*nextMeters_);
+        } catch (...) {
+            // No memory for the new filter: the one there was stays, whole.
+        }
+        nextMeters_.reset();
+    }
 }
 
 } // namespace takt4::engine

@@ -518,6 +518,26 @@ std::string joined(const std::vector<std::string>& parts) {
     return out;
 }
 
+/// What beats per bar offers beat detection, in the picker's order: four alone — the default, and
+/// the better for 4/4 — then three or four, for a set with waltzes in it, then three alone.
+constexpr std::array<std::array<std::uint8_t, 4>, 3> kMeterChoices{
+    {{4, 0, 0, 0}, {3, 4, 0, 0}, {3, 0, 0, 0}}};
+
+/// "4", "3 or 4", "2, 3 or 4": a list of bar lengths as the picker says it.
+std::string meterLabel(const std::array<std::uint8_t, 4>& meters) {
+    std::vector<std::string> parts;
+    for (const std::uint8_t meter : meters) {
+        if (meter != 0) {
+            parts.push_back(std::to_string(static_cast<int>(meter)));
+        }
+    }
+    std::string out;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        out += (i == 0 ? "" : i + 1 == parts.size() ? " or " : ", ") + parts[i];
+    }
+    return out;
+}
+
 } // namespace
 
 WindowController::WindowController(engine::LiveTracker& tracker)
@@ -720,6 +740,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     window_->on_clock_obey_toggled([this](bool obey) { setClockObey(obey); });
     window_->on_timing_beats_per_bar_edited([this](int beats) { setExternalBeatsPerBar(beats); });
     window_->on_phrase_bars_edited([this](int bars) { setPhraseBars(bars); });
+    window_->on_meter_picked([this](int index) { pickMeters(index); });
     window_->on_cdj_follow_picked([this](int index) { pickCdjFollow(index); });
     window_->on_cdj_card_picked([this](int index) { pickCdjCard(index); });
     // The banner's CHANGE: the timing row, which is in "02 inputs", folded or not.
@@ -881,6 +902,10 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     externalBeatsPerBar_ = settings.preset.externalBeatsPerBar;
     timingLatency_ = settings.preset.timingLatency;
     setPhraseBars(static_cast<int>(settings.preset.phraseBars));
+    // The engine was built with these (`app.cpp`); handed over again for an engine built some
+    // other way — a test's, `takt4-shot`'s — and said in the picker either way.
+    (void)tracker_.setMeters(meters_);
+    publishMeters();
     cdjFollow_ = settings.machine.proLinkFollow;
     cdjPick_ = cardPickOf(settings.machine);
     cdjs_->setFollow(cdjFollow_);
@@ -3767,12 +3792,12 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
         restart += restart.empty() ? "the OSC prefix " + loaded.preset.oscPrefix
                                    : " and the OSC prefix " + loaded.preset.oscPrefix;
     }
-    // **And the meters**, which the tracker is built with as it is with the decoder: kept for the
-    // next launch, and — like the decoder — said. They were kept and not said, so the bars went
-    // on being counted in the old meters with nothing to say why.
-    if (meters_ != tracker_.engine().meters()) {
-        restart += restart.empty() ? "the meters" : " and the meters";
-    }
+    // **And the meters**: in place at once while stopped, and at the next START under a run —
+    // said then, or the bars would go on being counted in the old ones with nothing to say why.
+    const bool metersChanged = meters_ != tracker_.engine().meters();
+    const bool metersAtStart =
+        tracker_.setMeters(meters_) && metersChanged && tracker_.engine().running();
+    publishMeters();
 
     // The rows the operator edits, not just the transports: these are the window's copy from
     // construction onwards (see the constructor), so an import that changed only the
@@ -3805,6 +3830,7 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
         std::to_string(loaded.preset.fixtures.size()) + " fixtures" +
         (loaded.machine.inFile ? ", the input, MIDI and OSC control and the layout." : ".") +
         (restart.empty() ? std::string{} : " Restart takt4 for " + restart + " to take effect.") +
+        (metersAtStart ? " Beats per bar change at the next START." : "") +
         [&loaded] {
             const std::string rules = settings::newerRulesNotice(loaded.preset);
             return rules.empty() ? rules : " " + rules;
@@ -4676,6 +4702,45 @@ void WindowController::setPhraseBars(int bars) {
     // Written back, as the box is the owner's: one that is not would not move.
     window_->set_phrase_bars(static_cast<int>(phraseBars_));
     runner_.post(output::OutputCommand::phraseBars(phraseBars_));
+}
+
+void WindowController::pickMeters(int index) {
+    // Not under a run: the picker is locked while one goes on, and a pick that reaches here
+    // anyway — or a pick of the settings file's own list, which is what is already in force —
+    // is put back as it was.
+    if (!wantRunning_ && !tracker_.running() && index >= 0 &&
+        static_cast<std::size_t>(index) < kMeterChoices.size()) {
+        meters_ = kMeterChoices[static_cast<std::size_t>(index)];
+        (void)tracker_.setMeters(meters_);
+    }
+    publishMeters();
+}
+
+void WindowController::publishMeters() {
+    std::vector<std::string> labels;
+    int index = -1;
+    for (std::size_t i = 0; i < kMeterChoices.size(); ++i) {
+        labels.push_back(meterLabel(kMeterChoices[i]));
+        if (kMeterChoices[i] == meters_) {
+            index = static_cast<int>(i);
+        }
+    }
+    if (index < 0) {
+        // A list a settings file named that is none of the three, offered as itself: the box says
+        // what is in force rather than one of the three it is not.
+        index = static_cast<int>(labels.size());
+        labels.push_back(meterLabel(meters_));
+    }
+    if (labels != meterLabels_) {
+        auto model = std::make_shared<slint::VectorModel<slint::SharedString>>();
+        for (const std::string& label : labels) {
+            model->push_back(shared(label));
+        }
+        window_->set_meter_choices(model);
+        meterLabels_ = std::move(labels);
+    }
+    window_->set_meter_index(index);
+    window_->set_meter_offered(tracker_.engine().decoderKind() == tracking::Decoder::Forward);
 }
 
 void WindowController::setExternalBeatsPerBar(int beats) {

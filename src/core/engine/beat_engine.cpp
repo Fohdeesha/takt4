@@ -63,7 +63,7 @@ tracking::PulseGate::Options pulseOptions() noexcept {
 BeatEngine::BeatEngine(const model::ModelWeights& weights, const tracking::StateSpaceModel& model,
                        Options options)
     : model_(&model), activations_(std::make_unique<model::ActivationEngine>(weights)),
-      decoderKind_(options.decoder), meters_(options.forward.meters),
+      decoderKind_(options.decoder), meters_(options.forward.meters), forward_(options.forward),
       decoder_(makeDecoder(model, options)),
       tempo_(decoder_->secondsPerFrame(), forDecoder(options.tempo, *decoder_)),
       stepsPerActivation_(stepsFor(*decoder_)),
@@ -83,6 +83,39 @@ BeatEngine::BeatEngine(const model::ModelWeights& weights, const tracking::State
 
 BeatEngine::BeatEngine(const model::ModelWeights& weights, const tracking::StateSpaceModel& model)
     : BeatEngine(weights, model, Options{}) {}
+
+bool validMeters(const std::array<std::uint8_t, 4>& meters) noexcept {
+    bool ended = false;
+    bool any = false;
+    for (const std::uint8_t meter : meters) {
+        if (meter == 0) {
+            ended = true;
+        } else if (ended || meter > 16) {
+            return false;
+        } else {
+            any = true;
+        }
+    }
+    return any;
+}
+
+bool BeatEngine::setMeters(const std::array<std::uint8_t, 4>& meters) {
+    if (running() || decoderKind_ != tracking::Decoder::Forward || !validMeters(meters)) {
+        return false;
+    }
+    if (meters == meters_) {
+        return true;
+    }
+    tracking::ForwardFilter::Options forward = forward_;
+    forward.meters = meters;
+    decoder_ = std::make_unique<tracking::ForwardFilter>(forward);
+    forward_ = forward;
+    meters_ = meters;
+    // The tracker's window, handed to the new decoder as it was to the first. Its frame rate, and
+    // so every count of frames this engine keeps, is the old one's: only the bars changed.
+    syncDecoder();
+    return true;
+}
 
 BeatEngine::~BeatEngine() {
     stop();

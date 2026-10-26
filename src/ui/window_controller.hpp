@@ -284,6 +284,10 @@ public:
     void setExternalBeatsPerBar(int beats);
     /// The outputs heading's "in phrases of N bars": what `/takt4/phrase` counts in.
     void setPhraseBars(int bars);
+    /// Beat detection's "beats per bar", as an index into `meter-choices`: four, three or four,
+    /// three — and the list in force, when a settings file named another, which picking leaves
+    /// as it is. Only while stopped; one picked while a run goes on is put back.
+    void pickMeters(int index);
     /// Whose beats the CDJs' are, as an index into `cdj-follow-choices` — 0 the tempo master —
     /// and by player number (0 the master). Any time, running or not: at once.
     void pickCdjFollow(int index);
@@ -764,6 +768,8 @@ private:
     void stopFollowing() noexcept;
     /// The source's readings, its strip and its note: each round, running or not.
     void publishTiming();
+    /// The meter picker's choices, from `meters_`, and whether it is offered at all.
+    void publishMeters();
     /// The beats a followed source sent since the last round, into the timing plot: a column
     /// lit full height for each, at its own moment, 50 columns to the second.
     void publishFollowedTrace();
@@ -1128,11 +1134,14 @@ private:
     /// being typed into looks like. See `publishOscControl`.
     std::string oscControlPortShown_;
 
-    /// `settings::Preset::meters` as this window was built with them. The engine was built
-    /// with the same list (`app.cpp`) and nothing in the window changes it yet, so this is
-    /// the value `currentSettings` writes back — kept here rather than read from the
-    /// decoder because the decoder interface does not expose its bars.
+    /// `settings::Preset::meters`: what beats per bar, or an import, last asked for, which the
+    /// engine has from the next run on (`engine::LiveTracker::setMeters`) and `currentSettings`
+    /// writes back. Kept here rather than read from the engine, which keeps a list its decoder
+    /// cannot use (the particle filter's) only as far as a settings file goes.
     std::array<std::uint8_t, 4> meters_{4, 0, 0, 0};
+    /// The meter picker's labels as last handed to it: the model is replaced only when they
+    /// change, so a pick does not tear the list out from under the box it came from.
+    std::vector<std::string> meterLabels_;
     /// What an import said, for the START it asked for to say again in place of its own line —
     /// see `toggleRun`.
     std::string importSaid_;
