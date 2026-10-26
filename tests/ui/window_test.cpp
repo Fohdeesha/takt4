@@ -12681,3 +12681,57 @@ TEST_CASE("the bars of a phrase typed in the outputs heading are what /takt4/phr
     REQUIRE(controller.saveNow());
     CHECK(takt4::settings::load(file).preset.phraseBars == 256u);
 }
+
+TEST_CASE("the main window's LEARN and a rule's own are told apart, and a rule's pad is saved",
+          "[ui][midi]") {
+    // One MIDI learn behind two windows: the rule editor arms it for a rule, the main window for
+    // one of its own actions. Each window lights and gives up its own — and a pad bound to a
+    // rule is kept with the machine's other controls.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    takt4::control::MidiControl& midi = controller.control();
+    midi.listenWithoutPort();
+    takt4::ui::RulesController& editor = controller.editor();
+    editor.add();
+    const std::string id = editor.rules().front().id;
+    const takt4::control::ControlTarget mute(takt4::control::ControlAction::RuleMute, id);
+
+    editor.learnRemote(1);
+    controller.tick();
+    REQUIRE(midi.learning() == mute);
+    // Not this window's: its LEARN is not lit and its line is not waiting.
+    CHECK_FALSE(controller.window().get_learning());
+    CHECK(std::string(controller.window().get_control_reading()).find("waiting") ==
+          std::string::npos);
+    // Another action picked here, or its FORGET, leaves the editor's armed.
+    controller.pickLearnAction(1);
+    controller.forgetLearned();
+    CHECK(midi.learning() == mute);
+    // Its own LEARN pressed is its own, over the editor's: the last LEARN pressed is the one meant.
+    controller.toggleLearn();
+    REQUIRE(midi.learning().has_value());
+    CHECK_FALSE(takt4::control::takesRuleId(midi.learning()->action));
+    CHECK(controller.window().get_learning());
+    controller.toggleLearn();
+    CHECK_FALSE(midi.learning().has_value());
+
+    // A pad for the rule, saved as the machine's controls are, and back with a new window.
+    editor.learnRemote(1);
+    takt4::control::MidiEvent pad;
+    pad.kind = takt4::control::MidiEvent::Kind::ControlChange;
+    pad.channel = 2;
+    pad.number = 21;
+    pad.value = 127;
+    REQUIRE(midi.dispatch(pad));
+    const takt4::settings::Settings saved = controller.currentSettings();
+    const std::string line = "cc 21 ch 2 -> rule/" + id + "/mute";
+    CHECK(std::find(saved.machine.midiBindings.begin(), saved.machine.midiBindings.end(), line) !=
+          saved.machine.midiBindings.end());
+
+    LiveTracker again(kWeights, kStateSpace);
+    WindowController reopened(again, saved);
+    reopened.editor().tick();
+    const auto rows = reopened.editor().window().get_remote_rows();
+    REQUIRE(rows->row_count() == 5);
+    CHECK(std::string(rows->row_data(1)->reading) == "cc 21 ch 2");
+}

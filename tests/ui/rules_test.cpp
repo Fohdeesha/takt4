@@ -1,9 +1,13 @@
+#include "core/control/control_action.hpp"
+#include "core/control/midi_binding.hpp"
+#include "core/control/midi_control.hpp"
 #include "core/dmx/color.hpp"
 #include "core/dmx/effect.hpp"
 #include "core/dmx/fixture.hpp"
 #include "core/dmx/liberation.hpp"
 #include "core/engine/beat_engine.hpp"
 #include "core/io/utf8.hpp"
+#include "core/midi/midi_input_hub.hpp"
 #include "core/model/weights.hpp"
 #include "core/output/osc_message.hpp"
 #include "core/output/output_runner.hpp"
@@ -7032,4 +7036,259 @@ TEST_CASE("a rule's reach counts only the fixtures in the show", "[ui][trigger][
     editor.setPatch({in, out});
     CHECK(said() == "reaches 1 fixture");
     CHECK_FALSE(window.get_fixtures_reaches_nothing());
+}
+
+namespace {
+
+using takt4::control::ControlAction;
+using takt4::control::ControlTarget;
+using takt4::control::MidiBinding;
+using takt4::control::MidiEvent;
+
+/// A MIDI control input for the editor's E, listening as far as `deliver` and `stop` can tell with
+/// no port behind it — the test sandbox opens none.
+struct Pads {
+    explicit Pads(Rig& rig)
+        : control(*rig.engine, hub, takt4::control::MidiControl::Config{}, &rig.runner) {}
+    takt4::midi::MidiInputHub hub{[] { return std::int64_t{0}; }};
+    takt4::control::MidiControl control;
+};
+
+MidiEvent pad(std::uint8_t number, std::uint8_t velocity) {
+    MidiEvent event;
+    event.kind = MidiEvent::Kind::Note;
+    event.channel = 10;
+    event.number = number;
+    event.value = velocity;
+    return event;
+}
+
+std::vector<RemoteRow> remoteRows(RulesController& editor) {
+    std::vector<RemoteRow> rows;
+    const auto model = editor.window().get_remote_rows();
+    for (std::size_t i = 0; i < model->row_count(); ++i) {
+        rows.push_back(*model->row_data(i));
+    }
+    return rows;
+}
+
+bool boundTo(const takt4::control::MidiControl& control, const std::string& id) {
+    const std::vector<MidiBinding> bindings = control.bindings();
+    return std::any_of(bindings.begin(), bindings.end(),
+                       [&id](const MidiBinding& binding) { return binding.target.rule == id; });
+}
+
+} // namespace
+
+TEST_CASE("a pad learned in a rule's own section drives that rule, and goes with it",
+          "[ui][trigger][midi]") {
+    // Binding a rule to a MIDI control was in the model with nothing on screen to ask for it: a
+    // gesture says which pad, never which rule, so only the editor showing the rule can arm it.
+    Rig rig;
+    Pads pads(rig);
+    RulesController editor(rig.runner, {});
+    editor.setMidiControl(&pads.control);
+    editor.add();
+    const std::string id = editor.rules().front().id;
+    const ControlTarget enabled(ControlAction::RuleEnable, id);
+    editor.tick();
+
+    // The rows: what each binds, in the editor's own words. Not "rate": a MIDI control sends a
+    // rule 0 or 1, and a rate of 0 or 1 is no fader.
+    std::vector<RemoteRow> rows = remoteRows(editor);
+    REQUIRE(rows.size() == 5);
+    CHECK(std::string(rows[0].label) == "enabled");
+    CHECK(std::string(rows[1].label) == "mute");
+    CHECK(std::string(rows[2].label) == "\xC3\xB7" "2 faster");
+    CHECK(std::string(rows[3].label) == "\xC3\x97" "2 slower");
+    CHECK(std::string(rows[4].label) == "rate as written");
+    for (const RemoteRow& row : rows) {
+        CHECK(std::string(row.reading) == "not bound");
+        CHECK(row.words);
+        CHECK_FALSE(row.bound);
+    }
+    CHECK(std::string(editor.window().get_remote_summary()) == "no MIDI control bound");
+    // The OSC addresses, said once, with this rule's id in them.
+    CHECK(std::string(editor.window().get_remote_osc()).find("/takt4/ctl/rule/" + id + "/") !=
+          std::string::npos);
+
+    // No MIDI input listening: nothing is armed, and the section says so.
+    CHECK_FALSE(editor.window().get_remote_midi_on());
+    editor.learnRemote(0);
+    CHECK_FALSE(pads.control.learning().has_value());
+
+    pads.control.listenWithoutPort();
+    editor.tick();
+    CHECK(editor.window().get_remote_midi_on());
+    editor.learnRemote(0);
+    REQUIRE(pads.control.learning() == enabled);
+    editor.tick();
+    rows = remoteRows(editor);
+    CHECK(rows[0].armed);
+    CHECK(rows[0].words);
+    CHECK(std::string(rows[0].reading) == "waiting for a control\xE2\x80\xA6");
+
+    // LEARN again gives up; once more arms it again.
+    editor.learnRemote(0);
+    CHECK_FALSE(pads.control.learning().has_value());
+    editor.learnRemote(0);
+    REQUIRE(pads.control.learning() == enabled);
+
+    // The pad: bound on its press, and its release swallowed — learning a pad does not work it.
+    CHECK(pads.control.dispatch(pad(36, 100)));
+    CHECK(pads.control.dispatch(pad(36, 0)));
+    editor.tick();
+    rows = remoteRows(editor);
+    CHECK_FALSE(rows[0].armed);
+    CHECK(rows[0].bound);
+    CHECK_FALSE(rows[0].words);
+    CHECK(std::string(rows[0].reading) == "note 36 ch 10");
+    CHECK(std::string(editor.window().get_remote_summary()) == "enabled: note 36 ch 10");
+    REQUIRE(editor.rules().front().enabled);
+
+    // And it works the rule: held, it is on; let go, it is off — a rule switched by a pad.
+    CHECK(pads.control.dispatch(pad(36, 0)));
+    editor.tick();
+    CHECK_FALSE(editor.rules().front().enabled);
+    CHECK(pads.control.dispatch(pad(36, 90)));
+    editor.tick();
+    CHECK(editor.rules().front().enabled);
+
+    SECTION("FORGET lets the pad go, and it works the rule no more") {
+        editor.forgetRemote(0);
+        editor.tick();
+        CHECK(std::string(remoteRows(editor)[0].reading) == "not bound");
+        CHECK_FALSE(remoteRows(editor)[0].bound);
+        CHECK_FALSE(boundTo(pads.control, id));
+        CHECK_FALSE(pads.control.dispatch(pad(36, 0)));
+        editor.tick();
+        CHECK(editor.rules().front().enabled);
+    }
+
+    SECTION("another rule shown gives up a learn armed for this one") {
+        editor.learnRemote(1);
+        REQUIRE(pads.control.learning() == ControlTarget(ControlAction::RuleMute, id));
+        editor.add();
+        editor.tick();
+        CHECK_FALSE(pads.control.learning().has_value());
+        // A pad pressed now is bound to nothing: no rule nobody is looking at gets it.
+        CHECK_FALSE(pads.control.dispatch(pad(40, 100)));
+        CHECK_FALSE(boundTo(pads.control, editor.rules().back().id));
+    }
+
+    SECTION("closing the editor gives up a learn armed in it") {
+        editor.show();
+        editor.learnRemote(1);
+        REQUIRE(pads.control.learning().has_value());
+        editor.hide();
+        CHECK_FALSE(pads.control.learning().has_value());
+    }
+
+    SECTION("a learn armed when the MIDI input stops listening is given up") {
+        // Its LEARN goes off with the port, so nothing on screen could give it up otherwise, and
+        // the row would wait for a control that cannot come.
+        editor.learnRemote(1);
+        REQUIRE(pads.control.learning().has_value());
+        pads.control.stop();
+        editor.tick();
+        CHECK_FALSE(pads.control.learning().has_value());
+        CHECK_FALSE(editor.window().get_remote_midi_on());
+        CHECK_FALSE(remoteRows(editor)[1].armed);
+    }
+
+    SECTION("the main window's learn is not the editor's to give up") {
+        pads.control.learn(ControlAction::Tap);
+        editor.add();
+        editor.tick();
+        CHECK(pads.control.learning() == ControlTarget(ControlAction::Tap));
+    }
+
+    SECTION("deleting the rule forgets its pads, and a rule given its id later has none") {
+        editor.learnRemote(1);
+        CHECK(pads.control.dispatch(pad(37, 100)));
+        REQUIRE(boundTo(pads.control, id));
+        editor.pick(0);
+        editor.remove();
+        CHECK(editor.rules().empty());
+        CHECK_FALSE(boundTo(pads.control, id));
+        CHECK_FALSE(pads.control.dispatch(pad(36, 100)));
+    }
+}
+
+TEST_CASE("a rule's pad is learned and forgotten with the section's own buttons",
+          "[ui][trigger][midi]") {
+    // The buttons themselves, found where the picture puts them: a pick the controller takes
+    // proves the controller, not the markup.
+    Rig rig;
+    Pads pads(rig);
+    pads.control.listenWithoutPort();
+    RulesController editor(rig.runner, {});
+    editor.setMidiControl(&pads.control);
+    editor.add();
+    const std::string id = editor.rules().front().id;
+    const ControlTarget enabled(ControlAction::RuleEnable, id);
+    // A, C and D folded and E open, so E is where its picture is, near the top.
+    editor.toggleFold(0);
+    editor.toggleFold(2);
+    editor.toggleFold(3);
+    editor.toggleFold(5);
+    REQUIRE(editor.window().get_only_if_folded());
+    REQUIRE_FALSE(editor.window().get_remote_folded());
+    editor.tick();
+    const Shown shown(editor);
+    editor.tick();
+
+    // LEARN on the first row: the first click that arms it.
+    const Spot learn = sweep(
+        560.0f, 760.0f, 8.0f, 270.0f, 640.0f, 6.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            editor.tick();
+            return pads.control.learning() == enabled;
+        },
+        [&] {
+            pads.control.cancelLearn();
+            editor.tick();
+        });
+    REQUIRE(learn.found());
+    INFO("LEARN at " << learn.x << ", " << learn.y);
+    shown.click(learn.x, learn.y);
+    editor.tick();
+    REQUIRE(pads.control.learning() == enabled);
+    CHECK(remoteRows(editor)[0].armed);
+    // Clicked again, it gives up.
+    shown.click(learn.x, learn.y);
+    editor.tick();
+    CHECK_FALSE(pads.control.learning().has_value());
+    // And armed, the pad pressed is bound.
+    shown.click(learn.x, learn.y);
+    editor.tick();
+    REQUIRE(pads.control.dispatch(pad(36, 100)));
+    editor.tick();
+    REQUIRE(boundTo(pads.control, id));
+
+    // FORGET, on the same row to the right: the first click that lets the pad go. Bound again
+    // after every miss, so each probe has something to forget.
+    const Spot forget = sweep(
+        learn.x + 40.0f, learn.x + 220.0f, 8.0f, learn.y - 4.0f, learn.y + 6.0f, 4.0f,
+        [&](float x, float y) {
+            shown.click(x, y);
+            editor.tick();
+            return !boundTo(pads.control, id);
+        },
+        [&] {
+            if (!boundTo(pads.control, id)) {
+                (void)pads.control.bind(MidiBinding{MidiEvent::Kind::Note, 10, 36, enabled});
+            }
+            editor.tick();
+        });
+    REQUIRE(forget.found());
+    shown.click(forget.x, forget.y);
+    editor.tick();
+    CHECK_FALSE(boundTo(pads.control, id));
+    CHECK(std::string(remoteRows(editor)[0].reading) == "not bound");
+    // A FORGET with nothing bound is switched off: a click there forgets nothing and arms nothing.
+    shown.click(forget.x, forget.y);
+    editor.tick();
+    CHECK_FALSE(pads.control.learning().has_value());
 }

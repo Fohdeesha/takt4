@@ -590,6 +590,32 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
     window.set_follow_ups(follows);
     window.set_then_summary(slint::SharedString("release after 1 beat · MIDI CC 21 after 2 bars"));
 
+    // E, remote control, as `RulesController::publishRemote` writes it: a pad bound to switch the
+    // rule on and off, the rest not bound, and a MIDI input open to learn from.
+    const auto remote = [](const char* label, const char* reading, bool words, bool armed,
+                           bool bound) {
+        RemoteRow row{};
+        row.label = slint::SharedString(label);
+        row.reading = slint::SharedString(reading);
+        row.words = words;
+        row.armed = armed;
+        row.bound = bound;
+        return row;
+    };
+    auto remotes = std::make_shared<slint::VectorModel<RemoteRow>>();
+    remotes->push_back(remote("enabled", "note 36 ch 10", false, false, true));
+    remotes->push_back(remote("mute", "not bound", true, false, false));
+    remotes->push_back(remote("\xC3\xB7" "2 faster", "not bound", true, false, false));
+    remotes->push_back(remote("\xC3\x97" "2 slower", "not bound", true, false, false));
+    remotes->push_back(remote("rate as written", "not bound", true, false, false));
+    window.set_remote_rows(remotes);
+    window.set_remote_summary(slint::SharedString("enabled: note 36 ch 10"));
+    window.set_remote_midi_on(true);
+    window.set_remote_osc(slint::SharedString(
+        "over OSC, while the main window listens: /takt4/ctl/rule/layer1/ then enable 0|1 "
+        "\xC2\xB7 mute 0|1 \xC2\xB7 halve (\xC3\xB7" "2) \xC2\xB7 double (\xC3\x97" "2) \xC2\xB7 "
+        "reset \xC2\xB7 rate and a number"));
+
     // The two chips of that address, and the value: the sequence `trigger::Pool` exists for.
     // By name, not by position: nothing promises a Slint struct's field order survives a bump.
     const auto fixedSlot = [](const char* label, const char* value, const char* last) {
@@ -742,6 +768,22 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
             slint::SharedString("every 2 beats from beat 2 of the bar · 16× slower"));
     } else if (state == "log") {
         window.set_log_open(true);
+    } else if (state == "remote" || state == "remote-learn" || state == "remote-off") {
+        // E open, the others folded so it is in view: a pad bound; LEARN armed on mute; and the
+        // MIDI input not open, so nothing can be learned.
+        window.set_when_folded(true);
+        window.set_send_folded(true);
+        window.set_then_folded(true);
+        window.set_remote_folded(false);
+        if (state == "remote-learn") {
+            auto rows = window.get_remote_rows();
+            RemoteRow mute = *rows->row_data(1);
+            mute.reading = slint::SharedString("waiting for a control\xE2\x80\xA6");
+            mute.armed = true;
+            rows->set_row_data(1, mute);
+        } else if (state == "remote-off") {
+            window.set_remote_midi_on(false);
+        }
     } else if (state == "folded") {
         window.set_when_folded(true);
         window.set_send_folded(true);

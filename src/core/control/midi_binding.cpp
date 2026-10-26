@@ -79,6 +79,15 @@ std::string formatMidiBinding(const MidiBinding& binding) {
     return text;
 }
 
+std::string describeControl(const MidiBinding& binding) {
+    const std::string whole = formatMidiBinding(binding);
+    return whole.substr(0, whole.find(" ->"));
+}
+
+std::string describeControl(const MidiEvent& event) {
+    return describeControl(MidiBinding{event.kind, event.channel, event.number, ControlAction::Tap});
+}
+
 std::optional<MidiBinding> parseMidiBinding(std::string_view text) noexcept try {
     const std::size_t arrow = text.find("->");
     if (arrow == std::string_view::npos) {

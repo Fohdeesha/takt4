@@ -1570,6 +1570,12 @@ TEST_CASE("the rule editor's folds and its log are remembered on this machine", 
     // A file from before: B folded as a new rule's is, the rest open, the log shut at five lines.
     const Settings old = takt4::settings::fromJson(R"({"machine": {"channel": 3}})");
     CHECK(old.machine.ruleSectionsFolded == std::array<bool, 4>{false, true, false, false});
+    // E, remote control, came later, kept apart from A to D: folded in a file from before it.
+    CHECK(old.machine.ruleRemoteFolded);
+    Settings open;
+    open.machine.ruleRemoteFolded = false;
+    CHECK_FALSE(roundTrip(open).machine.ruleRemoteFolded);
+    CHECK(roundTrip(open).machine.ruleSectionsFolded == open.machine.ruleSectionsFolded);
     CHECK_FALSE(old.machine.ruleLogOpen);
     CHECK_THAT(old.machine.ruleLogHeight, WithinAbs(90.0, 1e-9));
 

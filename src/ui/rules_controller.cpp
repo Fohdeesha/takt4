@@ -212,6 +212,9 @@ RulesController::RulesController(output::OutputRunner& runner,
     window_->on_rule_muted_changed(finishing([this](bool on) { setMuted(on); }));
     window_->on_rule_muted_at(finishing([this](int index, bool on) { setMutedAt(index, on); }));
     window_->on_fold_clicked(finishing([this](int which) { toggleFold(which); }));
+    window_->set_remote_rows(remoteRows_.model());
+    window_->on_remote_learn_clicked(finishing([this](int row) { learnRemote(row); }));
+    window_->on_remote_forget_clicked(finishing([this](int row) { forgetRemote(row); }));
     window_->on_rule_rate_changed(
         finishing([this](float factor) { nudgeRate(static_cast<double>(factor)); }));
     // The name commits on every keystroke, so there is never anything of its own to carry.
@@ -473,6 +476,13 @@ void RulesController::hide() {
     commitTyping();
     window_->hide();
     visible_ = false;
+    // A learn armed here goes with the window: nobody can see what it would bind.
+    if (midi_ != nullptr) {
+        const std::optional<control::ControlTarget> armed = midi_->learning();
+        if (armed && control::takesRuleId(armed->action)) {
+            midi_->cancelLearn();
+        }
+    }
     // A picker goes with the window, and nothing in the markup will say so — a popup reports
     // that it closed, not that the window under it went away. Left set, it would hold every
     // repeater rebuild for the rest of the session (see `pickerOpen_`), which is the "editing
@@ -918,9 +928,11 @@ void RulesController::remove() {
             continue;
         }
         // Forgotten with the rule. Its id can come back — a preset holding it, loaded again —
-        // and a count left behind here would be handed to a rule that has never fired there.
+        // and a count left behind here would be handed to a rule that has never fired there. So
+        // can a pad bound to it, which until then would drive nothing.
         firesSeen_.erase(rules_[at].id);
         slotsSeen_.erase(rules_[at].id);
+        forgetRemoteOf(rules_[at].id);
         rules_.erase(rules_.begin() + static_cast<std::ptrdiff_t>(at));
     }
     // The row that moved up into the first deleted one's place, which is where the eye is.
@@ -1987,6 +1999,9 @@ void RulesController::toggleFold(int which) {
     case 4:
         window_->set_log_open(!window_->get_log_open());
         break;
+    case 5:
+        window_->set_remote_folded(!window_->get_remote_folded());
+        break;
     default:
         break;
     }
@@ -1997,6 +2012,7 @@ void RulesController::applyLayout(const settings::MachineSettings& machine) {
     window_->set_only_if_folded(machine.ruleSectionsFolded[1]);
     window_->set_send_folded(machine.ruleSectionsFolded[2]);
     window_->set_then_folded(machine.ruleSectionsFolded[3]);
+    window_->set_remote_folded(machine.ruleRemoteFolded);
     window_->set_log_open(machine.ruleLogOpen);
     window_->set_log_lines_height(static_cast<float>(machine.ruleLogHeight));
 }
@@ -2004,6 +2020,7 @@ void RulesController::applyLayout(const settings::MachineSettings& machine) {
 void RulesController::layoutInto(settings::MachineSettings& machine) const {
     machine.ruleSectionsFolded = {window_->get_when_folded(), window_->get_only_if_folded(),
                                   window_->get_send_folded(), window_->get_then_folded()};
+    machine.ruleRemoteFolded = window_->get_remote_folded();
     machine.ruleLogOpen = window_->get_log_open();
     machine.ruleLogHeight = static_cast<double>(window_->get_log_lines_height());
 }
@@ -2054,8 +2071,71 @@ void RulesController::tick() {
         publishList();
         publishSlots();
     }
+    // A control learned on the MIDI thread, or bound and forgotten from the main window.
+    publishRemote();
 
     window_->set_panicked(runner_.panicked());
+}
+
+void RulesController::setMidiControl(control::MidiControl* control) {
+    midi_ = control;
+    publishRemote();
+}
+
+void RulesController::learnRemote(int row) {
+    const Rule::Config* rule = current();
+    if (midi_ == nullptr || !midi_->running() || rule == nullptr || row < 0 ||
+        static_cast<std::size_t>(row) >= kRemoteVerbs.size()) {
+        return;
+    }
+    const control::ControlTarget target(kRemoteVerbs[static_cast<std::size_t>(row)].action,
+                                        rule->id);
+    if (midi_->learning() == target) {
+        midi_->cancelLearn();
+    } else {
+        midi_->learn(target);
+    }
+    publishRemote();
+}
+
+void RulesController::forgetRemote(int row) {
+    const Rule::Config* rule = current();
+    if (midi_ == nullptr || rule == nullptr || row < 0 ||
+        static_cast<std::size_t>(row) >= kRemoteVerbs.size()) {
+        return;
+    }
+    const control::ControlTarget target(kRemoteVerbs[static_cast<std::size_t>(row)].action,
+                                        rule->id);
+    if (midi_->learning() == target) {
+        midi_->cancelLearn();
+    }
+    (void)midi_->forget(target);
+    publishRemote();
+}
+
+void RulesController::keepLearnOnShowing() {
+    if (midi_ == nullptr) {
+        return;
+    }
+    const std::optional<control::ControlTarget> armed = midi_->learning();
+    const Rule::Config* rule = current();
+    // And one no input can answer: the port closed under it, and its row's LEARN, switched off
+    // with the port, could not give it up.
+    if (armed && control::takesRuleId(armed->action) &&
+        (rule == nullptr || armed->rule != rule->id || !midi_->running())) {
+        midi_->cancelLearn();
+    }
+}
+
+void RulesController::forgetRemoteOf(const std::string& id) {
+    if (midi_ == nullptr) {
+        return;
+    }
+    for (const control::ControlAction action : control::kControlActions) {
+        if (control::takesRuleId(action)) {
+            (void)midi_->forget(control::ControlTarget(action, id));
+        }
+    }
 }
 
 void RulesController::setStatus(const std::string& text, bool error) {

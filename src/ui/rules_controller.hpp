@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/control/midi_control.hpp"
 #include "core/dmx/fixture.hpp"
 #include "core/output/output_runner.hpp"
 #include "core/settings/settings.hpp"
@@ -10,6 +11,7 @@
 
 #include "main_window.h" // generated; holds RulesWindow too — see src/ui/CMakeLists.txt
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -87,6 +89,17 @@ public:
     RulesController& operator=(const RulesController&) = delete;
 
     void setRulesChanged(RulesChanged changed) { changed_ = std::move(changed); }
+
+    /// **E, remote control**: the MIDI controls bound to the rule showing, a row for each thing a
+    /// control can do to it, learned as the main window's are. `control` is the owner's control
+    /// input, and must outlive this or be taken away with null first; with none, nothing can be
+    /// learned and the rows say what is bound.
+    void setMidiControl(control::MidiControl* control);
+    /// LEARN on E's row `row`: armed for the rule showing, or given up when it already is. The
+    /// gesture says which control; the row says which rule, and what for.
+    void learnRemote(int row);
+    /// FORGET on E's row `row`: every control bound to that, for the rule showing.
+    void forgetRemote(int row);
     void setRigNeeded(RigNeeded needed) { rigNeeded_ = std::move(needed); }
 
     /// A rule id no rule in `rules` has — random, as an output's is (`output::newOutputId`), so
@@ -99,14 +112,14 @@ public:
     void hide();
     bool visible() const noexcept { return visible_; }
 
-    /// The window's folds — A, B, C, D and the event log — and the log's height, as a settings
+    /// The window's folds — A, B, C, D, E and the event log — and the log's height, as a settings
     /// file left them: folds are the window's and remembered across launches, like the main
     /// window's. Machine-local, as those are.
     void applyLayout(const settings::MachineSettings& machine);
     /// And as they are now, into `machine`, for saving.
     void layoutInto(settings::MachineSettings& machine) const;
-    /// A section's fold (0 to 3, A to D) or the log's (4), flipped — the arrows, which commit what
-    /// was being typed first. A folded section's body is clipped, not removed, so a box in it still
+    /// A section's fold (0 to 3, A to D; 5, E) or the log's (4), flipped — the arrows, which commit
+    /// what was being typed first. A folded section's body is clipped, not removed, so a box in it still
     /// commits when it lets go.
     void toggleFold(int which);
 
@@ -498,6 +511,16 @@ private:
     void publishSummaries();
     /// The event log, newest first, from `log_`.
     void publishLog();
+    /// E's rows and its summary, for the rule showing, from the control input's own table — which a
+    /// control learned on its own thread changes, so this runs every round. Its OSC line is written
+    /// by `publishSelected`, where the rule changes, since that one reads the runner's snapshot.
+    void publishRemote();
+    /// Gives up a learn armed for a rule that is not the one showing: a pad pressed after a switch
+    /// to another rule would be bound to a rule nobody is looking at. And one armed with no MIDI
+    /// input listening any more. `hide` gives up any.
+    void keepLearnOnShowing();
+    /// Forgets every control bound to rule `id`, for every action — the rule is going.
+    void forgetRemoteOf(const std::string& id);
     void setStatus(const std::string& text, bool error);
 
     /// Puts the selection back in step with `rules_` after the set has changed shape, keeping
@@ -553,6 +576,23 @@ private:
     /// struct is not a thing Slint models do.
     Repeater<PaletteEntry> paletteRows_;
     Repeater<FollowRow> followRows_;
+    Repeater<RemoteRow> remoteRows_;
+    /// The owner's MIDI control input, or null. See `setMidiControl`.
+    control::MidiControl* midi_ = nullptr;
+    /// E's rows, in order: what each binds, and what it says it does. Not `rate`: a MIDI control
+    /// sends 0 or 1 to a rule (`control::argumentOf`), and a rate of 0 or 1 is no fader — over OSC,
+    /// whose argument is a number, it is said under the rows.
+    struct RemoteVerb {
+        control::ControlAction action;
+        const char* label;
+    };
+    static constexpr std::array<RemoteVerb, 5> kRemoteVerbs{{
+        {control::ControlAction::RuleEnable, "enabled"},
+        {control::ControlAction::RuleMute, "mute"},
+        {control::ControlAction::RuleHalve, "\xC3\xB7" "2 faster"},
+        {control::ControlAction::RuleDouble, "\xC3\x97" "2 slower"},
+        {control::ControlAction::RuleReset, "rate as written"},
+    }};
     std::shared_ptr<slint::VectorModel<LogLine>> logModel_;
     bool visible_ = false;
 

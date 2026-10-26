@@ -87,21 +87,6 @@ bool sameSettings(const Options& a, const Options& b) noexcept {
            a.keepOctaveShift == b.keepOctaveShift;
 }
 
-/// "note 36 ch 10" — the control half of a binding, without the action.
-///
-/// The row already says which action, in the picker right beside this text, so repeating
-/// it would spend the width twice. One spelling for both a binding and a loose event, so
-/// "not bound - last seen note 36 ch 10" reads against the bound ones above it.
-std::string describeControl(const control::MidiBinding& binding) {
-    const std::string whole = control::formatMidiBinding(binding);
-    return whole.substr(0, whole.find(" ->"));
-}
-
-std::string describeControl(const control::MidiEvent& event) {
-    return describeControl(
-        control::MidiBinding{event.kind, event.channel, event.number, control::ControlAction::Tap});
-}
-
 /// The preset's OSC prefix if `OscPublisher` will take it, and the default if not.
 ///
 /// `settings::fromJson` already refuses a bad one, so this only matters for settings built
@@ -788,6 +773,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         rules_ = rules;
         countRules();
     });
+    // Its E, remote control, learns a rule's own controls on this window's MIDI input — declared
+    // before the editor, so it outlives it.
+    editor_.setMidiControl(&control_);
     // The same for the patch — and one more thing: the rule editor's "lights" list shows every
     // fixture and group by name, so it has to be rebuilt whenever the patch changes or it will
     // go on offering a fixture under a name it no longer has. (A rule aims at a fixture by id,
@@ -3108,6 +3096,13 @@ void WindowController::setOscControlNetwork(bool allowNetwork) {
     publishControl();
 }
 
+bool WindowController::learningHere() const {
+    // The rule editor arms the same learn for a rule's own controls (its E); that one is the
+    // editor's to show and to give up.
+    const std::optional<control::ControlTarget> armed = control_.learning();
+    return armed && !control::takesRuleId(armed->action);
+}
+
 void WindowController::pickLearnAction(int index) {
     if (index < 0 || static_cast<std::size_t>(index) >= learnActions_.size()) {
         return;
@@ -3115,14 +3110,17 @@ void WindowController::pickLearnAction(int index) {
     learnAction_ = index;
     // Changing what LEARN would bind while it is armed is a different intention, so the
     // arming does not carry over to it.
-    control_.cancelLearn();
+    if (learningHere()) {
+        control_.cancelLearn();
+    }
     publishControl();
 }
 
 void WindowController::toggleLearn() {
-    if (control_.learning()) {
+    if (learningHere()) {
         control_.cancelLearn();
     } else {
+        // Over a learn the rule editor armed, if one is: the last LEARN pressed is the one meant.
         control_.learn(learnActions_[static_cast<std::size_t>(learnAction_)]);
     }
     publishControl();
@@ -3130,7 +3128,9 @@ void WindowController::toggleLearn() {
 
 void WindowController::forgetLearned() {
     const control::ControlAction action = learnActions_[static_cast<std::size_t>(learnAction_)];
-    control_.cancelLearn();
+    if (learningHere()) {
+        control_.cancelLearn();
+    }
     (void)control_.forget(action);
     publishControl();
 }
@@ -3147,7 +3147,7 @@ void WindowController::publishControl(bool force) {
 
 void WindowController::publishMidiControl() {
     window_->set_control_on(control_.running());
-    window_->set_learning(control_.learning().has_value());
+    window_->set_learning(learningHere());
     window_->set_learn_action_index(learnAction_);
     // The picker follows the port rather than being the only record of it: it is written
     // from a settings file at startup and by `setMidiControlPort` from anywhere else, and
@@ -3181,7 +3181,7 @@ void WindowController::publishMidiControl() {
         return;
     }
     window_->set_control_error(false);
-    if (control_.learning()) {
+    if (learningHere()) {
         window_->set_control_reading_words(true);
         window_->set_control_reading(shared("waiting for a control..."));
         return;
@@ -3198,7 +3198,7 @@ void WindowController::publishMidiControl() {
         if (!text.empty()) {
             text += ", ";
         }
-        text += describeControl(binding);
+        text += control::describeControl(binding);
     }
     // A binding is a control, in DM Mono; "not bound" is a state, in words.
     window_->set_control_reading_words(text.empty());
@@ -3206,7 +3206,8 @@ void WindowController::publishMidiControl() {
         // Nothing bound. Say what did arrive instead, if anything has: a controller on a
         // channel nothing is listening to looks exactly like a broken cable otherwise.
         const std::optional<control::MidiEvent> last = control_.lastEvent();
-        text = last ? "not bound - last seen " + describeControl(*last) : std::string("not bound");
+        text = last ? "not bound - last seen " + control::describeControl(*last)
+                    : std::string("not bound");
     }
     window_->set_control_reading(shared(text));
 }

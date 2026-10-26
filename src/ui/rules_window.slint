@@ -162,6 +162,21 @@ export struct HeadChoice {
   ticked: bool,
 }
 
+/// One row of E, remote control: one thing a MIDI control can be made to do to the rule showing.
+export struct RemoteRow {
+  /// What it does: "enabled", "mute", "÷2 faster", "×2 slower", "rate as written".
+  label: string,
+  /// What it is bound to — "note 36 ch 10", two of them with a comma — or, in words, "not bound"
+  /// or "waiting for a control…".
+  reading: string,
+  /// The reading is a state in words, set in Archivo; a control is set in the editor's mono.
+  words: bool,
+  /// LEARN is armed for this row: the next control that moves is bound to it.
+  armed: bool,
+  /// Something is bound to it, so FORGET has something to forget.
+  bound: bool,
+}
+
 /// One line of the event log: when, which rule, what went out — in three columns rather than one
 /// string, and whether it was muted, which is drawn apart.
 export struct LogLine {
@@ -883,8 +898,22 @@ export component RulesWindow inherits Window {
   /// Five lines of 18 px to start; the divider over the log drags it, and the editor gives the
   /// height up.
   in-out property <length> log-lines-height: 90px;
-  /// 0 to 3 the sections, 4 the log: the controller folds it, having committed what was typed.
+  /// 0 to 3 the sections A to D, 4 the log, 5 section E: the controller folds it, having committed
+  /// what was typed.
   callback fold-clicked(int);
+
+  // --- E · remote control ----------------------------------------------------------------------
+  /// Its fold — the window's, kept with the others — its rows, and what its heading says folded.
+  in-out property <bool> remote-folded: true;
+  in-out property <[RemoteRow]> remote-rows;
+  in-out property <string> remote-summary;
+  /// Whether a MIDI control input is open to learn from. Without one LEARN can do nothing, and the
+  /// section says where to pick it.
+  in-out property <bool> remote-midi-on;
+  /// The same rule's OSC addresses, said under the rows.
+  in-out property <string> remote-osc;
+  callback remote-learn-clicked(int);
+  callback remote-forget-clicked(int);
 
   // --- the set ---------------------------------------------------------------------------------
   in-out property <[RuleRow]> rules;
@@ -3178,6 +3207,103 @@ export component RulesWindow inherits Window {
                       keys.focus();
                       root.follow-up-removed(index);
                     }
+                  }
+                }
+              }
+
+              // --- E · remote control ------------------------------------------------------------
+              // A pad, a switch or a button on a MIDI controller bound to this rule, a row for each
+              // thing it can be made to do, learned as the main window's controls are: LEARN, then
+              // the control. Under the rows, the OSC addresses that do the same. Folded to start:
+              // few rules are worked from outside.
+              Section {
+                letter: "E";
+                title: "remote control";
+                folded: root.remote-folded;
+                summary: root.remote-summary;
+                enabled: !root.none;
+                fold-clicked => {
+                  root.fold-clicked(5);
+                }
+
+                // The column's heading, once, over what each row is bound to.
+                HorizontalLayout {
+                  height: 18px;
+                  spacing: 10px;
+                  Rectangle {
+                    width: 118px;
+                    horizontal-stretch: 0;
+                  }
+                  Word {
+                    text: "MIDI control";
+                  }
+                }
+                for row[index] in root.remote-rows: HorizontalLayout {
+                  height: 34px;
+                  spacing: 10px;
+                  RowLabel {
+                    text: row.label;
+                  }
+                  // A control in mono, a state in words, as the main window's MIDI row says them.
+                  Text {
+                    width: 170px;
+                    horizontal-stretch: 0;
+                    text: row.reading;
+                    color: Wf.ink;
+                    font-family: row.words ? Wf.sans : Wf.code;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                  }
+                  // Lit while armed, as the main window's LEARN is; pressed again, it gives up.
+                  VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+                    // As wide as its armed word, so FORGET beside it does not move when it lights.
+                    Btn {
+                      width: 86px;
+                      text: row.armed ? "press it" : "learn";
+                      active: row.armed;
+                      enabled: !root.none && root.remote-midi-on;
+                      clicked => {
+                        root.remote-learn-clicked(index);
+                      }
+                    }
+                  }
+                  VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+                    Btn {
+                      text: "forget";
+                      enabled: !root.none && row.bound;
+                      clicked => {
+                        root.remote-forget-clicked(index);
+                      }
+                    }
+                  }
+                  Rectangle {
+                    horizontal-stretch: 1;
+                  }
+                }
+                // Why LEARN does nothing, while it does nothing.
+                if !root.none && !root.remote-midi-on: HorizontalLayout {
+                  height: 22px;
+                  Note {
+                    text: "MIDI control is off: pick its port in the main window's inputs to learn one";
+                    color: Wf.holding;
+                  }
+                }
+                if !root.none: HorizontalLayout {
+                  height: 40px;
+                  Text {
+                    text: root.remote-osc;
+                    color: Wf.ink2;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    min-width: 20px;
                   }
                 }
               }

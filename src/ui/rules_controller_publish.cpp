@@ -171,8 +171,10 @@ void RulesController::publishSelected() {
         window_->set_beat_of_bar_shown(false);
         window_->set_beat_of_bar_note(slint::SharedString(""));
         window_->set_delay_on(false);
+        window_->set_remote_osc(slint::SharedString(""));
         publishFollowUps();
         publishSummaries();
+        publishRemote();
         return;
     }
     window_->set_rule_name(shared(rule->name));
@@ -260,6 +262,57 @@ void RulesController::publishSelected() {
 
     publishFollowUps();
     publishSummaries();
+    publishRemote();
+    // E's OSC addresses, which hold the rule's id: here, where the rule on screen changes, and not
+    // in `publishRemote`, which every round runs — the prefix comes from the runner's snapshot, a
+    // copy of every output and fixture, and it cannot change while takt4 runs.
+    window_->set_remote_osc(shared("over OSC, while the main window listens: " +
+                                   runner_.snapshot().oscPrefix + "/ctl/rule/" + rule->id +
+                                   "/ then enable 0|1 \xC2\xB7 mute 0|1 \xC2\xB7 halve (\xC3\xB7" "2) "
+                                   "\xC2\xB7 double (\xC3\x97" "2) \xC2\xB7 reset \xC2\xB7 rate and a "
+                                   "number"));
+}
+
+void RulesController::publishRemote() {
+    // Every path to another rule on screen comes through here — a pick, an add, a delete, a set
+    // loaded — and so does every round.
+    keepLearnOnShowing();
+    window_->set_remote_midi_on(midi_ != nullptr && midi_->running());
+    const Rule::Config* rule = current();
+    if (rule == nullptr) {
+        remoteRows_.write({});
+        window_->set_remote_summary(slint::SharedString(""));
+        return;
+    }
+    const std::vector<control::MidiBinding> bindings =
+        midi_ != nullptr ? midi_->bindings() : std::vector<control::MidiBinding>{};
+    const std::optional<control::ControlTarget> armed =
+        midi_ != nullptr ? midi_->learning() : std::nullopt;
+    std::vector<RemoteRow> rows;
+    std::string summary;
+    for (const RemoteVerb& verb : kRemoteVerbs) {
+        const control::ControlTarget target(verb.action, rule->id);
+        std::string bound;
+        for (const control::MidiBinding& binding : bindings) {
+            if (binding.target == target) {
+                bound += (bound.empty() ? "" : ", ") + control::describeControl(binding);
+            }
+        }
+        RemoteRow row;
+        row.label = slint::SharedString(verb.label);
+        row.armed = armed == target;
+        row.bound = !bound.empty();
+        row.words = row.armed || bound.empty();
+        row.reading = shared(row.armed     ? std::string("waiting for a control\xE2\x80\xA6")
+                             : bound.empty() ? std::string("not bound")
+                                             : bound);
+        rows.push_back(row);
+        if (!bound.empty()) {
+            summary += (summary.empty() ? "" : "  \xC2\xB7  ") + std::string(verb.label) + ": " + bound;
+        }
+    }
+    remoteRows_.write(rows);
+    window_->set_remote_summary(shared(summary.empty() ? std::string("no MIDI control bound") : summary));
 }
 
 void RulesController::publishBeatOfBar(const Rule::Config& rule) {

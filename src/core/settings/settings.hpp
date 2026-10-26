@@ -139,6 +139,10 @@ struct MachineSettings {
     /// folds. As it opens the first time: B folded,
     /// as a new rule's B starts, and the log folded to one line; open, five lines of 18.
     std::array<bool, 4> ruleSectionsFolded{false, true, false, false};
+    /// And E, remote control, which came later than the four and is kept apart from them, so a
+    /// file written before it keeps its four: folded the first time, as few rules are worked from
+    /// outside.
+    bool ruleRemoteFolded = true;
     bool ruleLogOpen = false;
     double ruleLogHeight = 90.0;
     /// The patch editor's sheets folded — A where, B channels, C how far it moves — remembered the

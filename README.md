@@ -60,6 +60,7 @@ Enter the rule editor (the **triggers** window). **+** adds a rule. Each rule ha
 - **B only if**: confidence, probability, intensity, BPM range, other filters 
 - **C send**: an OSC address, a MIDI note, note off, CC, program change or pitch bend, or DMX values. **send to** picks the outputs; DMX picks fixtures under **lights** instead
 - **D then send**: follow-ups (a clip release, a note off, etc) after so many ms, beats or bars
+- **E remote control**: a MIDI pad or switch learned for this rule, and the rule's OSC addresses
 
 Each `{slot}` in an OSC address gets a value: shuffle (no repeats until all have played), random, cycle, weighted, fixed, a live value (BPM, bar, confidence...) or a ramp. The **preset** box fills in Resolume, TouchDesigner, MadMapper and QLC+ addresses
 
@@ -167,7 +168,7 @@ address                               send                                does
 - A change is refused, with the reason, while a dialog is open in takt4 ("busy"), while a start or stop is under way, and when it can't be done
 - To restart takt4 from another program, end the running one first: a second launch only brings the first one to the front. Set the environment variable `TAKT4_NO_CRASH_DIALOG=1` so that after a crash takt4 writes its report and ends, instead of showing a message that waits for someone to answer it
 
-**MIDI control**: on the MIDI row under **inputs**, pick your controller and an action, click **learn**, hit the midi button you want to use. Available actions: tap, downbeat, halve, double, lock, panic, release, fire the manual rules. A pad bound to lock pins it only while held
+**MIDI control**: on the MIDI row under **inputs**, pick your controller and an action, click **learn**, hit the midi button you want to use. Available actions: tap, downbeat, halve, double, lock, panic, release, fire the manual rules. A pad bound to lock pins it only while held. A rule's own are learned in its **E remote control**: enabled, mute, ÷2, ×2 and its rate as written. A pad holds a rule on, or muted, only while it's down; a CC switch follows its own on and off
 
 ## Lights / DMX
 

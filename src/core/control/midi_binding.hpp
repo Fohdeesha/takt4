@@ -72,6 +72,12 @@ std::string formatMidiBinding(const MidiBinding& binding);
 /// range, a missing field. Never throws: this reads a file a person may have edited.
 std::optional<MidiBinding> parseMidiBinding(std::string_view text) noexcept;
 
+/// "note 36 ch 10": the control half of a binding, without what it is bound to — which a window
+/// says beside it already. One spelling for a binding and a loose event, so "not bound - last
+/// seen note 36 ch 10" reads against the bound ones.
+std::string describeControl(const MidiBinding& binding);
+std::string describeControl(const MidiEvent& event);
+
 /// What a control that is not a switch should hand an action that wants `<0|1>`.
 ///
 /// A note is 1 while held and 0 on its release, so a pad bound to `lock` pins while it is

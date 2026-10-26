@@ -695,6 +695,7 @@ std::string toJson(const Settings& settings) {
              {"inputsFolded", settings.machine.inputsFolded},
              {"outputsFolded", settings.machine.outputsFolded},
              {"ruleSectionsFolded", settings.machine.ruleSectionsFolded},
+             {"ruleRemoteFolded", settings.machine.ruleRemoteFolded},
              {"ruleLogOpen", settings.machine.ruleLogOpen},
              {"ruleLogHeight", settings.machine.ruleLogHeight},
              {"patchSectionsFolded", settings.machine.patchSectionsFolded},
@@ -786,6 +787,7 @@ Settings fromDocument(const json& document) {
                 }
             }
         }
+        read(machine, "ruleRemoteFolded", settings.machine.ruleRemoteFolded);
         read(machine, "ruleLogOpen", settings.machine.ruleLogOpen);
         read(machine, "ruleLogHeight", settings.machine.ruleLogHeight);
         // A line's height to half the height of a large screen: a hand-edited 0 or a million

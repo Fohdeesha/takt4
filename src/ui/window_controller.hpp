@@ -733,6 +733,9 @@ private:
     /// redraw timer**, whose job is to show what changed rather than to overwrite the box
     /// somebody is typing a port into. See `publishOscControl`.
     void publishControl(bool force = true);
+    /// Whether the MIDI learn armed is this window's — one of its own actions rather than a rule's,
+    /// which the rule editor arms (its E, remote control).
+    bool learningHere() const;
     void publishMidiControl();
     void publishOscControl(bool force);
     void publishSnap();
