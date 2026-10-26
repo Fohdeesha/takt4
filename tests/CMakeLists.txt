@@ -72,6 +72,7 @@ add_executable(takt4_tests
   output/output_runner_test.cpp
   output/routing_test.cpp
   output/rule_sink_test.cpp
+  output/soak_test.cpp
   output/transports_test.cpp
   remote/remote_test.cpp
   rt/alloc_guard_test.cpp
