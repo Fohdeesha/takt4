@@ -273,9 +273,9 @@ TEST_CASE("the two addresses that reach the rules rather than the tracker", "[co
         CHECK(control.dispatch("/takt4/ctl/bar", 5.0));
         CHECK(control.dispatch("/takt4/ctl/bar", 1.0));
         CHECK(control.dispatch("/takt4/ctl/bar", 2147483647.0));
-        for (const double junk : {0.0, -3.0, 2.5, 2147483648.0,
-                                  std::numeric_limits<double>::quiet_NaN(),
-                                  std::numeric_limits<double>::infinity()}) {
+        for (const double junk :
+             {0.0, -3.0, 2.5, 2147483648.0, std::numeric_limits<double>::quiet_NaN(),
+              std::numeric_limits<double>::infinity()}) {
             INFO(junk);
             CHECK_FALSE(control.dispatch("/takt4/ctl/bar", junk));
         }

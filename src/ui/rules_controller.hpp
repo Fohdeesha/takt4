@@ -119,8 +119,8 @@ public:
     /// And as they are now, into `machine`, for saving.
     void layoutInto(settings::MachineSettings& machine) const;
     /// A section's fold (0 to 3, A to D; 5, E) or the log's (4), flipped — the arrows, which commit
-    /// what was being typed first. A folded section's body is clipped, not removed, so a box in it still
-    /// commits when it lets go.
+    /// what was being typed first. A folded section's body is clipped, not removed, so a box in it
+    /// still commits when it lets go.
     void toggleFold(int which);
 
     /// One round of refreshing what the window shows — fire counts, the log. Driven by the main
@@ -589,8 +589,10 @@ private:
     static constexpr std::array<RemoteVerb, 5> kRemoteVerbs{{
         {control::ControlAction::RuleEnable, "enabled"},
         {control::ControlAction::RuleMute, "mute"},
-        {control::ControlAction::RuleHalve, "\xC3\xB7" "2 faster"},
-        {control::ControlAction::RuleDouble, "\xC3\x97" "2 slower"},
+        {control::ControlAction::RuleHalve, "\xC3\xB7"
+                                            "2 faster"},
+        {control::ControlAction::RuleDouble, "\xC3\x97"
+                                             "2 slower"},
         {control::ControlAction::RuleReset, "rate as written"},
     }};
     std::shared_ptr<slint::VectorModel<LogLine>> logModel_;

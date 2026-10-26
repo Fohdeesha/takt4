@@ -42,8 +42,8 @@ namespace takt4::output {
 ///
 /// **`/bar` and `/phrase` come before the `/beat` of the downbeat they number**, at its moment,
 /// so a receiver knows which bar a downbeat is as the downbeat arrives. `/phrase` 1 is the first
-/// bar of a phrase — bars 1, L + 1, 2L + 1 — which is what a show fires a phrase's cue on. The bars are the output
-/// thread's count (`OutputRunner`), the one the rules count in and the window shows.
+/// bar of a phrase — bars 1, L + 1, 2L + 1 — which is what a show fires a phrase's cue on. The bars
+/// are the output thread's count (`OutputRunner`), the one the rules count in and the window shows.
 ///
 /// The six state addresses are sent on every beat, and between beats when a value changes —
 /// the tempo by more than 0.005 BPM, the confidence by more than 0.005 — so a consumer that

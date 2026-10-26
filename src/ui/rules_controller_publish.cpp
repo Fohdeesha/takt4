@@ -268,8 +268,10 @@ void RulesController::publishSelected() {
     // copy of every output and fixture, and it cannot change while takt4 runs.
     window_->set_remote_osc(shared("over OSC, while the main window listens: " +
                                    runner_.snapshot().oscPrefix + "/ctl/rule/" + rule->id +
-                                   "/ then enable 0|1 \xC2\xB7 mute 0|1 \xC2\xB7 halve (\xC3\xB7" "2) "
-                                   "\xC2\xB7 double (\xC3\x97" "2) \xC2\xB7 reset \xC2\xB7 rate and a "
+                                   "/ then enable 0|1 \xC2\xB7 mute 0|1 \xC2\xB7 halve (\xC3\xB7"
+                                   "2) "
+                                   "\xC2\xB7 double (\xC3\x97"
+                                   "2) \xC2\xB7 reset \xC2\xB7 rate and a "
                                    "number"));
 }
 
@@ -303,16 +305,18 @@ void RulesController::publishRemote() {
         row.armed = armed == target;
         row.bound = !bound.empty();
         row.words = row.armed || bound.empty();
-        row.reading = shared(row.armed     ? std::string("waiting for a control\xE2\x80\xA6")
+        row.reading = shared(row.armed       ? std::string("waiting for a control\xE2\x80\xA6")
                              : bound.empty() ? std::string("not bound")
                                              : bound);
         rows.push_back(row);
         if (!bound.empty()) {
-            summary += (summary.empty() ? "" : "  \xC2\xB7  ") + std::string(verb.label) + ": " + bound;
+            summary +=
+                (summary.empty() ? "" : "  \xC2\xB7  ") + std::string(verb.label) + ": " + bound;
         }
     }
     remoteRows_.write(rows);
-    window_->set_remote_summary(shared(summary.empty() ? std::string("no MIDI control bound") : summary));
+    window_->set_remote_summary(
+        shared(summary.empty() ? std::string("no MIDI control bound") : summary));
 }
 
 void RulesController::publishBeatOfBar(const Rule::Config& rule) {

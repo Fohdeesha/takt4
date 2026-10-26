@@ -64,8 +64,9 @@ public:
     ///
     /// Running effects **carry on**, re-aimed at the same fixture — by `Fixture::id`, so a
     /// rename is not a different fixture — in the new patch; they were all cancelled, so every
-    /// fade, strobe and path froze where it was whenever a name was typed. An effect on a fixture that has gone, or cannot take it any more, stops
-    /// there. A channel TEST hold is let go, and its channel put back where it was.
+    /// fade, strobe and path froze where it was whenever a name was typed. An effect on a fixture
+    /// that has gone, or cannot take it any more, stops there. A channel TEST hold is let go, and
+    /// its channel put back where it was.
     void setPatch(std::vector<Fixture> patch);
     const std::vector<Fixture>& patch() const noexcept { return patch_; }
 

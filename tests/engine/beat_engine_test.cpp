@@ -81,7 +81,8 @@ std::unique_ptr<BeatEngine> makeParticleEngine(BeatEngine::Options options = {})
 /// the lock came at 1.9 s, 123.5 since it waits for a beat to be heard, at 2.8 — and the beats'
 /// own spacing takes it to 128.4 a beat or two later.
 bool onTheDrumMachine(double bpm) {
-    return std::abs(bpm / 128.4 - 1.0) <= takt4::tracking::TempoTracker::Options{}.sameTempoTolerance;
+    return std::abs(bpm / 128.4 - 1.0) <=
+           takt4::tracking::TempoTracker::Options{}.sameTempoTolerance;
 }
 
 } // namespace
@@ -1566,7 +1567,8 @@ std::vector<float> beatless(Beatless kind, double seconds) {
     for (const double sample : out) {
         power += (sample - mean) * (sample - mean);
     }
-    const double gain = std::pow(10.0, -12.0 / 20.0) / std::sqrt(power / static_cast<double>(out.size()));
+    const double gain =
+        std::pow(10.0, -12.0 / 20.0) / std::sqrt(power / static_cast<double>(out.size()));
     std::vector<float> signal(out.size());
     for (std::size_t i = 0; i < out.size(); ++i) {
         signal[i] = static_cast<float>(std::clamp((out[i] - mean) * gain, -1.0, 1.0));

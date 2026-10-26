@@ -439,8 +439,9 @@ void OscPublisher::publishBeat(const tracking::BeatEvent& event, std::optional<d
     // beat would otherwise number this one by the bar before.
     if (event.downbeat && bar > 0) {
         const std::uint64_t phrase = (bar - 1) % phraseBars_ + 1;
-        sendInt(barNumberAddress_, static_cast<std::int32_t>(std::min<std::uint64_t>(bar, 0x7FFFFFFF)),
-                kAllOutputs, at, true);
+        sendInt(barNumberAddress_,
+                static_cast<std::int32_t>(std::min<std::uint64_t>(bar, 0x7FFFFFFF)), kAllOutputs,
+                at, true);
         sendInt(phraseAddress_,
                 static_cast<std::int32_t>(std::min<std::uint64_t>(phrase, 0x7FFFFFFF)), kAllOutputs,
                 at, true);

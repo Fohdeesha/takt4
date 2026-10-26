@@ -43,7 +43,8 @@ tracking::TempoTracker::Options forDecoder(tracking::TempoTracker::Options optio
 }
 
 /// The network's hop: one activation every 20 ms.
-constexpr double kActivationPeriod = static_cast<double>(audio::kHopSize) / audio::kInternalSampleRate;
+constexpr double kActivationPeriod =
+    static_cast<double>(audio::kHopSize) / audio::kInternalSampleRate;
 
 /// How many decoder frames one network activation is worth. A decoder at 100 Hz takes two
 /// steps for each, the first on an activation interpolated between the last two.
@@ -387,7 +388,8 @@ void BeatEngine::trackOne(const model::FrameActivation& activation, bool interpo
     // none while there is no signal — the network ringing on, as above.
     if (!interpolated && !noSignal_) {
         pulse_.push(activation.beat, activation.downbeat,
-                    static_cast<double>(frame.tracked.intervalFrames) * networkFramesPerDecoderFrame_);
+                    static_cast<double>(frame.tracked.intervalFrames) *
+                        networkFramesPerDecoderFrame_);
     }
     tempo_.setWaitingForPulse(waitForPulse_ && !pulse_.open());
     frame.pulseHeard = pulse_.open();

@@ -332,10 +332,10 @@ TEST_CASE("a chip's name is never cut short: its column is as wide as the rule's
     CHECK(width() == Approx(112.0f));
 
     // A MIDI note's value is its velocity.
-    const auto note = std::find(takt4::trigger::kMessageKinds.begin(),
-                                takt4::trigger::kMessageKinds.end(),
-                                takt4::trigger::Message::Kind::MidiNote) -
-                      takt4::trigger::kMessageKinds.begin();
+    const auto note =
+        std::find(takt4::trigger::kMessageKinds.begin(), takt4::trigger::kMessageKinds.end(),
+                  takt4::trigger::Message::Kind::MidiNote) -
+        takt4::trigger::kMessageKinds.begin();
     editor.pickSend(static_cast<int>(note));
     bool velocity = false;
     const auto slots = editor.window().get_slots();
@@ -7132,8 +7132,10 @@ TEST_CASE("a pad learned in a rule's own section drives that rule, and goes with
     REQUIRE(rows.size() == 5);
     CHECK(std::string(rows[0].label) == "enabled");
     CHECK(std::string(rows[1].label) == "mute");
-    CHECK(std::string(rows[2].label) == "\xC3\xB7" "2 faster");
-    CHECK(std::string(rows[3].label) == "\xC3\x97" "2 slower");
+    CHECK(std::string(rows[2].label) == "\xC3\xB7"
+                                        "2 faster");
+    CHECK(std::string(rows[3].label) == "\xC3\x97"
+                                        "2 slower");
     CHECK(std::string(rows[4].label) == "rate as written");
     for (const RemoteRow& row : rows) {
         CHECK(std::string(row.reading) == "not bound");

@@ -1077,7 +1077,8 @@ void OutputRunner::apply(const OutputCommand& command) {
             // "This bar is bar n": the bar of the last beat fired — or, before a downbeat has
             // been counted, the one the tracker is in — and the next downbeat starts n + 1.
             const std::int64_t n = std::clamp<std::int64_t>(command.count, 1, 0x7FFFFFFF);
-            const std::uint64_t at = barsFromNextDownbeat_ ? source_.state().bars : firedTrackerBars_;
+            const std::uint64_t at =
+                barsFromNextDownbeat_ ? source_.state().bars : firedTrackerBars_;
             barShift_ = n - static_cast<std::int64_t>(at);
             barsFromNextDownbeat_ = false;
             break;
@@ -1444,9 +1445,8 @@ void OutputRunner::drainOnce(double now) {
     // OSC's state addresses are how a peer learns the tempo drifted.
     // The global state goes out only for a run that is going: stopped, `source_.state()` is the
     // last run's, or another source's after the picker was flipped.
-    guarded("the outputs", [&] {
-        transports_.advance(now, source_.state(), !quiet_, source_.intensity().level);
-    });
+    guarded("the outputs",
+            [&] { transports_.advance(now, source_.state(), !quiet_, source_.intensity().level); });
 
     const trigger::Context context = contextAt(now);
     // The output thread never sees a frame, so an onset reaches it as a count that moved.

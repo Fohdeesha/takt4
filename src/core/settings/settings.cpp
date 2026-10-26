@@ -847,7 +847,8 @@ Settings fromDocument(const json& document) {
         // A whole number of bars, or eight: `read` would take 2.5 as 2.
         if (preset.contains("phraseBars") && preset.at("phraseBars").is_number_integer()) {
             const std::int64_t bars = preset.at("phraseBars").get<std::int64_t>();
-            if (bars >= 1 && bars <= static_cast<std::int64_t>(output::OscPublisher::kMaxPhraseBars)) {
+            if (bars >= 1 &&
+                bars <= static_cast<std::int64_t>(output::OscPublisher::kMaxPhraseBars)) {
                 settings.preset.phraseBars = static_cast<std::uint32_t>(bars);
             }
         }

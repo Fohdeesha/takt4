@@ -93,7 +93,8 @@ double PulseGate::medianOf(std::size_t from, std::size_t to) noexcept {
     std::copy(acf_.begin() + static_cast<std::ptrdiff_t>(from),
               acf_.begin() + static_cast<std::ptrdiff_t>(to + 1), scratch_.begin());
     const auto middle = scratch_.begin() + static_cast<std::ptrdiff_t>(count / 2);
-    std::nth_element(scratch_.begin(), middle, scratch_.begin() + static_cast<std::ptrdiff_t>(count));
+    std::nth_element(scratch_.begin(), middle,
+                     scratch_.begin() + static_cast<std::ptrdiff_t>(count));
     double median = *middle;
     if (count % 2 == 0) {
         median = (median + *std::max_element(scratch_.begin(), middle)) / 2.0;
@@ -110,7 +111,8 @@ void PulseGate::judge(double periodFrames) noexcept {
     repeat_ = -1.0;
     twice_ = kNotANumber;
     bar_ = kNotANumber;
-    if (lagLow_ <= lagHigh_ && count > lagHigh_ + 1 && periodFrames >= static_cast<double>(lagLow_) &&
+    if (lagLow_ <= lagHigh_ && count > lagHigh_ + 1 &&
+        periodFrames >= static_cast<double>(lagLow_) &&
         periodFrames <= static_cast<double>(lagHigh_)) {
         double mean = 0.0;
         for (std::size_t i = 0; i < count; ++i) {
@@ -165,9 +167,9 @@ void PulseGate::judge(double periodFrames) noexcept {
                 for (const std::size_t beatsInBar : {std::size_t{3}, std::size_t{4}}) {
                     const std::size_t lag = beatsInBar * period;
                     if (lag + 3 <= count) {
-                        const double peak = *std::max_element(
-                            acf_.begin() + static_cast<std::ptrdiff_t>(lag - 2),
-                            acf_.begin() + static_cast<std::ptrdiff_t>(lag + 3));
+                        const double peak =
+                            *std::max_element(acf_.begin() + static_cast<std::ptrdiff_t>(lag - 2),
+                                              acf_.begin() + static_cast<std::ptrdiff_t>(lag + 3));
                         bars = std::isnan(bars) ? peak : std::max(bars, peak);
                     }
                 }

@@ -192,8 +192,9 @@ TEST_CASE("a file with Link and the MIDI clock as settings of their own loads th
         CHECK(again.preset.outputs == old.preset.outputs);
     }
 
-    SECTION("a Link row the old switch disagrees with, or one with no switch, reads as the row says, "
-            "and saves as it read") {
+    SECTION(
+        "a Link row the old switch disagrees with, or one with no switch, reads as the row says, "
+        "and saves as it read") {
         // The switch held the file's own word, and a save wrote the row's into it: the settings
         // read and the settings saved were two different ones, and the next read a third.
         for (const char* file : {R"({"preset": {"link": false, "outputs": ["Link = link"]}})",
@@ -214,9 +215,10 @@ TEST_CASE("the bars of a phrase are kept, and a number that is not one is eight"
     in.preset.phraseBars = 16;
     CHECK(roundTrip(in).preset.phraseBars == 16);
     CHECK(Settings{}.preset.phraseBars == 8);
-    for (const char* file : {R"({"preset": {"phraseBars": 0}})", R"({"preset": {"phraseBars": -4}})",
-                             R"({"preset": {"phraseBars": 257}})", R"({"preset": {"phraseBars": "16"}})",
-                             R"({"preset": {"phraseBars": 2.5}})", R"({"preset": {}})"}) {
+    for (const char* file :
+         {R"({"preset": {"phraseBars": 0}})", R"({"preset": {"phraseBars": -4}})",
+          R"({"preset": {"phraseBars": 257}})", R"({"preset": {"phraseBars": "16"}})",
+          R"({"preset": {"phraseBars": 2.5}})", R"({"preset": {}})"}) {
         INFO(file);
         CHECK(takt4::settings::fromJson(file).preset.phraseBars == 8);
     }

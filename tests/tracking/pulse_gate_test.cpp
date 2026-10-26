@@ -60,7 +60,8 @@ struct Noise {
 
 } // namespace
 
-TEST_CASE("the gate's numbers are the ones its thresholds were measured with", "[tracking][pulse]") {
+TEST_CASE("the gate's numbers are the ones its thresholds were measured with",
+          "[tracking][pulse]") {
     // The thresholds were chosen in numpy over traces (numpy's percentile and median, the
     // autocorrelation normalised by its energy). These are numpy's answers for the same
     // activations, so a C++ that drifted from what was measured fails here rather than at a gig.
@@ -130,9 +131,10 @@ TEST_CASE("a steady beat at the decoder's period opens the gate, after two secon
     CHECK(gate.open());
 }
 
-TEST_CASE("a beat that falls back to nothing between opens it on its own; a busy one needs two more "
-          "signs",
-          "[tracking][pulse]") {
+TEST_CASE(
+    "a beat that falls back to nothing between opens it on its own; a busy one needs two more "
+    "signs",
+    "[tracking][pulse]") {
     // A clean kick: nothing between the beats, no bar to be seen.
     const auto clean = [](std::size_t i) { return i % 25 == 0 ? 0.9f : i % 25 == 1 ? 0.4f : 0.0f; };
     PulseGate gate;

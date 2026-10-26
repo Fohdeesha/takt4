@@ -85,7 +85,8 @@ std::string describeControl(const MidiBinding& binding) {
 }
 
 std::string describeControl(const MidiEvent& event) {
-    return describeControl(MidiBinding{event.kind, event.channel, event.number, ControlAction::Tap});
+    return describeControl(
+        MidiBinding{event.kind, event.channel, event.number, ControlAction::Tap});
 }
 
 std::optional<MidiBinding> parseMidiBinding(std::string_view text) noexcept try {

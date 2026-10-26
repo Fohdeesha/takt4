@@ -11673,41 +11673,69 @@ TEST_CASE("whatever a show controller sends, the window stays up, answers and sa
         state ^= state << 5U;
         return state;
     };
-    const auto pick = [&next](std::size_t count) { return static_cast<std::size_t>(next() % count); };
+    const auto pick = [&next](std::size_t count) {
+        return static_cast<std::size_t>(next() % count);
+    };
 
-    const std::array<std::string_view, 28> verbs = {
-        "status",        "audio/devices", "outputs",          "audio/start",   "audio/stop",
-        "audio/restart", "audio/device",  "audio/channel",    "source",        "output/add",
-        "output/1/enable", "output/1/delay", "output/1/global", "output//enable", "output/",
-        "output/\xff/delay", "tap",       "downbeat",         "tempo/halve",   "tempo/double",
-        "lock",          "panic",         "panic/release",    "manual",        "rule/x/enable",
-        "",              "audio",         "bar"};
-    const std::array<std::string, 22> words = {
-        "",
-        "audio",
-        "link",
-        "prolink",
-        "midiclock",
-        "osc",
-        "artnet",
-        "127.0.0.1",
-        "256.1.1.1",
-        "localhost",
-        "::1",
-        "\xff\xfe",
-        "\xc0\x80",
-        "\xed\xa0\x80",
-        "abc\x80",
-        "\xf4\x90\x80\x80",
-        "\t\r\n\x01",
-        "\xF0\x9F\x8E\xB5 \xE2\x80\xAE",
-        "a/b%s%n",
-        std::string(200, 'A'),
-        std::string(300, '\xff'),
-        "ASIO"};
-    const std::array<std::int32_t, 9> ints = {0, 1, -1, 2, 65535, 65536,
+    const std::array<std::string_view, 28> verbs = {"status",
+                                                    "audio/devices",
+                                                    "outputs",
+                                                    "audio/start",
+                                                    "audio/stop",
+                                                    "audio/restart",
+                                                    "audio/device",
+                                                    "audio/channel",
+                                                    "source",
+                                                    "output/add",
+                                                    "output/1/enable",
+                                                    "output/1/delay",
+                                                    "output/1/global",
+                                                    "output//enable",
+                                                    "output/",
+                                                    "output/\xff/delay",
+                                                    "tap",
+                                                    "downbeat",
+                                                    "tempo/halve",
+                                                    "tempo/double",
+                                                    "lock",
+                                                    "panic",
+                                                    "panic/release",
+                                                    "manual",
+                                                    "rule/x/enable",
+                                                    "",
+                                                    "audio",
+                                                    "bar"};
+    const std::array<std::string, 22> words = {"",
+                                               "audio",
+                                               "link",
+                                               "prolink",
+                                               "midiclock",
+                                               "osc",
+                                               "artnet",
+                                               "127.0.0.1",
+                                               "256.1.1.1",
+                                               "localhost",
+                                               "::1",
+                                               "\xff\xfe",
+                                               "\xc0\x80",
+                                               "\xed\xa0\x80",
+                                               "abc\x80",
+                                               "\xf4\x90\x80\x80",
+                                               "\t\r\n\x01",
+                                               "\xF0\x9F\x8E\xB5 \xE2\x80\xAE",
+                                               "a/b%s%n",
+                                               std::string(200, 'A'),
+                                               std::string(300, '\xff'),
+                                               "ASIO"};
+    const std::array<std::int32_t, 9> ints = {0,
+                                              1,
+                                              -1,
+                                              2,
+                                              65535,
+                                              65536,
                                               std::numeric_limits<std::int32_t>::min(),
-                                              std::numeric_limits<std::int32_t>::max(), 7};
+                                              std::numeric_limits<std::int32_t>::max(),
+                                              7};
     const std::array<float, 9> floats = {0.0f,
                                          1.0f,
                                          -1.0f,
@@ -11771,7 +11799,8 @@ TEST_CASE("whatever a show controller sends, the window stays up, answers and sa
         std::string address = "/takt4/ctl/";
         switch (pick(8)) {
         case 0:
-            address += std::array<const char*, 3>{"audio/start", "audio/stop", "audio/restart"}[pick(3)];
+            address +=
+                std::array<const char*, 3>{"audio/start", "audio/stop", "audio/restart"}[pick(3)];
             seq();
             break;
         case 1:
@@ -11905,10 +11934,10 @@ TEST_CASE("whatever a show controller sends, the window stays up, answers and sa
     while (showController.ready(0)) {
         (void)showController.receive();
     }
-    INFO(controller.oscControl().handled() << " handled, " << controller.oscControl().ignored()
-                                           << " ignored, " << controller.oscControl().commandsQueued()
-                                           << " changes queued, "
-                                           << controller.oscControl().remoteRefused() << " refused");
+    INFO(controller.oscControl().handled()
+         << " handled, " << controller.oscControl().ignored() << " ignored, "
+         << controller.oscControl().commandsQueued() << " changes queued, "
+         << controller.oscControl().remoteRefused() << " refused");
     // Every one of them was looked at: none slipped past the counts.
     CHECK(controller.oscControl().commandsQueued() > 0);
     CHECK(controller.oscControl().remoteRefused() > 0);

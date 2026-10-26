@@ -3831,8 +3831,7 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
         std::to_string(loaded.preset.fixtures.size()) + " fixtures" +
         (loaded.machine.inFile ? ", the input, MIDI and OSC control and the layout." : ".") +
         (restart.empty() ? std::string{} : " Restart takt4 for " + restart + " to take effect.") +
-        (metersAtStart ? " Beats per bar change at the next START." : "") +
-        [&loaded] {
+        (metersAtStart ? " Beats per bar change at the next START." : "") + [&loaded] {
             const std::string rules = settings::newerRulesNotice(loaded.preset);
             return rules.empty() ? rules : " " + rules;
         }();

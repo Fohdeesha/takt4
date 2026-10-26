@@ -89,12 +89,11 @@ private:
     void once(std::vector<std::uint8_t>& data) {
         // Values that mean something to a parser: terminators, padding, OSC's own markers,
         // the ends of a signed byte, a UTF-8 lead and continuation, a quote and a brace.
-        static constexpr std::array<std::uint8_t, 14> kBytes = {0x00, 0xFF, 0x7F, 0x80, ',',  '/', '#',
-                                                                '"',  '{',  ']',  0xC0, 0xBF, 0x0A, 'i'};
+        static constexpr std::array<std::uint8_t, 14> kBytes = {
+            0x00, 0xFF, 0x7F, 0x80, ',', '/', '#', '"', '{', ']', 0xC0, 0xBF, 0x0A, 'i'};
         // And words: lengths and counts made zero, huge, negative or one past a boundary.
-        static constexpr std::array<std::uint32_t, 8> kWords = {0U,          0xFFFFFFFFU, 0x7FFFFFFFU,
-                                                                0x80000000U, 0x00001000U, 0x0000FFFFU,
-                                                                0x00010000U, 4U};
+        static constexpr std::array<std::uint32_t, 8> kWords = {
+            0U, 0xFFFFFFFFU, 0x7FFFFFFFU, 0x80000000U, 0x00001000U, 0x0000FFFFU, 0x00010000U, 4U};
         const std::size_t size = data.size();
         switch (pick(8)) {
         case 0:
@@ -113,7 +112,8 @@ private:
             const std::size_t count = 1 + pick(8);
             std::vector<std::uint8_t> extra(count);
             for (std::uint8_t& byte : extra) {
-                byte = pick(2) == 0 ? kBytes[pick(kBytes.size())] : static_cast<std::uint8_t>(next());
+                byte =
+                    pick(2) == 0 ? kBytes[pick(kBytes.size())] : static_cast<std::uint8_t>(next());
             }
             data.insert(data.begin() + static_cast<std::ptrdiff_t>(at), extra.begin(), extra.end());
             break;
@@ -133,8 +133,9 @@ private:
             if (size > 1) {
                 const std::size_t from = pick(size);
                 const std::size_t count = std::min(size - from, 1 + pick(32));
-                const std::vector<std::uint8_t> chunk(data.begin() + static_cast<std::ptrdiff_t>(from),
-                                                      data.begin() + static_cast<std::ptrdiff_t>(from + count));
+                const std::vector<std::uint8_t> chunk(
+                    data.begin() + static_cast<std::ptrdiff_t>(from),
+                    data.begin() + static_cast<std::ptrdiff_t>(from + count));
                 const std::size_t to = pick(size);
                 for (std::size_t i = 0; i < chunk.size() && to + i < data.size(); ++i) {
                     data[to + i] = chunk[i];
@@ -146,7 +147,8 @@ private:
                 const std::size_t at = pick(size - 3);
                 const std::uint32_t word = kWords[pick(kWords.size())];
                 for (std::size_t i = 0; i < 4; ++i) {
-                    data[at + i] = static_cast<std::uint8_t>(word >> (8U * (pick(2) == 0 ? i : 3 - i)));
+                    data[at + i] =
+                        static_cast<std::uint8_t>(word >> (8U * (pick(2) == 0 ? i : 3 - i)));
                 }
             }
             break;
@@ -180,10 +182,11 @@ bool isUtf8(std::string_view text) {
 /// the library show, which Slint will not draw if it is not UTF-8.
 bool showable(const takt4::fixtures::Definition& definition) {
     const auto all = [](const std::vector<std::string>& texts) {
-        return std::all_of(texts.begin(), texts.end(), [](const std::string& t) { return isUtf8(t); });
+        return std::all_of(texts.begin(), texts.end(),
+                           [](const std::string& t) { return isUtf8(t); });
     };
-    if (!isUtf8(definition.manufacturer) || !isUtf8(definition.model) || !isUtf8(definition.revision) ||
-        !all(definition.notes)) {
+    if (!isUtf8(definition.manufacturer) || !isUtf8(definition.model) ||
+        !isUtf8(definition.revision) || !all(definition.notes)) {
         return false;
     }
     for (const auto& mode : definition.modes) {
@@ -250,7 +253,8 @@ public:
                 if (parent.is_object()) {
                     parent.erase(path.back());
                 } else if (parent.is_array() && !parent.empty()) {
-                    parent.erase(parent.begin() + static_cast<std::ptrdiff_t>(random_.pick(parent.size())));
+                    parent.erase(parent.begin() +
+                                 static_cast<std::ptrdiff_t>(random_.pick(parent.size())));
                 }
                 break;
             }
@@ -388,7 +392,8 @@ TEST_CASE("mangled OSC is read or refused, and what is read lies inside the data
         (void)takt4::control::forEachOscMessage(packet, [&](std::span<const std::byte> message) {
             const auto begin = reinterpret_cast<std::uintptr_t>(packet.data());
             const auto at = reinterpret_cast<std::uintptr_t>(message.data());
-            REQUIRE((message.empty() || (at >= begin && at + message.size() <= begin + packet.size())));
+            REQUIRE(
+                (message.empty() || (at >= begin && at + message.size() <= begin + packet.size())));
             (void)takt4::control::parseOsc(message);
         });
     }
@@ -444,8 +449,10 @@ TEST_CASE("a mangled GDTF archive or description is read or refused with a reaso
         R"(<Geometry Name="Body"><Beam Name="Beam"/></Geometry>)",
         gdtfMode("Mode 1", "Body",
                  gdtfChannel("Body", "1", "Dimmer") + gdtfChannel("Body", "2", "ColorAdd_R") +
-                     gdtfChannel("Body", "3", "ColorAdd_G") + gdtfChannel("Body", "4", "ColorAdd_B")) +
-        gdtfMode("Mode 2", "Body", gdtfChannel("Body", "1,2", "Pan") + gdtfChannel("Body", "3", "Shutter1")));
+                     gdtfChannel("Body", "3", "ColorAdd_G") +
+                     gdtfChannel("Body", "4", "ColorAdd_B")) +
+            gdtfMode("Mode 2", "Body",
+                     gdtfChannel("Body", "1,2", "Pan") + gdtfChannel("Body", "3", "Shutter1")));
     const std::vector<std::uint8_t> deflated = takt4::test::zipOf({{"description.xml", xml}}, true);
     const std::vector<std::uint8_t> stored = takt4::test::zipOf({{"description.xml", xml}}, false);
     REQUIRE(takt4::fixtures::readGdtfArchive(deflated, "a.gdtf").definition.has_value());
@@ -534,8 +541,9 @@ TEST_CASE("a mangled Open Fixture Library file is read or refused with a reason,
     CHECK(structured > count / 10);
 }
 
-TEST_CASE("a mangled settings file loads or is called damaged, and what loads saves and loads again",
-          "[fuzz][settings]") {
+TEST_CASE(
+    "a mangled settings file loads or is called damaged, and what loads saves and loads again",
+    "[fuzz][settings]") {
     // A file with something in every part of it: the machine's, the outputs of each kind, rules,
     // a patched fixture.
     takt4::settings::Settings rich;

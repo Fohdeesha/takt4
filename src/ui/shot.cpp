@@ -178,7 +178,8 @@ void fillFromSyntheticRun(MainWindow& window,
     // Not called `engine`: that would read as the namespace two lines down. Qualified
     // lookup would still find the namespace — it only considers namespaces and types —
     // but a reader should not have to know that rule to follow this.
-    // Without the pulse wait, the tracker as it was before there was one: what loud noise did to it.
+    // Without the pulse wait, the tracker as it was before there was one: what loud noise did to
+    // it.
     engine::BeatEngine::Options engineOptions;
     engineOptions.waitForPulse = waitForPulse;
     auto beatEngine = std::make_unique<engine::BeatEngine>(weights, space, engineOptions);
@@ -634,15 +635,21 @@ void fillRules(RulesWindow& window, bool dmx, bool panicked, const std::string& 
     auto remotes = std::make_shared<slint::VectorModel<RemoteRow>>();
     remotes->push_back(remote("enabled", "note 36 ch 10", false, false, true));
     remotes->push_back(remote("mute", "not bound", true, false, false));
-    remotes->push_back(remote("\xC3\xB7" "2 faster", "not bound", true, false, false));
-    remotes->push_back(remote("\xC3\x97" "2 slower", "not bound", true, false, false));
+    remotes->push_back(remote("\xC3\xB7"
+                              "2 faster",
+                              "not bound", true, false, false));
+    remotes->push_back(remote("\xC3\x97"
+                              "2 slower",
+                              "not bound", true, false, false));
     remotes->push_back(remote("rate as written", "not bound", true, false, false));
     window.set_remote_rows(remotes);
     window.set_remote_summary(slint::SharedString("enabled: note 36 ch 10"));
     window.set_remote_midi_on(true);
     window.set_remote_osc(slint::SharedString(
         "over OSC, while the main window listens: /takt4/ctl/rule/layer1/ then enable 0|1 "
-        "\xC2\xB7 mute 0|1 \xC2\xB7 halve (\xC3\xB7" "2) \xC2\xB7 double (\xC3\x97" "2) \xC2\xB7 "
+        "\xC2\xB7 mute 0|1 \xC2\xB7 halve (\xC3\xB7"
+        "2) \xC2\xB7 double (\xC3\x97"
+        "2) \xC2\xB7 "
         "reset \xC2\xB7 rate and a number"));
 
     // The two chips of that address, and the value: the sequence `trigger::Pool` exists for.

@@ -995,7 +995,8 @@ std::uint64_t Rule::followUpBeat(const Context& context, std::size_t index) cons
     }
     const FollowUp& owed = config_.followUps[index];
     if (owed.unit == DelayUnit::Milliseconds || !std::isfinite(owed.delayBeats) ||
-        owed.delayBeats < 1.0 || owed.delayBeats > 1e6 || std::floor(owed.delayBeats) != owed.delayBeats) {
+        owed.delayBeats < 1.0 || owed.delayBeats > 1e6 ||
+        std::floor(owed.delayBeats) != owed.delayBeats) {
         return 0;
     }
     auto beats = static_cast<std::uint64_t>(owed.delayBeats);

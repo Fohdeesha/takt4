@@ -127,9 +127,9 @@ public:
     /// fixed MIDI note was cut the instant it started, and a DMX clip went to nothing. The sink
     /// still holds each for its own moment; this only puts the release in the queue first.
     ///
-    /// **And every follow-up owed on beat `beat` or before** (`Rule::followUpBeat`), whatever moment
-    /// its seconds put it at — brought forward to `beatMoment`, the beat's own, and never before
-    /// its press. A tempo shown a few per cent slow put "release after one beat" a few
+    /// **And every follow-up owed on beat `beat` or before** (`Rule::followUpBeat`), whatever
+    /// moment its seconds put it at — brought forward to `beatMoment`, the beat's own, and never
+    /// before its press. A tempo shown a few per cent slow put "release after one beat" a few
     /// milliseconds after the next press, and the next press cut the note it had just started.
     void sendFollowUpsAbout(double moment, std::uint64_t beat = 0, double beatMoment = 0.0);
 

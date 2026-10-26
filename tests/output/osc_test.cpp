@@ -448,7 +448,8 @@ std::vector<std::pair<std::string, std::int32_t>> addressesAndInts(LoopbackRecei
             const auto byte = [&](std::size_t i) {
                 return static_cast<std::uint32_t>(static_cast<unsigned char>(packet[tags + 4 + i]));
             };
-            value = static_cast<std::int32_t>(byte(0) << 24 | byte(1) << 16 | byte(2) << 8 | byte(3));
+            value =
+                static_cast<std::int32_t>(byte(0) << 24 | byte(1) << 16 | byte(2) << 8 | byte(3));
         }
         out.emplace_back(address, value);
     }
