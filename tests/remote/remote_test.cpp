@@ -40,6 +40,8 @@ Status everything() {
     s.sourceOk = true;
     s.sourceDetail = "-18 dB";
     s.panic = true;
+    s.loadedPreset = "Friday late set";
+    s.presetModified = true;
     s.audioHost = "ASIO";
     s.audioDevice = "MOTU Pro Audio";
     s.audioChannel = 3;
@@ -125,17 +127,18 @@ TEST_CASE("the status goes as one bundle of every value, and between snapshots o
     }
     CHECK(addresses.size() == all.size()); // each once
     CHECK(addresses ==
-          std::set<std::string>{"/takt4/status/running",      "/takt4/status/locked",
-                                "/takt4/status/hunting",      "/takt4/status/state",
-                                "/takt4/status/confidence",   "/takt4/status/bpm",
-                                "/takt4/status/level",        "/takt4/status/load",
-                                "/takt4/status/dropouts",     "/takt4/status/source",
-                                "/takt4/status/source_ok",    "/takt4/status/source_detail",
-                                "/takt4/status/panic",        "/takt4/status/audio/host",
-                                "/takt4/status/audio/device", "/takt4/status/audio/channel",
-                                "/takt4/status/audio/mono",   "/takt4/status/audio/rate",
-                                "/takt4/status/latency_ms",   "/takt4/status/version",
-                                "/takt4/status/uptime_s",     "/takt4/status/ui_age_ms"});
+          std::set<std::string>{"/takt4/status/running",         "/takt4/status/locked",
+                                "/takt4/status/hunting",         "/takt4/status/state",
+                                "/takt4/status/confidence",      "/takt4/status/bpm",
+                                "/takt4/status/level",           "/takt4/status/load",
+                                "/takt4/status/dropouts",        "/takt4/status/source",
+                                "/takt4/status/source_ok",       "/takt4/status/source_detail",
+                                "/takt4/status/panic",           "/takt4/status/loaded_preset",
+                                "/takt4/status/preset_modified", "/takt4/status/audio/host",
+                                "/takt4/status/audio/device",    "/takt4/status/audio/channel",
+                                "/takt4/status/audio/mono",      "/takt4/status/audio/rate",
+                                "/takt4/status/latency_ms",      "/takt4/status/version",
+                                "/takt4/status/uptime_s",        "/takt4/status/ui_age_ms"});
     const auto integer = [&all](const char* address) {
         const OscMsg* message = findOsc(all, address);
         REQUIRE(message != nullptr);
@@ -170,6 +173,8 @@ TEST_CASE("the status goes as one bundle of every value, and between snapshots o
     CHECK(integer("/takt4/status/source_ok") == 1);
     CHECK(text("/takt4/status/source_detail") == "-18 dB");
     CHECK(integer("/takt4/status/panic") == 1);
+    CHECK(text("/takt4/status/loaded_preset") == "Friday late set");
+    CHECK(integer("/takt4/status/preset_modified") == 1);
     CHECK(text("/takt4/status/audio/host") == "ASIO");
     CHECK(text("/takt4/status/audio/device") == "MOTU Pro Audio");
     CHECK(integer("/takt4/status/audio/channel") == 3);
@@ -234,6 +239,37 @@ TEST_CASE("a change of source_ok comes after the source_detail that says why", "
     Status moved = s;
     moved.sourceDetail = "-12 dB";
     CHECK(order(s, moved) == std::vector<std::string>{"/takt4/status/source_detail"});
+}
+
+TEST_CASE("the preset a show was loaded from comes before any change of whether it still is",
+          "[remote]") {
+    // A show controller that loaded a preset sees preset_modified go to 0, and has the name of
+    // the one now loaded by then — not the one before it.
+    const Status s = everything(); // "Friday late set", modified
+    const auto order = [](const Status& before, const Status& after) {
+        std::vector<std::string> addresses;
+        for (const OscMsg& message :
+             readAll(takt4::remote::changedMessages("/takt4", before, after))) {
+            addresses.push_back(message.address + "=" +
+                                (message.args[0].type == 's' ? message.args[0].s
+                                                             : std::to_string(message.args[0].i)));
+        }
+        return addresses;
+    };
+    Status loaded = s;
+    loaded.loadedPreset = "Encore";
+    loaded.presetModified = false;
+    CHECK(order(s, loaded) == std::vector<std::string>{"/takt4/status/loaded_preset=Encore",
+                                                       "/takt4/status/preset_modified=0"});
+    // Changed since: the name again, ahead of the flag.
+    Status changed = loaded;
+    changed.presetModified = true;
+    CHECK(order(loaded, changed) == std::vector<std::string>{"/takt4/status/loaded_preset=Encore",
+                                                             "/takt4/status/preset_modified=1"});
+    // The same preset loaded again over its own change: the name, and the flag back to 0.
+    CHECK(order(changed, loaded) == std::vector<std::string>{"/takt4/status/loaded_preset=Encore",
+                                                             "/takt4/status/preset_modified=0"});
+    CHECK(order(loaded, loaded).empty());
 }
 
 TEST_CASE("the outputs and the devices are a message each, with how many after them, and an "

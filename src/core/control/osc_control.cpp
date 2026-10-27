@@ -3,6 +3,7 @@
 #include "core/control/osc_parse.hpp"
 #include "core/engine/control.hpp"
 #include "core/remote/status_messages.hpp"
+#include "core/settings/presets.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -161,6 +162,11 @@ OscControl::RemoteSetup OscControl::remoteSetup() const {
     return setup_;
 }
 
+void OscControl::setPresetsFolder(std::filesystem::path folder) {
+    const std::lock_guard<std::mutex> lock(setupMutex_);
+    presetsFolder_ = std::move(folder);
+}
+
 bool OscControl::reply(const remote::Endpoint& to, std::span<const std::byte> packet) noexcept {
     if (!receiver_) {
         return false;
@@ -252,6 +258,28 @@ bool OscControl::handleRemote(const OscView& message, const remote::Endpoint& fr
     };
 
     // --- what takt4 says about itself: any sender, no switch, changing nothing ---------------
+    if (verb == "presets") {
+        // The folder as it is now, read here rather than kept by the window: a preset saved or
+        // copied in a moment ago is on the list.
+        numbered(0);
+        if (released) {
+            return true;
+        }
+        std::filesystem::path folder;
+        {
+            const std::lock_guard<std::mutex> lock(setupMutex_);
+            folder = presetsFolder_;
+        }
+        for (const remote::Packet& packet :
+             remote::presetMessages(config_.prefix, settings::listPresets(folder))) {
+            (void)reply(from, packet);
+        }
+        queriesAnswered_.fetch_add(1, std::memory_order_relaxed);
+        if (command.seq) {
+            answer(command, true, "");
+        }
+        return true;
+    }
     const bool status = verb == "status";
     const bool devices = verb == "audio/devices";
     const bool outputs = verb == "outputs";
@@ -334,6 +362,14 @@ bool OscControl::handleRemote(const OscView& message, const remote::Endpoint& fr
         }
     } else if (verb == "source") {
         command.kind = Kind::Source;
+        const auto name = textAt(message, 0);
+        wellFormed = name && (count == 1 || count == 2);
+        if (wellFormed) {
+            command.text = std::string(*name);
+            numbered(1);
+        }
+    } else if (verb == "preset") {
+        command.kind = Kind::Preset;
         const auto name = textAt(message, 0);
         wellFormed = name && (count == 1 || count == 2);
         if (wellFormed) {

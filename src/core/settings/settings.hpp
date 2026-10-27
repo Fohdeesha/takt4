@@ -434,6 +434,11 @@ bool saveText(std::string_view json, const std::filesystem::path& path);
 /// mode is expected to hand-write one.
 std::string toJson(const Settings& settings);
 
+/// What a show preset's file holds (`settings/presets.hpp`): `toJson` of `preset` with no machine
+/// section, so loading it can change nothing of this desk's — and a file without one is what
+/// `loadChecked` reads as such (`MachineSettings::inFile` false).
+std::string presetJson(const Preset& preset);
+
 /// Link's switch and the MIDI clock port of a file written before 2026-09-25, as the output
 /// rows that hold them since: the Link output first (switched on as the old switch was) and a
 /// MIDI clock output to the old port. `fromJson` runs it on everything it reads, and so does

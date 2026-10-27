@@ -109,6 +109,14 @@ void values(std::vector<Packet>& out, std::string_view prefix, const Status& s,
     }
     flag("/status/source_ok", s.sourceOk, b.sourceOk);
     flag("/status/panic", s.panic, b.panic);
+    // The preset before whether the show is still it, and again with every change of that, as the
+    // source's detail comes before source_ok: a controller that sees preset_modified go to 0 has
+    // the name of the preset just loaded by then.
+    if (all || s.loadedPreset != b.loadedPreset || s.presetModified != b.presetModified) {
+        add(out, prefix, "/status/loaded_preset",
+            [&](output::OscMessage& m) { m.addString(clipped(s.loadedPreset, 64)); });
+    }
+    flag("/status/preset_modified", s.presetModified, b.presetModified);
     text("/status/audio/host", s.audioHost, b.audioHost, 64);
     text("/status/audio/device", s.audioDevice, b.audioDevice, 160);
     integer("/status/audio/channel", s.audioChannel, b.audioChannel);
@@ -175,6 +183,16 @@ std::vector<Packet> outputMessages(std::string_view prefix, const Status& status
     }
     add(out, prefix, "/status/outputs",
         [&](output::OscMessage& m) { m.addInt(static_cast<std::int32_t>(status.outputs.size())); });
+    return out;
+}
+
+std::vector<Packet> presetMessages(std::string_view prefix, const std::vector<std::string>& names) {
+    std::vector<Packet> out;
+    for (const std::string& name : names) {
+        add(out, prefix, "/status/preset", [&](output::OscMessage& m) { m.addString(name); });
+    }
+    add(out, prefix, "/status/presets",
+        [&](output::OscMessage& m) { m.addInt(static_cast<std::int32_t>(names.size())); });
     return out;
 }
 

@@ -564,7 +564,10 @@ void assignIds(Preset& preset) {
     }
 }
 
-std::string toJson(const Settings& settings) {
+namespace {
+
+/// The whole file as a document: what `toJson` writes, and `presetJson` less the machine half.
+json documentOf(const Settings& settings) {
     // One line each, as `formatOutputTarget` writes them: "main = 127.0.0.1:7000" and
     // "lights = midi MOTU Pro Audio Midi Out 1". Text rather than an object per target for
     // the reason the MIDI bindings are text — this is a file a person may open and a headless
@@ -669,7 +672,7 @@ std::string toJson(const Settings& settings) {
         preset["fixtureLibrary"] = fixtures::libraryToNode(settings.preset.library);
     }
 
-    const json document{
+    return json{
         {"version", kFormatVersion},
         {"machine",
          json{
@@ -702,6 +705,9 @@ std::string toJson(const Settings& settings) {
          }},
         {"preset", std::move(preset)},
     };
+}
+
+std::string dumped(const json& document) {
     // `replace` rather than nlohmann's default `strict`, for `rulesToJson`' reason and one
     // more of its own: the machine half carries names this program did not choose. PortAudio
     // hands over a device name as the driver spelled it and RtMidi a port name as the
@@ -709,6 +715,20 @@ std::string toJson(const Settings& settings) {
     // in its name is enough. Refusing to write the file over one byte would lose the whole
     // of an operator's configuration; U+FFFD loses the byte.
     return document.dump(2, ' ', /*ensure_ascii=*/false, json::error_handler_t::replace) + "\n";
+}
+
+} // namespace
+
+std::string toJson(const Settings& settings) {
+    return dumped(documentOf(settings));
+}
+
+std::string presetJson(const Preset& preset) {
+    Settings settings;
+    settings.preset = preset;
+    json document = documentOf(settings);
+    document.erase("machine");
+    return dumped(document);
 }
 
 namespace {

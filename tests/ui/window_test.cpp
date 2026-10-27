@@ -21,6 +21,7 @@
 #include "core/trigger/generator.hpp"
 #include "core/trigger/rule.hpp"
 #include "core/trigger/trigger_engine.hpp"
+#include "ui/delete_guard.hpp"
 #include "ui/file_dialog.hpp"
 #include "ui/keys.hpp"
 #include "ui/model_watch.hpp"
@@ -894,25 +895,26 @@ TEST_CASE("a status longer than the bar keeps its first line and loses its end",
     // The status text was centred in a bar two lines tall, so a message of more lines was laid
     // out from the middle and clipped at both ends: what failed — the first line — was never
     // drawn. The message here says which line is which in ink: a first line that starts with W's,
-    // dense — ten words of them, less than a line at this width — and many lines of full stops,
+    // dense — four words of them, less than a line at this width — and many lines of full stops,
     // nearly no ink at all. The top line of the bar has to be the dense one.
     auto window = MainWindow::create();
     std::string message;
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 4; ++i) {
         message += "WWWWW ";
     }
     for (int i = 0; i < 1500; ++i) {
-        message += ". ";
+        message += ".    "; // spaced out: the line they fill is shorter since PRESETS came
     }
     constexpr int kWidth = 800;
     constexpr int kHeight = 760;
     constexpr int kBar = 51;
-    // Ink: pixels unlike the bar's own colour, in the text's stretch of it, by row.
+    // Ink: pixels unlike the bar's own colour, in the text's stretch of it, by row — x 16 to about
+    // 376 at this width since PRESETS joined the buttons to its right (measured on a render).
     const auto inkByRow = [&](const takt4::tests::Shot& shot) {
         const slint::Rgb8Pixel bar = shot.at(4, kHeight - 2);
         std::vector<int> rows(kBar, 0);
         for (int y = kHeight - kBar; y < kHeight; ++y) {
-            for (int x = 16; x < 500; ++x) {
+            for (int x = 16; x < 340; ++x) {
                 const slint::Rgb8Pixel p = shot.at(x, y);
                 const int d = std::abs(p.r - bar.r) + std::abs(p.g - bar.g) + std::abs(p.b - bar.b);
                 rows[static_cast<std::size_t>(y - (kHeight - kBar))] += d > 60 ? 1 : 0;
@@ -7719,6 +7721,7 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     window->on_save_now([&] { note("save"); });
     window->on_export_settings([&] { note("export"); });
     window->on_import_settings([&] { note("import"); });
+    window->on_presets_opened([&] { note("presets"); });
     window->on_about_opened([&] { note("about"); });
     window->on_manual_fired([&] { note("manual"); });
 
@@ -8185,12 +8188,13 @@ TEST_CASE("every control in the main window does what it says, once, and a switc
     const int statusRow = kHeight - 25;
     const auto status = occupied(shot, statusRow - 12, statusRow + 12, 400, kWidth, kPage, 5);
     INFO("status bar: " << spans(status));
-    REQUIRE(status.size() == 4);
-    // From the right: about, import, export, save — so a sweep never meets the file routes first.
-    for (std::size_t i = 0; i < 4; ++i) {
+    REQUIRE(status.size() == 5);
+    // From the right: about, presets, import, export, save — so a sweep never meets the file
+    // routes first.
+    for (std::size_t i = 0; i < 5; ++i) {
         click(middleOf(status[status.size() - 1 - i]), statusRow);
     }
-    expect({"about", "import", "export", "save"}, "the status bar's buttons");
+    expect({"about", "presets", "import", "export", "save"}, "the status bar's buttons");
 
     // --- following a MIDI clock, stopped: the banner, and the timing rows' own controls -------
     window->set_panicked(false);
@@ -12988,4 +12992,281 @@ TEST_CASE("the main window's LEARN and a rule's own are told apart, and a rule's
     const auto rows = reopened.editor().window().get_remote_rows();
     REQUIRE(rows->row_count() == 5);
     CHECK(std::string(rows->row_data(1)->reading) == "cc 21 ch 2");
+}
+
+TEST_CASE("a show controller loads a preset by name, its show and never this desk's input or "
+          "controls, and is told the names when it asks for one there is not",
+          "[ui][remote]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::test::TempDir temp;
+    controller.usePresetsFolder(temp.path() / "presets");
+    listenForRemote(controller);
+    takt4::testing::LoopbackReceiver showController;
+    const std::uint16_t port = controller.oscControlPort();
+
+    // A show saved as "Show A": phrases of 12 bars and an OSC output.
+    controller.setPhraseBars(12);
+    controller.window().invoke_output_added();
+    const std::size_t outputs = controller.currentSettings().preset.outputs.size();
+    REQUIRE(controller.savePreset("  Show A "));
+    CHECK(controller.presetNames() == std::vector<std::string>{"Show A"});
+    // And a file someone dropped in the folder: a whole EXPORT, machine half and all, whose
+    // machine half would stop the very socket the switch comes in on.
+    takt4::settings::Settings full = controller.currentSettings();
+    full.preset.phraseBars = 5;
+    full.machine.oscControlEnabled = false;
+    full.machine.oscControlPort = 1;
+    full.machine.oscRemoteSetup = false;
+    REQUIRE(takt4::settings::save(full, temp.path() / "presets" / "Full.json"));
+
+    // Another show in the window. Saved as "Show A" a moment ago, so the show was that, and
+    // now it has changed.
+    CHECK(controller.remoteStatus().loadedPreset == "Show A");
+    controller.setPhraseBars(16);
+    controller.window().invoke_output_added();
+    REQUIRE(controller.currentSettings().preset.outputs.size() == outputs + 1);
+    const auto rounds = [&controller](int count) { // the window's own, 20 ms apart
+        for (int turn = 0; turn < count; ++turn) {
+            controller.tick();
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    };
+    rounds(40);
+    CHECK(controller.remoteStatus().presetModified);
+
+    // Loaded over the wire, by its name in another case.
+    Reply reply =
+        replyIn(ask(controller, showController, numbered("/takt4/ctl/preset", {"show a"}, 1)));
+    INFO("the reply: " << reply.note);
+    CHECK(reply.seq == 1);
+    CHECK(reply.verdict == "ok");
+    CHECK(reply.note.starts_with("loaded preset \"Show A\": "));
+    CHECK(controller.currentSettings().preset.phraseBars == 12);
+    CHECK(controller.currentSettings().preset.outputs.size() == outputs);
+    CHECK(std::string(controller.window().get_status()).find("/takt4/ctl/preset") !=
+          std::string::npos);
+
+    // The preset the show is now, said in the status, and not changed by nothing happening.
+    rounds(40);
+    CHECK(controller.remoteStatus().loadedPreset == "Show A");
+    CHECK_FALSE(controller.remoteStatus().presetModified);
+    const auto statusSays = [&](std::string_view address) {
+        for (const takt4::testing::OscMsg& message :
+             ask(controller, showController, takt4::output::OscMessage("/takt4/ctl/status"))) {
+            if (message.address == address && !message.args.empty()) {
+                return message.args[0];
+            }
+        }
+        return takt4::testing::OscArg{};
+    };
+    CHECK(statusSays("/takt4/status/loaded_preset").s == "Show A");
+    CHECK(statusSays("/takt4/status/preset_modified").type == 'i');
+    CHECK(statusSays("/takt4/status/preset_modified").i == 0);
+    // A show setting changed: modified, the name kept.
+    controller.setPhraseBars(9);
+    rounds(40);
+    CHECK(controller.remoteStatus().presetModified);
+    CHECK(statusSays("/takt4/status/preset_modified").i == 1);
+    CHECK(statusSays("/takt4/status/loaded_preset").s == "Show A");
+    controller.setPhraseBars(12);
+
+    // The dropped-in export: its show, and none of its machine half.
+    reply = replyIn(ask(controller, showController, numbered("/takt4/ctl/preset", {"Full"}, 2)));
+    CHECK(reply.verdict == "ok");
+    CHECK(controller.currentSettings().preset.phraseBars == 5);
+    CHECK(controller.remoteStatus().loadedPreset == "Full");
+    CHECK_FALSE(controller.remoteStatus().presetModified);
+    CHECK(controller.oscControl().running());
+    CHECK(controller.oscControlPort() == port);
+    CHECK(controller.currentSettings().machine.oscRemoteSetup);
+
+    // One there is not: refused, with the names there are.
+    reply = replyIn(ask(controller, showController, numbered("/takt4/ctl/preset", {"Nope"}, 3)));
+    CHECK(reply.verdict == "refused");
+    CHECK(reply.note == "no preset \"Nope\"; there are Full, Show A");
+    CHECK(controller.currentSettings().preset.phraseBars == 5);
+
+    // Asked for: each by name, then how many, then the answer.
+    takt4::output::OscMessage list("/takt4/ctl/presets");
+    list.addInt(4);
+    REQUIRE(showController.send(port, list.packet()));
+    std::vector<takt4::testing::OscMsg> said;
+    waitUntil(controller, [&] {
+        while (showController.ready(0)) {
+            for (takt4::testing::OscMsg& message :
+                 takt4::testing::oscMessagesIn(showController.receive())) {
+                said.push_back(std::move(message));
+            }
+        }
+        return said.size() >= 4;
+    });
+    REQUIRE(said.size() == 4);
+    CHECK(said[0].address == "/takt4/status/preset");
+    CHECK(said[0].args[0].s == "Full");
+    CHECK(said[1].args[0].s == "Show A");
+    CHECK(said[2].address == "/takt4/status/presets");
+    CHECK(said[2].args[0].i == 2);
+    CHECK(replyIn({said[3]}).verdict == "ok");
+
+    // Remote setup off: a switch of show is refused, the list still answered.
+    controller.setRemoteSetup(false);
+    reply = replyIn(ask(controller, showController, numbered("/takt4/ctl/preset", {"Show A"}, 5)));
+    CHECK(reply.verdict == "refused");
+    CHECK(controller.currentSettings().preset.phraseBars == 5);
+}
+
+TEST_CASE("a preset is saved, replaced, loaded and deleted from the window, and a bad name is "
+          "refused saying why",
+          "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::test::TempDir temp;
+    controller.usePresetsFolder(temp.path() / "presets");
+    CHECK(controller.presetNames().empty());
+    CHECK_FALSE(controller.loadPreset("anything"));
+    CHECK(std::string(controller.window().get_status()) == "No presets are saved yet.");
+
+    controller.setPhraseBars(12);
+    REQUIRE(controller.savePreset("Friday"));
+    CHECK(std::string(controller.window().get_status()) == "Saved the show as preset \"Friday\".");
+    controller.setPhraseBars(13);
+    REQUIRE(controller.savePreset("friday")); // the same one, in another case: replaced
+    CHECK(controller.presetNames() == std::vector<std::string>{"Friday"});
+    controller.setPhraseBars(4);
+    REQUIRE(controller.loadPreset("Friday"));
+    CHECK(controller.currentSettings().preset.phraseBars == 13);
+    CHECK(std::string(controller.window().get_status()).starts_with("Loaded preset \"Friday\": "));
+
+    CHECK_FALSE(controller.savePreset("a/b"));
+    CHECK(std::string(controller.window().get_status()) ==
+          "Could not save the preset: a preset's name cannot hold /.");
+    CHECK_FALSE(controller.savePreset("   "));
+    CHECK(controller.presetNames() == std::vector<std::string>{"Friday"});
+
+    REQUIRE(controller.deletePreset("Friday"));
+    CHECK(controller.presetNames().empty());
+    CHECK_FALSE(controller.deletePreset("Friday"));
+}
+
+TEST_CASE("PRESETS opens its window, whose own box and buttons save, load and delete a preset, "
+          "and a double click on its x never deletes one",
+          "[ui]") {
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    const takt4::test::TempDir temp;
+    controller.usePresetsFolder(temp.path() / "presets");
+    constexpr float kWidth = 1000.0f;
+    constexpr float kHeight = 760.0f;
+    layOut(controller, kWidth, kHeight);
+    auto& window = controller.window().window();
+    const auto settle = [&controller] {
+        controller.tick();
+        slint::platform::update_timers_and_animations();
+    };
+    settle();
+    const takt4::tests::NothingReal nothingReal;
+
+    // PRESETS, found along the status line by what a click on it does: from the right, past ABOUT,
+    // which opens its own window on the way and nothing else.
+    const float barY = kHeight - 17.0f;
+    for (float x = kWidth - 10.0f; x > kWidth - 480.0f && controller.presetsWindow() == nullptr;
+         x -= 6.0f) {
+        clickAt(window, x, barY);
+        settle();
+    }
+    REQUIRE(controller.presetsWindow() != nullptr);
+    PresetsWindow& presets = *controller.presetsWindow();
+    CHECK(presets.window().is_visible());
+    constexpr int kW = static_cast<int>(takt4::ui::kPresetsWindowWidth);
+    constexpr int kH = static_cast<int>(takt4::ui::kPresetsWindowHeight);
+    presets.window().dispatch_scale_factor_change_event(1.0f);
+    presets.window().dispatch_resize_event(slint::LogicalSize({1.0f * kW, 1.0f * kH}));
+    presets.window().dispatch_window_active_changed_event(true);
+    slint::platform::update_timers_and_animations();
+    auto& inside = presets.window();
+    const auto shoot = [&presets] { return takt4::tests::render(presets, kW, kH); };
+
+    // SAVE: the one button filled off-white above CLOSE's row — its face, found down the right
+    // half; the name box is left of it on the same line.
+    const auto saveButton = [&](const takt4::tests::Shot& shot) {
+        for (int y = 0; y < kH - 60; ++y) {
+            int run = 0;
+            for (int x = kW / 2; x < kW - 12; ++x) {
+                run = is(shot, x, y, kEdge) ? run + 1 : 0;
+                if (run >= 50) {
+                    int bottom = y;
+                    while (bottom + 1 < kH && is(shot, x, bottom + 1, kEdge)) {
+                        ++bottom;
+                    }
+                    return std::pair<std::pair<int, int>, float>{
+                        {x - run + 1, x}, static_cast<float>(y + bottom) / 2.0f};
+                }
+            }
+        }
+        return std::pair<std::pair<int, int>, float>{{-1, -1}, -1.0f};
+    };
+    takt4::tests::Shot shot = shoot();
+    const auto [saveSpan, saveY] = saveButton(shot);
+    INFO("save: " << saveSpan.first << ".." << saveSpan.second << " at " << saveY);
+    REQUIRE(saveSpan.first > 0);
+    controller.setPhraseBars(12);
+    clickAt(inside, static_cast<float>(saveSpan.first - 80), saveY); // into the name box
+    for (const char c : std::string("Encore")) {
+        press(inside, std::string(1, c));
+    }
+    settle();
+    CHECK(std::string(presets.get_name()) == "Encore"); // the box's text, as the owner holds it
+    CHECK_FALSE(presets.get_replacing());
+    clickAt(inside, middleOf(saveSpan), saveY);
+    settle();
+    CHECK(controller.presetNames() == std::vector<std::string>{"Encore"});
+    CHECK(std::filesystem::exists(temp.path() / "presets" / "Encore.json"));
+    CHECK(std::string(presets.get_said()) == "Saved the show as preset \"Encore\".");
+    CHECK(presets.get_replacing()); // SAVE now says "replace"
+    REQUIRE(presets.get_presets()->row_count() == 1);
+
+    // The row's buttons: its x's right-hand edge is a tall off-white run down the column just
+    // inside the sheet's right-hand padding; LOAD and x are what is there, projected over its
+    // height.
+    shot = shoot();
+    const int edgeX = kW - 28;
+    float rowY = -1.0f;
+    for (int y = 0, run = 0; y < static_cast<int>(saveY) - 30; ++y) {
+        run = is(shot, edgeX, y, kEdge) ? run + 1 : 0;
+        if (run >= 20) {
+            int bottom = y;
+            while (is(shot, edgeX, bottom + 1, kEdge)) {
+                ++bottom;
+            }
+            rowY = static_cast<float>(y - run + 1 + bottom) / 2.0f;
+            break;
+        }
+    }
+    REQUIRE(rowY > 0.0f);
+    // Over the buttons' whole 32 px, edges and all, and short of the next row 46 px down.
+    const auto buttons = occupied(shot, static_cast<int>(rowY) - 17, static_cast<int>(rowY) + 17,
+                                  kW / 2, kW - 20, kSheet, 4);
+    INFO("the row at " << rowY << ": " << spans(buttons));
+    REQUIRE(buttons.size() == 2); // LOAD and x
+
+    controller.setPhraseBars(3);
+    clickAt(inside, middleOf(buttons[0]), rowY);
+    settle();
+    CHECK(controller.currentSettings().preset.phraseBars == 12);
+    CHECK(std::string(presets.get_said()).starts_with("Loaded preset \"Encore\": "));
+
+    // A double click on x arms it and nothing more; a press after it deletes the file.
+    clickAt(inside, middleOf(buttons[1]), rowY);
+    clickAt(inside, middleOf(buttons[1]), rowY);
+    settle();
+    CHECK(presets.get_presets()->row_data(0)->armed);
+    CHECK(std::filesystem::exists(temp.path() / "presets" / "Encore.json"));
+    std::this_thread::sleep_for(takt4::ui::DeleteGuard::interval() + std::chrono::milliseconds(50));
+    clickAt(inside, middleOf(buttons[1]), rowY);
+    settle();
+    CHECK_FALSE(std::filesystem::exists(temp.path() / "presets" / "Encore.json"));
+    CHECK(presets.get_presets()->row_count() == 0);
+    CHECK(std::string(presets.get_said()) == "Deleted preset \"Encore\".");
+    nothingReal.check();
 }

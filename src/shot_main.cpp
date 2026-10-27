@@ -21,7 +21,7 @@ void printUsage(std::ostream& out) {
            "                     [--mockup] [--fold inputs,outputs] [--panicked]\n"
            "                     [--beats N] [--held] [--remote]\n"
            "                     [--rules [--dmx] [--state NAME] | --fixtures | --about |\n"
-           "                      --widgets]\n"
+           "                      --presets [--state NAME] | --widgets]\n"
            "\n"
            "  --size WxH      the window size to render, default the window's own\n"
            "  --scale S       the display's scale, 1.25 for 125 %: the size stays\n"
@@ -55,6 +55,8 @@ void printUsage(std::ostream& out) {
            "                  or with --stopped the source picked before START\n"
            "  --fixtures      draw the lighting patch editor instead of the main window\n"
            "  --about         draw the About box instead of the main window\n"
+           "  --presets       draw the presets window instead, holding a made-up list;\n"
+           "                  --state replace, armed, empty or error for its others\n"
            "  --widgets       draw one of each of the main window's controls, in each state\n"
            "\n"
            "Draws the real component with Slint's software renderer, so it needs no\n"
@@ -87,6 +89,8 @@ int main(int argc, char** argv) {
             options.fixtures = true;
         } else if (arg == "--about") {
             options.about = true;
+        } else if (arg == "--presets") {
+            options.presets = true;
         } else if (arg == "--widgets") {
             options.widgets = true;
         } else if (arg == "--dmx") {
@@ -200,6 +204,10 @@ int main(int argc, char** argv) {
     if (options.about && !sized) {
         width = static_cast<int>(takt4::ui::kAboutWindowWidth);
         height = static_cast<int>(takt4::ui::kAboutWindowHeight);
+    }
+    if (options.presets && !sized) {
+        width = static_cast<int>(takt4::ui::kPresetsWindowWidth);
+        height = static_cast<int>(takt4::ui::kPresetsWindowHeight);
     }
     options.width = width;
     options.height = height;

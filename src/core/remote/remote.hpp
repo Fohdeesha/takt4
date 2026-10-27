@@ -93,6 +93,11 @@ struct Status {
     /// What the window says of it: "3 peers · 4 beats to the bar", "DJM-A9 · no clock".
     std::string sourceDetail;
     bool panic = false;
+    /// The show preset last loaded or saved (`settings/presets.hpp`), "" when none has been since
+    /// takt4 started (or the show was imported since, or that preset deleted); and whether a show
+    /// setting has changed since then.
+    std::string loadedPreset;
+    bool presetModified = false;
     std::string audioHost;
     std::string audioDevice;
     /// The input as the window counts them, from 1; the first of a pair in stereo.
@@ -155,6 +160,8 @@ struct Command {
         OutputDelay,
         /// `text` the output's id; `flag` whether it is sent the global messages.
         OutputGlobal,
+        /// `text` a show preset's name (`settings/presets.hpp`): its show loaded, as LOAD does.
+        Preset,
     };
     Kind kind = Kind::Start;
     /// The address as it came, for the reply and for the log line.

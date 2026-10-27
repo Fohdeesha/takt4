@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -130,6 +131,9 @@ public:
     };
     void setRemoteSetup(RemoteSetup setup);
     RemoteSetup remoteSetup() const;
+    /// Where the show presets are kept (`settings::presetsDirectory`), for `/ctl/presets` to list:
+    /// read as it is asked, so one saved or copied in a moment ago is on it. Any thread.
+    void setPresetsFolder(std::filesystem::path folder);
 
     /// The verdict on a command, to whoever sent it — `remote::Replies`. Any thread; the window
     /// calls it as it carries a command out.
@@ -187,6 +191,7 @@ private:
     remote::CommandQueue* commands_ = nullptr;
     mutable std::mutex setupMutex_;
     RemoteSetup setup_;
+    std::filesystem::path presetsFolder_; // under `setupMutex_`
     std::atomic<std::uint64_t> queriesAnswered_{0};
     std::atomic<std::uint64_t> commandsQueued_{0};
     std::atomic<std::uint64_t> remoteRefused_{0};

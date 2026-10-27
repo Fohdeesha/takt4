@@ -37,6 +37,9 @@ std::vector<Packet> deviceMessages(std::string_view prefix, const Status& status
 /// each output, then `/status/outputs i count`.
 std::vector<Packet> outputMessages(std::string_view prefix, const Status& status);
 
+/// `/status/preset s name` for each show preset, then `/status/presets i count`.
+std::vector<Packet> presetMessages(std::string_view prefix, const std::vector<std::string>& names);
+
 /// `/reply i seq s ok|refused s note`, to a command that carried a request number.
 Packet replyMessage(std::string_view prefix, std::int32_t seq, bool ok, std::string_view note);
 

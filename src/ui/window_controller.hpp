@@ -24,6 +24,7 @@
 #include "ui/delete_guard.hpp"
 #include "ui/file_dialog.hpp"
 #include "ui/fixtures_controller.hpp"
+#include "ui/model_rows.hpp"
 #include "ui/rules_controller.hpp"
 #include "ui/window_state.hpp"
 
@@ -581,6 +582,32 @@ public:
     /// `settings::load` never fails, so this reports on the file existing and parsing rather
     /// than on the contents being sensible.
     bool importFrom(const std::filesystem::path& path);
+
+    // --- show presets (`settings/presets.hpp`) ---------------------------------------------------
+
+    /// The folder they are kept in: `settings::presetsDirectory()`, unless `usePresetsFolder` gave
+    /// another.
+    const std::filesystem::path& presetsFolder() const noexcept { return presetsFolder_; }
+    /// Keeps them in `folder` from now on, and has `/ctl/presets` list that one — for a test, which
+    /// must not touch a real one.
+    void usePresetsFolder(std::filesystem::path folder);
+    /// The presets there are, by name, as the folder holds them now.
+    std::vector<std::string> presetNames() const;
+    /// Saves the show as it stands, whatever is being typed included, as preset `name` (trimmed;
+    /// one already there in another case is the one replaced). Said on the status line, and why
+    /// not when it is false.
+    bool savePreset(std::string_view name);
+    /// IMPORT of preset `name` (`settings::findPreset`) **without the machine half**, even when its
+    /// file has one: the input, the MIDI and OSC control and the layout stay as they are, so a show
+    /// controller can switch shows over the very socket this leaves alone. Running or stopped, as
+    /// IMPORT. False, said on the status line, when there is no such preset or it cannot be read.
+    bool loadPreset(std::string_view name);
+    /// Deletes preset `name`'s file. Said on the status line.
+    bool deletePreset(std::string_view name);
+    /// PRESETS: the presets window (presets_window.slint), opened, or brought forward if it is.
+    void openPresets();
+    /// The presets window once opened, null before — for a test, which drives its own buttons.
+    PresetsWindow* presetsWindow() noexcept { return presetsWindow_ ? &**presetsWindow_ : nullptr; }
 
     /// What is being sent, for the row that draws it. The runner is running for as long as
     /// this window exists, so its rules and transports are read through `inspect` — see there.
@@ -1157,6 +1184,36 @@ private:
     /// it has settled (`remoteRun_`).
     enum class Verdict : std::uint8_t { Done, Refused, Later };
     Verdict carryOut(const remote::Command& command, std::string& note);
+    /// IMPORT's own path: a whole file when `preset` is empty, or else that preset's file as the
+    /// show half only (`loadPreset`). `said`, given, gets a remote reply's words for what was done
+    /// or why it was not.
+    bool importFile(const std::filesystem::path& path, const std::string& preset,
+                    std::string* said);
+    /// `loadPreset`, saying what it did or why not in `note`, for a remote reply.
+    bool loadPreset(std::string_view name, std::string& note);
+    std::filesystem::path presetsFolder_;
+    /// The presets window and what it shows (`publishPresets`): its rows, written in place, the
+    /// names they show in order, the name box's text, and the preset whose × was pressed once —
+    /// by name, as a preset copied in meanwhile moves the rows. Listed again every couple of
+    /// seconds while it is open, for files the operator puts in the folder themselves.
+    void publishPresets();
+    /// What the last button in it did, as the status line says it, in the window itself.
+    void presetsSay();
+    /// The preset the show was last loaded from or saved as, the show as it was then, and whether
+    /// it has changed since (`remote::Status::loadedPreset`, `presetModified`): cleared by an
+    /// IMPORT of a whole file and by deleting that preset.
+    void showIsPreset(const std::string& name);
+    std::string loadedPreset_;
+    std::optional<settings::Preset> loadedShow_;
+    bool showModified_ = false;
+    double modifiedCheckedAt_ = -1.0;
+    std::optional<slint::ComponentHandle<PresetsWindow>> presetsWindow_;
+    Repeater<PresetRow> presetRows_;
+    std::vector<std::string> presetList_;
+    std::string presetName_;
+    std::string presetArmed_;
+    DeleteGuard presetMarks_;
+    double presetsListedAt_ = -1.0;
     /// The output row whose id is `id`, or -1.
     int rowWithId(std::string_view id) const;
     /// The settings' remote setup, at launch and from a file loaded.

@@ -27,6 +27,7 @@ export { LaserRow } from "liberation_sheet.slint";
 // generated header rather than one per window.
 export { FixturesWindow, FixtureRow, ChannelRow } from "fixtures_window.slint";
 export { AboutWindow } from "about_window.slint";
+export { PresetsWindow, PresetRow } from "presets_window.slint";
 // One of each of weltformat.slint's controls, for the UI tests and `takt4-shot --widgets`; here
 // for the same reason as the windows above.
 export { WidgetBench, BenchRow } from "widget_bench.slint";
@@ -784,6 +785,7 @@ export component MainWindow inherits Window {
   callback save-now();
   callback export-settings();
   callback import-settings();
+  callback presets-opened();
   callback output-removed(int);
   callback output-enabled-changed(int, bool);
   /// Row N ticked or unticked in the "/takt4 global messages to" list (`OutputRow::
@@ -3110,9 +3112,9 @@ export component MainWindow inherits Window {
               vertical-alignment: center;
             }
 
-            // Saving, which until 2026-09-12 happened only when the window closed, and the two
-            // file routes. With ABOUT, one size, in the corner.
-            for action[i] in ["save", "export", "import", "about"]: VerticalLayout {
+            // Saving, which until 2026-09-12 happened only when the window closed, the two file
+            // routes and the show presets. With ABOUT, one size, in the corner.
+            for action[i] in ["save", "export", "import", "presets", "about"]: VerticalLayout {
               alignment: center;
               horizontal-stretch: 0;
               Btn {
@@ -3127,6 +3129,8 @@ export component MainWindow inherits Window {
                     root.export-settings();
                   } else if (i == 2) {
                     root.import-settings();
+                  } else if (i == 3) {
+                    root.presets-opened();
                   } else {
                     root.about-opened();
                   }

@@ -194,6 +194,8 @@ add_library(takt4_core STATIC
   rt/spsc_ring.hpp
   rt/thread_priority.cpp
   rt/thread_priority.hpp
+  settings/presets.cpp
+  settings/presets.hpp
   settings/rule_json.cpp
   settings/rule_json.hpp
   settings/rule_json_node.hpp

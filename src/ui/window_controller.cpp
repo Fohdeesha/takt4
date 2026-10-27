@@ -14,6 +14,7 @@
 #include "core/io/utf8.hpp"
 #include "core/output/midi_ports.hpp"
 #include "core/sandbox.hpp"
+#include "core/settings/presets.hpp"
 #include "ui/file_dialog.hpp"
 #include "ui/model_rows.hpp"
 #include "ui/native_window.hpp"
@@ -763,6 +764,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         }
     });
     window_->on_about_opened([this] { openAbout(); });
+    window_->on_presets_opened([this] { openPresets(); });
     window_->on_fixtures_clicked([this] { patch_.show(); });
     window_->on_panic_clicked([this] { engagePanic(); });
     window_->on_panic_released([this] { releasePanic(); });
@@ -904,6 +906,7 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
     // answers read — the queue commands reach this window on, and the lines it says.
     oscControl_.setRemote(&remoteBoard_, &remoteCommands_);
     runner_.setRemote(&remoteBoard_, &remoteLog_);
+    usePresetsFolder(settings::presetsDirectory()); // which `/ctl/presets` lists
     loadRemoteSetup(settings.machine);
     if (settings.machine.oscControlEnabled) {
         // The socket is bound here rather than in the member initialiser, for the same
@@ -939,6 +942,9 @@ WindowController::WindowController(engine::LiveTracker& tracker, const settings:
         patch_.hide();
         if (about_) {
             (*about_)->hide();
+        }
+        if (presetsWindow_) {
+            (*presetsWindow_)->hide();
         }
         return slint::CloseRequestResponse::HideWindow;
     });
@@ -3703,16 +3709,30 @@ void WindowController::autosave(double now) {
 }
 
 bool WindowController::importFrom(const std::filesystem::path& path) {
+    return importFile(path, {}, nullptr);
+}
+
+bool WindowController::importFile(const std::filesystem::path& path, const std::string& preset,
+                                  std::string* said) {
     // Finished before anything is read or replaced, as a click anywhere else would finish it —
     // see `saveNow`.
     applyDrafts();
     if (path.empty()) {
         return false; // cancelled
     }
+    // A preset is the show half and nothing else, whatever its file holds: see `loadPreset`.
+    const bool asPreset = !preset.empty();
+    const std::string what = asPreset ? "preset \"" + preset + "\"" : io::pathText(path.filename());
+    const auto refuse = [&](const std::string& text) {
+        setStatus(text, true);
+        if (said != nullptr) {
+            *said = text;
+        }
+        return false;
+    };
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
-        setStatus("No such file: " + io::pathText(path), true);
-        return false;
+        return refuse("No such file: " + io::pathText(path));
     }
     // `settings::load` is documented never to fail: anything it cannot read gives defaults.
     // That is right for startup and wrong here — importing a JPEG would silently wipe the
@@ -3723,20 +3743,20 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     const settings::Loaded checked = settings::loadChecked(path);
     if (checked.status == settings::LoadStatus::Corrupt ||
         checked.status == settings::LoadStatus::Unreadable) {
-        setStatus("Cannot import " + io::pathText(path.filename()) + ": " +
-                      (checked.status == settings::LoadStatus::Corrupt ? "it is not a settings "
-                                                                         "file takt4 can read ("
-                                                                       : "it could not be opened (") +
-                      checked.problem + "). Nothing was changed.",
-                  true);
-        return false;
+        return refuse(std::string(asPreset ? "Cannot load " : "Cannot import ") + what + ": " +
+                      (checked.status == settings::LoadStatus::Corrupt
+                           ? "it is not a settings file takt4 can read ("
+                           : "it could not be opened (") +
+                      checked.problem + "). Nothing was changed.");
     }
     const settings::Settings& loaded = checked.settings;
     // **The whole preset half against a fresh install's**, not four fields of it: this used to
     // look at the rules, the outputs, the prefix and the meters, so a file holding nothing but
     // a lighting patch — or a tempo window, or a decoder — was "no preset".
-    // A machine section is something too, since IMPORT restores it (2026-10-03).
-    if (!loaded.machine.inFile) {
+    // A machine section is something too, since IMPORT restores it (2026-10-03) — but not to a
+    // preset, which never takes it.
+    const bool machine = loaded.machine.inFile && !asPreset;
+    if (!machine) {
         settings::Settings imported;
         imported.preset = loaded.preset;
         // Less the Link output every loaded set is given, when it is only that — switched off,
@@ -3747,10 +3767,9 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
             outputs.erase(outputs.begin());
         }
         if (settings::toJson(imported) == settings::toJson(settings::Settings{})) {
-            setStatus(io::pathText(path.filename()) +
-                          " has no settings in it, so nothing was changed.",
-                      true);
-            return false;
+            return refuse((asPreset ? "Preset \"" + preset + "\" has no show"
+                                    : io::pathText(path.filename()) + " has no settings") +
+                          " in it, so nothing was changed.");
         }
     }
 
@@ -3819,28 +3838,205 @@ bool WindowController::importFrom(const std::filesystem::path& path) {
     // It used to be left alone by design — the input and the
     // learned controls were kept out of anything that travels — so a rig restored from its own
     // export came back without its input, its pads, its OSC control or its layout.
-    const std::string input = loaded.machine.inFile ? applyMachine(loaded.machine) : std::string{};
+    const std::string input = machine ? applyMachine(loaded.machine) : std::string{};
 
     // **What it did to the input first**, when it did anything: the status shows two lines and
     // keeps the first, and an import that took the show off its input is the part that must not
     // be cut off the end. It used to say only how many rules it brought.
-    const std::string summary =
-        (input.empty() ? std::string{} : input + " ") + "Imported " +
-        io::pathText(path.filename()) + ": " + std::to_string(loaded.preset.rules.size()) +
-        " rules, " + std::to_string(loaded.preset.outputs.size()) + " outputs, " +
+    const std::string contents =
+        std::to_string(loaded.preset.rules.size()) + " rules, " +
+        std::to_string(loaded.preset.outputs.size()) + " outputs, " +
         std::to_string(loaded.preset.fixtures.size()) + " fixtures" +
-        (loaded.machine.inFile ? ", the input, MIDI and OSC control and the layout." : ".") +
+        (machine ? ", the input, MIDI and OSC control and the layout." : ".") +
         (restart.empty() ? std::string{} : " Restart takt4 for " + restart + " to take effect.") +
         (metersAtStart ? " Beats per bar change at the next START." : "") + [&loaded] {
             const std::string rules = settings::newerRulesNotice(loaded.preset);
             return rules.empty() ? rules : " " + rules;
         }();
+    const std::string summary = (input.empty() ? std::string{} : input + " ") +
+                                (asPreset ? "Loaded " : "Imported ") + what + ": " + contents;
     // The START it asked for says this again once the input is open, in place of its own line
     // (`toggleRun`); an import that stopped listening says it as the trouble it is.
     const bool restarting = !input.empty() && runPending_;
     setStatus(summary, !input.empty() && !restarting);
     importSaid_ = restarting ? summary : std::string{};
+    if (said != nullptr) {
+        *said = "loaded " + what + ": " + contents; // a preset's: there is no input in it
+    }
+    showIsPreset(preset); // a whole file imported is no preset: ""
     return true;
+}
+
+void WindowController::showIsPreset(const std::string& name) {
+    loadedPreset_ = name;
+    showModified_ = false;
+    modifiedCheckedAt_ = nowSeconds();
+    if (name.empty()) {
+        loadedShow_.reset();
+    } else {
+        loadedShow_ = currentSettings().preset;
+    }
+}
+
+void WindowController::usePresetsFolder(std::filesystem::path folder) {
+    presetsFolder_ = std::move(folder);
+    oscControl_.setPresetsFolder(presetsFolder_);
+}
+
+std::vector<std::string> WindowController::presetNames() const {
+    return settings::listPresets(presetsFolder_);
+}
+
+bool WindowController::savePreset(std::string_view typed) {
+    applyDrafts(); // what is being typed is part of the show: see `saveNow`
+    std::string name = settings::trimmedPresetName(typed);
+    // One there under this name in another case is the one replaced, on every system: two
+    // presets told apart only by a capital letter would be one file on Windows and two elsewhere.
+    if (const std::optional<std::string> there = settings::findPreset(presetNames(), name)) {
+        name = *there;
+    }
+    std::string problem;
+    if (!settings::savePreset(currentSettings().preset, presetsFolder_, name, problem)) {
+        setStatus("Could not save the preset: " + problem + ".", true);
+        return false;
+    }
+    setStatus("Saved the show as preset \"" + name + "\".", false);
+    showIsPreset(name);
+    return true;
+}
+
+bool WindowController::loadPreset(std::string_view name) {
+    std::string note;
+    return loadPreset(name, note);
+}
+
+bool WindowController::loadPreset(std::string_view asked, std::string& note) {
+    // By the names the folder holds, so nothing typed or sent reaches outside it.
+    const std::vector<std::string> names = presetNames();
+    const std::optional<std::string> found = settings::findPreset(names, asked);
+    if (!found) {
+        std::string list;
+        for (const std::string& name : names) {
+            list += (list.empty() ? "" : ", ") + name;
+        }
+        note = names.empty()
+                   ? "no presets are saved on this takt4"
+                   : "no preset \"" + settings::trimmedPresetName(asked) + "\"; there are " + list;
+        setStatus(names.empty() ? std::string("No presets are saved yet.")
+                                : "No preset \"" + settings::trimmedPresetName(asked) +
+                                      "\": there are " + list + ".",
+                  true);
+        return false;
+    }
+    return importFile(settings::presetFile(presetsFolder_, *found), *found, &note);
+}
+
+bool WindowController::deletePreset(std::string_view name) {
+    std::string problem;
+    if (!settings::deletePreset(presetsFolder_, name, problem)) {
+        setStatus("Could not delete the preset: " + problem + ".", true);
+        return false;
+    }
+    setStatus("Deleted preset \"" + std::string(name) + "\".", false);
+    if (name == loadedPreset_) {
+        showIsPreset({});
+    }
+    return true;
+}
+
+void WindowController::openPresets() {
+    if (!presetsWindow_) {
+        presetsWindow_ = PresetsWindow::create();
+        PresetsWindow& presets = **presetsWindow_;
+        presets.set_presets(presetRows_.model());
+        presets.set_address(slint::SharedString(oscControl_.config().prefix + "/ctl/preset"));
+        // The box shows what this holds, written back as it is typed — weltformat's `Entry` never
+        // sets its own value.
+        presets.on_name_typed([this](const slint::SharedString& text) {
+            presetName_ = std::string(text);
+            publishPresets();
+        });
+        presets.on_save_clicked([this] {
+            presetArmed_.clear();
+            (void)savePreset(presetName_);
+            presetsSay();
+            publishPresets();
+        });
+        presets.on_load_clicked([this](int row) {
+            presetArmed_.clear();
+            if (row >= 0 && static_cast<std::size_t>(row) < presetList_.size()) {
+                (void)loadPreset(presetList_[static_cast<std::size_t>(row)]);
+                presetsSay();
+            }
+            publishPresets();
+        });
+        // **Two presses delete a file**: the first arms the row ("delete"), the second deletes —
+        // and the second click of a double-click is not a second press (`DeleteGuard`), so a
+        // preset is never lost to one gesture.
+        presets.on_delete_clicked([this](int row) {
+            if (!presetMarks_.press(row) || row < 0 ||
+                static_cast<std::size_t>(row) >= presetList_.size()) {
+                return;
+            }
+            const std::string& name = presetList_[static_cast<std::size_t>(row)];
+            if (presetArmed_ != name) {
+                presetArmed_ = name;
+            } else {
+                presetArmed_.clear();
+                (void)deletePreset(name);
+                presetsSay();
+            }
+            publishPresets();
+        });
+        presets.on_closed([this] {
+            presetArmed_.clear();
+            (*presetsWindow_)->hide();
+        });
+        presets.window().on_close_requested([this] {
+            presetArmed_.clear();
+            return slint::CloseRequestResponse::HideWindow;
+        });
+        // The size it was drawn for, before the first show — Slint opens a window at its
+        // content's minimum otherwise.
+        const LogicalExtent opening = fitToScreen({kPresetsWindowWidth, kPresetsWindowHeight});
+        presets.window().set_size(slint::LogicalSize({opening.width, opening.height}));
+    }
+    presetArmed_.clear();
+    publishPresets();
+    (*presetsWindow_)->show();
+    (void)bringWindowToFront("takt4 presets");
+}
+
+void WindowController::publishPresets() {
+    if (!presetsWindow_) {
+        return;
+    }
+    presetList_ = presetNames();
+    presetsListedAt_ = nowSeconds();
+    std::vector<PresetRow> rows;
+    rows.reserve(presetList_.size());
+    for (const std::string& name : presetList_) {
+        PresetRow row;
+        row.name = slint::SharedString(io::validUtf8(name));
+        row.armed = name == presetArmed_;
+        rows.push_back(row);
+    }
+    if (std::find(presetList_.begin(), presetList_.end(), presetArmed_) == presetList_.end()) {
+        presetArmed_.clear(); // gone from the folder meanwhile
+    }
+    presetRows_.write(rows);
+    PresetsWindow& presets = **presetsWindow_;
+    presets.set_name(slint::SharedString(io::validUtf8(presetName_)));
+    presets.set_replacing(
+        settings::findPreset(presetList_, settings::trimmedPresetName(presetName_)).has_value());
+    presets.set_folder(slint::SharedString(io::pathText(presetsFolder_)));
+}
+
+void WindowController::presetsSay() {
+    if (presetsWindow_) {
+        (*presetsWindow_)->set_said(window_->get_status());
+        (*presetsWindow_)->set_said_is_error(window_->get_status_is_error());
+    }
 }
 
 void WindowController::publishOutputs() {
@@ -4280,6 +4476,12 @@ void WindowController::pumpWhileDragged(void* self) {
 
 void WindowController::tick() {
     redraw();
+    // Whether the show is still the preset last loaded or saved: twice a second rather than every
+    // round, as it compares the whole show, and only until it first differs ("changed since").
+    if (loadedShow_ && !showModified_ && nowSeconds() - modifiedCheckedAt_ >= 0.5) {
+        modifiedCheckedAt_ = nowSeconds();
+        showModified_ = !(currentSettings().preset == *loadedShow_);
+    }
     // What takt4 says about itself, for the heartbeat and the control socket's answers: after the
     // redraw, whichever way it ended, so it says what the window has just shown — a lock with the
     // word the window put beside it, not the word of the redraw before.
@@ -4297,6 +4499,11 @@ void WindowController::redraw() {
     }
     if (!tickProbe_.empty()) {
         writeTickProbe();
+    }
+    // The presets window's list, for a file put in the folder by hand while it is open.
+    if (presetsWindow_ && (*presetsWindow_)->window().is_visible() &&
+        nowSeconds() - presetsListedAt_ >= 2.0) {
+        publishPresets();
     }
     // Half a second apart rather than every round: this walks the thread's top-level windows
     // and subclasses any it has not already, which is how the editor gets covered when it is
@@ -5172,6 +5379,8 @@ remote::Status WindowController::remoteStatus() const {
     s.sourceDetail =
         std::string(following() ? window_->get_timing_detail() : window_->get_input_reading());
     s.panic = runner_.panicked();
+    s.loadedPreset = loadedPreset_;
+    s.presetModified = showModified_;
     // What is open while it runs; what START would open while it does not.
     const audio::InputDevice* device = nullptr;
     if (input_) {
@@ -5274,6 +5483,10 @@ WindowController::Verdict WindowController::carryOut(const remote::Command& comm
         return Verdict::Refused;
     };
     switch (command.kind) {
+    case Kind::Preset:
+        // The show half only, as the window's own LOAD — never the input, the MIDI controls or
+        // the OSC control this very command came in on (`loadPreset`). Running or not, as IMPORT.
+        return loadPreset(command.text, note) ? Verdict::Done : Verdict::Refused;
     case Kind::Start:
     case Kind::Stop: {
         // Switches, never toggles: one already in the state asked for is answered, and done.

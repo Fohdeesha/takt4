@@ -25,6 +25,9 @@ struct ShotOptions {
     bool rules = false;
     /// Render the About box instead.
     bool about = false;
+    /// Render the presets window instead, holding a made-up list; `state` picks another of its
+    /// states: replace, armed, empty, error.
+    bool presets = false;
     /// Render the widget bench instead: one of each of the main window's own controls, in each
     /// of their states (src/ui/widget_bench.slint).
     bool widgets = false;

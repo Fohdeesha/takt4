@@ -1256,6 +1256,39 @@ int renderShot(const std::filesystem::path& out, const ShotOptions& options) {
         });
     }
 
+    if (options.presets) {
+        return renderWindow(out, width, height, [&options] {
+            auto window = PresetsWindow::create();
+            const std::string& state = options.state;
+            auto rows = std::make_shared<slint::VectorModel<PresetRow>>();
+            if (state != "empty") {
+                for (const char* name : {"Friday late set", "Saturday \xE2\x80\x94 lasers on",
+                                         "Sunday chill", "wedding"}) {
+                    PresetRow row;
+                    row.name = slint::SharedString(name);
+                    row.armed = state == "armed" && std::string_view(name) == "Sunday chill";
+                    rows->push_back(row);
+                }
+            }
+            window->set_presets(rows);
+            window->set_folder(slint::SharedString("D:\\Shows\\takt4\\presets"));
+            window->set_address(slint::SharedString("/takt4/ctl/preset"));
+            if (state == "replace") {
+                window->set_name(slint::SharedString("Friday late set"));
+                window->set_replacing(true);
+            } else if (state == "error") {
+                window->set_name(slint::SharedString("Friday/late"));
+                window->set_said(slint::SharedString(
+                    "Could not save the preset: a preset's name cannot hold /."));
+                window->set_said_is_error(true);
+            } else if (state != "empty") {
+                window->set_said(slint::SharedString("Loaded preset \"Sunday chill\": 12 rules, "
+                                                     "3 outputs, 8 fixtures."));
+            }
+            return window;
+        });
+    }
+
     if (options.about) {
         return renderWindow(out, width, height, [] {
             auto window = AboutWindow::create();

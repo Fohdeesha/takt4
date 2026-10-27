@@ -53,6 +53,10 @@ inline constexpr float kFixturesWindowHeight = 800.0f;
 /// size.
 inline constexpr float kAboutWindowWidth = 580.0f;
 inline constexpr float kAboutWindowHeight = 640.0f;
+/// The presets window (presets_window.slint): its sheets whole at this size with a few presets in
+/// the list; more of them scroll.
+inline constexpr float kPresetsWindowWidth = 560.0f;
+inline constexpr float kPresetsWindowHeight = 660.0f;
 
 /// Frames of activation the trace holds: four seconds at the 50 Hz frame rate, which is
 /// two bars at 120 BPM — long enough to see the pattern the network is responding to.

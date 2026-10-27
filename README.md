@@ -136,8 +136,8 @@ address                       send           does
 
 Every output ticked for the global messages also gets takt4's status, sent from the thread that sends the beats:
 
-- **Once a second**, whatever the audio or the window is doing: `/takt4/status/alive` (an int that counts up), in one bundle with the whole status. Each value is its own address, `/takt4/status/<name>`: `running`, `locked`, `hunting`, `state` (the word on the tempo panel), `confidence`, `bpm`, `level` (dBFS), `load` (the slowest audio callback of the last second, as a share of its buffer's time: 1 leaves no time to spare), `dropouts`, `source` (`audio`, `link`, `midi-clock` or `prolink`), `source_ok`, `source_detail`, `panic`, `audio/host`, `audio/device`, `audio/channel`, `audio/mono`, `audio/rate`, `latency_ms`, `version`, `uptime_s`, and `ui_age_ms` (how long ago the window last updated it)
-- **Within a tenth of a second of a change**: that value again, on its own (not the level, the load, `uptime_s` or `ui_age_ms`, which go once a second); `source_detail` goes again just before any change of `source_ok`, so the reason is there first
+- **Once a second**, whatever the audio or the window is doing: `/takt4/status/alive` (an int that counts up), in one bundle with the whole status. Each value is its own address, `/takt4/status/<name>`: `running`, `locked`, `hunting`, `state` (the word on the tempo panel), `confidence`, `bpm`, `level` (dBFS), `load` (the slowest audio callback of the last second, as a share of its buffer's time: 1 leaves no time to spare), `dropouts`, `source` (`audio`, `link`, `midi-clock` or `prolink`), `source_ok`, `source_detail`, `panic`, `loaded_preset` (the preset last loaded or saved, empty for none since takt4 started), `preset_modified` (1 once a show setting has changed since), `audio/host`, `audio/device`, `audio/channel`, `audio/mono`, `audio/rate`, `latency_ms`, `version`, `uptime_s`, and `ui_age_ms` (how long ago the window last updated it)
+- **Within a tenth of a second of a change**: that value again, on its own (not the level, the load, `uptime_s` or `ui_age_ms`, which go once a second); `source_detail` goes again just before any change of `source_ok`, so the reason is there first, and `loaded_preset` just before any change of `preset_modified`
 - **What the status line says**: `/takt4/status/log` with a string level (`info` or `warning`) and the text, 5 lines a second, the rest after them
 
 With **listen** on, a controller can ask for these. The answer goes to the address and port it sent from:
@@ -146,6 +146,7 @@ With **listen** on, a controller can ask for these. The answer goes to the addre
 /takt4/ctl/status          the whole status, as one bundle
 /takt4/ctl/audio/devices   one /takt4/status/audio/device (host, device, inputs) per input, then /takt4/status/audio/devices (how many)
 /takt4/ctl/outputs         one /takt4/status/output (id, name, kind, host, port, on, delay ms, global, problem) per output, then /takt4/status/outputs (how many)
+/takt4/ctl/presets         one /takt4/status/preset (name) per saved preset, then /takt4/status/presets (how many)
 ```
 
 To let a controller *change* takt4, tick **allow remote setup** on the line under the OSC row. It's off by default; for another computer, **allow other machines** has to be ticked too. **only from** takes IPv4 addresses (this computer is always allowed); leave it empty for any. Each change is made the way the window makes it, saved like one made in the window, and shown on the status line with who sent it:
@@ -162,9 +163,10 @@ address                               send                                does
 /takt4/ctl/output/<id>/enable         1 or 0                              switch an output on or off
 /takt4/ctl/output/<id>/delay          ms (a number)                       its delay
 /takt4/ctl/output/<id>/global         1 or 0                              send it takt4's global messages (OSC outputs only)
+/takt4/ctl/preset                     name (a string)                     load that preset, running or not: its show, never the input or the controls; any case of the name, unless two presets differ only in case
 ```
 
-- Add a request number as one more int on any of these, the three questions included, and takt4 answers `/takt4/reply` with the number, `ok` or `refused`, and a note. Without one, it only answers a refusal: `/takt4/status/refused` with the address and why
+- Add a request number as one more int on any of these, the questions included, and takt4 answers `/takt4/reply` with the number, `ok` or `refused`, and a note. Without one, it only answers a refusal: `/takt4/status/refused` with the address and why
 - A change is refused, with the reason, while a dialog is open in takt4 ("busy"), while a start or stop is under way, and when it can't be done
 - To restart takt4 from another program, end the running one first: a second launch only brings the first one to the front. Set the environment variable `TAKT4_NO_CRASH_DIALOG=1` so that after a crash takt4 writes its report and ends, instead of showing a message that waits for someone to answer it
 
@@ -197,6 +199,7 @@ address                               send                                does
 
 - Everything saves by itself to `settings.json` next to `takt4.exe` (next to `takt4.app` on a Mac, or in `~/Library/Application Support/takt4` until the app is moved out of the folder it was downloaded to)
 - **export** / **import** carry everything: rules, outputs, lights, tempo settings, the audio input, MIDI and OSC control with what was learned, and which sections are folded. Import replaces it all. An input that isn't on this machine stays the one saved; **rescan** or the next launch finds it once it's plugged in
+- **presets** saves the show under a name and loads it again, running or stopped: rules, outputs, lights and tempo settings, never the audio input, the MIDI and OSC control or the layout. Each one is a file in the `presets` folder next to `settings.json`, and an export put there loads as one too. **×** deletes one on a second press. A show controller loads them by name over OSC (above)
 - A rule's mute and its ÷2 / ×2 status aren't saved
 - A `settings.json` written by a newer takt4 isn't saved over until you press **save**
 - One takt4 runs per folder: starting it again brings the open one to the front

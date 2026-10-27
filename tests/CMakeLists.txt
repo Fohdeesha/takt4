@@ -76,6 +76,7 @@ add_executable(takt4_tests
   output/transports_test.cpp
   remote/remote_test.cpp
   rt/alloc_guard_test.cpp
+  settings/presets_test.cpp
   settings/rule_json_test.cpp
   settings/settings_test.cpp
   rt/published_test.cpp

@@ -1,0 +1,242 @@
+// Show presets: the show saved under a name, and loaded again by a click here or by a show
+// controller over OSC (`/takt4/ctl/preset <name>`). In the Weltformat-dark look: the list, the
+// box to save under a name, where they are kept, and CLOSE at the bottom right.
+//
+// `WindowController` owns it: the rows are its (`PresetRow`, written in place, never rebuilt —
+// see model_rows.hpp), the name box shows what it holds, and every button calls back to it.
+
+import { Btn, Entry, Scroller, Wf } from "weltformat.slint";
+import { FocusSink } from "theme.slint";
+
+/// One preset in the list.
+export struct PresetRow {
+    name: string,
+    /// Its × pressed once: the button now says "delete", and a second press deletes the file.
+    armed: bool,
+}
+
+/// A sheet of this window: charcoal on the page, 16 px in from its edges.
+component Sheet inherits Rectangle {
+  background: Wf.sheet;
+  vertical-stretch: 0;
+
+  VerticalLayout {
+    padding-left: 16px;
+    padding-right: 16px;
+    padding-top: 14px;
+    padding-bottom: 16px;
+    spacing: 10px;
+    @children
+  }
+}
+
+/// A sheet's heading.
+component Head inherits Text {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.36px;
+  color: Wf.ink;
+}
+
+/// Running text in a sheet, wrapping.
+component Words inherits Text {
+  font-size: 15px;
+  color: Wf.ink2;
+  wrap: word-wrap;
+}
+
+export component PresetsWindow inherits Window {
+  icon: @image-url("../../assets/icon/takt4-64.png");
+  title: "takt4 presets";
+  background: Wf.page;
+  default-font-family: Wf.sans;
+  default-font-size: 15px;
+  default-font-weight: 500;
+  // The size it is drawn for is `ui::kPresetsWindowWidth` x `kPresetsWindowHeight`, set from C++
+  // before the first show, no larger than the screen (`fitToScreen`). Shorter, the sheets scroll
+  // and CLOSE stays put, as in About.
+  preferred-width: 560px;
+  preferred-height: 660px;
+  min-width: 480px;
+  min-height: 360px;
+
+  in property <[PresetRow]> presets;
+  /// What the name box holds: written back by the owner as it is typed (`name-typed`).
+  in property <string> name;
+  /// The name typed is a preset already: SAVE says "replace".
+  in property <bool> replacing;
+  /// What the last button here did, or why it did not.
+  in property <string> said;
+  in property <bool> said-is-error;
+  /// Where they are kept, and the OSC address a show controller loads one with.
+  in property <string> folder;
+  in property <string> address;
+  callback name-typed(string);
+  callback save-clicked();
+  callback load-clicked(int);
+  callback delete-clicked(int);
+  callback closed();
+
+  sink := FocusSink { }
+  TouchArea {
+    clicked => {
+      sink.take();
+    }
+  }
+
+  VerticalLayout {
+    padding-top: 10px;
+    padding-bottom: 10px;
+    padding-left: 10px;
+    spacing: 10px;
+
+    Scroller {
+      vertical-stretch: 1;
+      VerticalLayout {
+        padding-right: 10px;
+        spacing: 10px;
+        alignment: start;
+
+        Sheet {
+          Head {
+            text: "presets";
+          }
+          Words {
+            text: "A preset is the show: the rules, the outputs, the lighting patch and the tempo window. Loading one changes those, running or stopped, and leaves the input, the MIDI and OSC control and the layout as they are.";
+          }
+          if root.presets.length == 0: Words {
+            text: "None saved yet: save the show below.";
+            color: Wf.ink;
+          }
+          for row[i] in root.presets: HorizontalLayout {
+            spacing: 10px;
+            height: 36px;
+            Text {
+              text: row.name;
+              color: Wf.ink;
+              font-size: 15px;
+              vertical-alignment: center;
+              horizontal-stretch: 1;
+              min-width: 60px;
+              overflow: elide;
+            }
+            VerticalLayout {
+              alignment: center;
+              horizontal-stretch: 0;
+              Btn {
+                text: "load";
+                accessible-text: "load " + row.name;
+                height: 32px;
+                pad: 12px;
+                clicked => {
+                  root.load-clicked(i);
+                }
+              }
+            }
+            VerticalLayout {
+              alignment: center;
+              horizontal-stretch: 0;
+              // As wide as "delete", so nothing moves when it is armed.
+              min-width: 78px;
+              Btn {
+                text: row.armed ? "delete" : "\u{00D7}";
+                accessible-text: (row.armed ? "delete " : "remove ") + row.name;
+                danger: row.armed;
+                height: 32px;
+                pad: 12px;
+                clicked => {
+                  root.delete-clicked(i);
+                }
+              }
+            }
+          }
+        }
+
+        Sheet {
+          Head {
+            text: "save the show as";
+          }
+          HorizontalLayout {
+            spacing: 10px;
+            height: 36px;
+            Text {
+              text: "name";
+              color: Wf.ink2;
+              font-size: 15px;
+              vertical-alignment: center;
+              horizontal-stretch: 0;
+            }
+            Entry {
+              value: root.name;
+              placeholder: "type a name";
+              horizontal-stretch: 1;
+              min-width: 120px;
+              typed(text) => {
+                root.name-typed(text);
+              }
+              committed(text) => {
+                root.name-typed(text);
+              }
+            }
+            VerticalLayout {
+              alignment: center;
+              horizontal-stretch: 0;
+              min-width: 92px;
+              Btn {
+                text: root.replacing ? "replace" : "save";
+                primary: true;
+                height: 36px;
+                clicked => {
+                  root.save-clicked();
+                }
+              }
+            }
+          }
+          if root.said != "": Text {
+            text: root.said;
+            color: root.said-is-error ? Wf.holding : Wf.ink2;
+            font-size: 14px;
+            wrap: word-wrap;
+          }
+        }
+
+        Sheet {
+          Words {
+            text: "Kept as files in";
+            font-size: 14px;
+          }
+          Text {
+            text: root.folder;
+            color: Wf.ink2;
+            font-family: Wf.code;
+            font-size: 13px;
+            wrap: char-wrap;
+          }
+          Words {
+            text: "A show controller loads one by name, while \"allow remote setup\" is ticked on the OSC row:";
+            font-size: 14px;
+          }
+          Text {
+            text: root.address + " <name>";
+            color: Wf.ink2;
+            font-family: Wf.code;
+            font-size: 13px;
+            wrap: char-wrap;
+          }
+        }
+      }
+    }
+
+    HorizontalLayout {
+      padding-right: 10px;
+      alignment: end;
+      Btn {
+        text: "close";
+        primary: true;
+        clicked => {
+          root.closed();
+        }
+      }
+    }
+  }
+}
