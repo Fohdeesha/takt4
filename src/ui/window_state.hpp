@@ -86,6 +86,16 @@ inline constexpr double kLatencyLimitMs = settings::kMaxLatencyOffsetSeconds * 1
 /// One frame of the activation trace.
 TracePoint tracePoint(const engine::EngineFrame& frame);
 
+/// Whether the trace marks `frame` as a beat called: one was, and not while it says "no beat".
+bool traceCalls(const engine::EngineFrame& frame);
+
+/// Puts `frame` at the end of `trace`, the oldest column falling off the front, and true. A frame
+/// the engine interpolated between two of the network's (`EngineFrame::interpolated`) is not a
+/// column — the trace is a picture of what the network said, one column per 50 Hz frame — so it
+/// returns false, and a beat called on it waits in `pending` for the next column, so it is still
+/// drawn. The window and `takt4-shot` both build the trace with this.
+bool appendToTrace(std::vector<TracePoint>& trace, bool& pending, const engine::EngineFrame& frame);
+
 /// The BPM readout, lock and confidence, and the bar.
 void publishTempoState(MainWindow& window, const tracking::TempoState& state);
 

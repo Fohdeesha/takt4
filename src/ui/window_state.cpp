@@ -68,8 +68,32 @@ TracePoint tracePoint(const engine::EngineFrame& frame) {
     TracePoint point;
     point.beat = frame.activation.beat;
     point.downbeat = frame.activation.downbeat;
-    point.called = frame.beat;
+    point.called = traceCalls(frame);
     return point;
+}
+
+bool traceCalls(const engine::EngineFrame& frame) {
+    // **None while it says "no beat"**: until a beat is heard the hunt's calls are guesses at sound
+    // with no beat in it, as its tempo and bar are (`publishTempoState`), and lit as "beat called"
+    // they read as beats found.
+    return frame.beat && !frame.state.waitingForPulse;
+}
+
+bool appendToTrace(std::vector<TracePoint>& trace, bool& pending,
+                   const engine::EngineFrame& frame) {
+    if (frame.interpolated) {
+        pending = pending || traceCalls(frame);
+        return false;
+    }
+    if (trace.empty()) {
+        return false;
+    }
+    std::rotate(trace.begin(), trace.begin() + 1, trace.end());
+    TracePoint point = tracePoint(frame);
+    point.called = point.called || pending;
+    pending = false;
+    trace.back() = point;
+    return true;
 }
 
 void publishTempoState(MainWindow& window, const tracking::TempoState& state) {

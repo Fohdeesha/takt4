@@ -4375,24 +4375,12 @@ void WindowController::redraw() {
     }
 
     // Every frame since the last tick joins the trace, newest at the right — every frame of
-    // the network's, that is. A decoder running faster than the network is fed frames the
-    // engine interpolates between the network's (`EngineFrame::interpolated`), and the
-    // trace is a picture of what the network said, one column per 50 Hz frame; those are
-    // skipped, and a beat that landed on one is carried to the next real column so it is
-    // still drawn.
+    // the network's, that is, with a beat called on one the engine interpolated carried to
+    // the next (`appendToTrace`).
     bool moved = false;
     engine::EngineFrame frame;
     while (tracker_.engine().popFrame(frame)) {
-        if (frame.interpolated) {
-            traceBeatPending_ = traceBeatPending_ || frame.beat;
-            continue;
-        }
-        std::rotate(trace_.begin(), trace_.begin() + 1, trace_.end());
-        TracePoint point = tracePoint(frame);
-        point.called = point.called || traceBeatPending_;
-        traceBeatPending_ = false;
-        trace_.back() = point;
-        moved = true;
+        moved = appendToTrace(trace_, traceBeatPending_, frame) || moved;
     }
     if (moved) {
         publishTrace();

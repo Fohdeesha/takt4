@@ -190,19 +190,10 @@ void fillFromSyntheticRun(MainWindow& window,
         (void)beatEngine->step();
         engine::EngineFrame frame;
         while (beatEngine->popFrame(frame)) {
-            // The network's frames only, as the live window draws them, and a beat that
-            // landed on one the engine interpolated carried to the next — the shot's engine is
-            // the forward filter, the default, at twice the network's rate. This said it was
-            // the particle filter and dropped those beats.
-            if (frame.interpolated) {
-                beatPending = beatPending || frame.beat;
-                continue;
-            }
-            std::rotate(trace.begin(), trace.begin() + 1, trace.end());
-            TracePoint point = tracePoint(frame);
-            point.called = point.called || beatPending;
-            beatPending = false;
-            trace.back() = point;
+            // As the live window draws it: the network's frames only, and a beat that landed on
+            // one the engine interpolated carried to the next — the shot's engine is the forward
+            // filter, the default, at twice the network's rate.
+            (void)appendToTrace(trace, beatPending, frame);
         }
         engine::EngineBeat beat;
         while (beatEngine->popBeat(beat)) {

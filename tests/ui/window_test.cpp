@@ -30,6 +30,7 @@
 #include "ui/window_controller.hpp"
 #include "ui/window_state.hpp"
 
+#include "support/beatless.hpp"
 #include "support/fake_grid_source.hpp"
 #include "support/link_network.hpp"
 #include "support/loopback_receiver.hpp"
@@ -2403,6 +2404,121 @@ TEST_CASE("no beat draws no number, no dots and no bar, where hunting draws its 
     CHECK(dots(waiting) == 0);
     CHECK(number(waiting) > 0);
     CHECK(number(waiting) * 4 < number(hunting));
+}
+
+TEST_CASE("the plot marks no beat called while it says no beat, and every one once one is heard",
+          "[ui]") {
+    // The hunt still calls beats while takt4 waits for one, in sound with no beat in it, and the
+    // plot lit them as "beat called" beside "no beat". The trace is built here as the window and
+    // takt4-shot build it (`appendToTrace`), from the real engine's frames — half of them the
+    // engine's own between the network's, whose beats are carried to the next column: loud pink
+    // noise with the wait; the same noise without it, the tracker as it was, whose calls are drawn;
+    // and music, drawn from the moment a beat is heard. Then the plot itself, drawn.
+    static const takt4::model::ModelWeights weights =
+        takt4::model::ModelWeights::fromFile(kWeights);
+    static const takt4::tracking::StateSpaceModel space =
+        takt4::tracking::StateSpaceModel::fromFile(kStateSpace);
+    struct Drawn {
+        std::size_t calledWaiting = 0; // beats the hunt called while it said no beat
+        std::size_t calledHeard = 0;   // and once a beat was heard
+        std::size_t marked = 0;        // columns drawn as a beat called
+        std::vector<TracePoint> trace = std::vector<TracePoint>(takt4::ui::kTraceLength);
+    };
+    const auto draw = [](const std::vector<float>& sound, bool waitForPulse) {
+        takt4::engine::BeatEngine::Options options;
+        options.waitForPulse = waitForPulse;
+        const auto engine = std::make_unique<takt4::engine::BeatEngine>(weights, space, options);
+        Drawn drawn;
+        bool pending = false;
+        takt4::engine::EngineFrame frame;
+        takt4::engine::EngineBeat beat;
+        const std::size_t hops = sound.size() / takt4::audio::kHopSize;
+        for (std::size_t h = 0; h < hops; ++h) {
+            engine->processHop(sound.data() + h * takt4::audio::kHopSize, h);
+            (void)engine->step();
+            while (engine->popFrame(frame)) {
+                if (frame.beat && frame.state.waitingForPulse) {
+                    ++drawn.calledWaiting;
+                } else if (frame.beat) {
+                    ++drawn.calledHeard;
+                }
+                if (takt4::ui::appendToTrace(drawn.trace, pending, frame) &&
+                    drawn.trace.back().called) {
+                    ++drawn.marked;
+                }
+            }
+            while (engine->popBeat(beat)) {
+            }
+        }
+        if (pending) {
+            ++drawn.marked; // a beat on the last frame, still waiting for its column
+        }
+        return drawn;
+    };
+
+    const std::vector<float> noise =
+        takt4::testing::beatless(takt4::testing::Beatless::PinkNoise, 12.0);
+    const Drawn waiting = draw(noise, true);
+    INFO("pink noise, waiting: " << waiting.calledWaiting << " called saying no beat, "
+                                 << waiting.calledHeard << " after, " << waiting.marked
+                                 << " drawn");
+    REQUIRE(waiting.calledHeard == 0);  // no beat is heard in noise
+    REQUIRE(waiting.calledWaiting > 0); // but the hunt calls them
+    CHECK(waiting.marked == 0);
+
+    const Drawn unwaiting = draw(noise, false);
+    INFO("pink noise, no wait: " << unwaiting.calledHeard << " called, " << unwaiting.marked
+                                 << " drawn");
+    CHECK(unwaiting.calledWaiting == 0);
+    CHECK(unwaiting.calledHeard > 0);
+    CHECK(unwaiting.marked == unwaiting.calledHeard);
+
+    const takt4::io::WavData music = takt4::io::readWavFile(
+        std::filesystem::path(TAKT4_TEST_DATA_DIR) / "features" / "synthetic.wav");
+    const Drawn heard = draw(music.samples, true);
+    INFO("music: " << heard.calledWaiting << " called before a beat was heard, "
+                   << heard.calledHeard << " after, " << heard.marked << " drawn");
+    CHECK(heard.calledHeard > 0);
+    CHECK(heard.marked == heard.calledHeard);
+
+    // On screen: the plot's columns lit #efeee9 for a beat called, inside the plot's #111111.
+    auto window = MainWindow::create();
+    const auto litInPlot = [&window](const std::vector<TracePoint>& trace) {
+        window->set_trace(std::make_shared<slint::VectorModel<TracePoint>>(trace));
+        const takt4::tests::Shot shot = takt4::tests::render(*window, 800, 934);
+        const std::vector<std::pair<int, int>> sheets = sheetsDown(shot);
+        REQUIRE(sheets.size() >= 3);
+        const Rgb plot{0x11, 0x11, 0x11};
+        int x0 = shot.width;
+        int x1 = -1;
+        int y0 = shot.height;
+        int y1 = -1;
+        for (int y = sheets[2].first; y <= sheets[2].second; ++y) {
+            for (int x = 0; x < shot.width; ++x) {
+                if (is(shot, x, y, plot)) {
+                    x0 = std::min(x0, x);
+                    x1 = std::max(x1, x);
+                    y0 = std::min(y0, y);
+                    y1 = std::max(y1, y);
+                }
+            }
+        }
+        REQUIRE(x1 - x0 > 400); // the plot, found
+        REQUIRE(y1 - y0 > 40);
+        int lit = 0;
+        for (int y = y0; y <= y1; ++y) {
+            for (int x = x0; x <= x1; ++x) {
+                lit += is(shot, x, y, kEdge) ? 1 : 0;
+            }
+        }
+        return lit;
+    };
+    const int litWaiting = litInPlot(waiting.trace);
+    const int litUnwaiting = litInPlot(unwaiting.trace);
+    INFO("lit in the plot: waiting " << litWaiting << " px, without the wait " << litUnwaiting
+                                     << " px");
+    CHECK(litWaiting == 0);
+    CHECK(litUnwaiting > 100);
 }
 
 TEST_CASE("a beat fired before a silence is not lit again while it waits for a beat", "[ui]") {
