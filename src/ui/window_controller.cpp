@@ -1014,6 +1014,15 @@ WindowController::~WindowController() {
     tracker_.stop();
     tracker_.setHostTimeSource(nullptr);
     tracker_.engine().setHostTimeSource(nullptr);
+    // The windows of its own, hidden: a Slint window that is showing keeps itself alive, so one
+    // still open when this goes — a test's, which never closes the main window the way a person
+    // does (that hides them) — outlived it, every allocation of it a leak (linux-asan, 2026-10-27).
+    if (presetsWindow_) {
+        (*presetsWindow_)->hide();
+    }
+    if (about_) {
+        (*about_)->hide();
+    }
 }
 
 void WindowController::endSession() {
