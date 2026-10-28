@@ -193,6 +193,10 @@ public:
     /// not what it is about to have.
     tracking::TempoTracker::Options tempoOptions() const noexcept { return options_.load(); }
 
+    /// `Options::noSignalSeconds`: how long an input may send nothing at all before it is said to
+    /// be no signal (`Command::Kind::InputIdle`), as that much silence would.
+    double noSignalSeconds() const noexcept { return noSignalSeconds_; }
+
     /// Runs whatever the model worker has ready, on the calling thread, for tests and
     /// offline use. Returns how many frames were tracked. Only valid while stopped.
     std::size_t step() noexcept;
@@ -266,6 +270,9 @@ private:
     /// Everything posted since the last frame, in order. On the inference thread, or on
     /// the caller's while the engine is stopped — never on both at once.
     void applyCommands() noexcept;
+    /// Into no signal or out of it: the decoder silenced and the pulse forgotten going in, and the
+    /// tracker told either way. The one way in, whether silence was counted or an input sent none.
+    void setNoSignal(bool noSignal) noexcept;
     /// Hands the tracker's window to a decoder that takes one. After any command, because
     /// a tap moves the window.
     void syncDecoder() noexcept;
@@ -282,9 +289,10 @@ private:
     std::unique_ptr<tracking::BeatDecoder> decoder_;
     tracking::TempoTracker tempo_;
     std::size_t stepsPerActivation_ = 1;
-    /// `Options::noSignalBelowDb` as an RMS, and `noSignalSeconds` in decoder frames.
+    /// `Options::noSignalBelowDb` as an RMS, and `noSignalSeconds` in decoder frames and as given.
     float noSignalRms_ = 0.0f;
     std::uint64_t noSignalFrames_ = 1;
+    double noSignalSeconds_ = 4.0;
     /// Decoder frames in a row below that level, and whether they have reached the count.
     /// Only the inference thread touches these.
     std::uint64_t quietFrames_ = 0;

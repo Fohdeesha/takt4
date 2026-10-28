@@ -71,7 +71,8 @@ BeatEngine::BeatEngine(const model::ModelWeights& weights, const tracking::State
       noSignalRms_(static_cast<float>(std::pow(10.0, options.noSignalBelowDb / 20.0))),
       noSignalFrames_(static_cast<std::uint64_t>(
           std::max(1.0, std::ceil(options.noSignalSeconds / decoder_->secondsPerFrame())))),
-      pulse_(pulseOptions()), waitForPulse_(options.waitForPulse),
+      noSignalSeconds_(options.noSignalSeconds), pulse_(pulseOptions()),
+      waitForPulse_(options.waitForPulse),
       networkFramesPerDecoderFrame_(decoder_->secondsPerFrame() / kActivationPeriod) {
     // Sized now, so the first drain allocates nothing: `drain` swaps this buffer into the queue
     // and sizes whatever it gets back, which for a buffer that had never held anything was an
@@ -296,6 +297,12 @@ void BeatEngine::applyCommands() noexcept {
         case Command::Kind::HoldTempo:
             decoder_->holdTempo(command.bpm);
             break;
+        case Command::Kind::InputIdle:
+            // As if the silence had been counted: so quiet hops after it keep it, and the first
+            // loud one clears it, exactly as after counted silence.
+            quietFrames_ = std::max(quietFrames_, noSignalFrames_);
+            setNoSignal(true);
+            break;
         }
     }
     // **A pinned lock a command took away takes the decoder's hold with it.** A fold window
@@ -316,6 +323,19 @@ void BeatEngine::applyCommands() noexcept {
     // to be able to see a window a tap moved.
     state_.publish(tempo_.state());
     options_.publish(tempo_.options());
+}
+
+void BeatEngine::setNoSignal(bool noSignal) noexcept {
+    if (noSignal == noSignal_) {
+        return;
+    }
+    noSignal_ = noSignal;
+    if (noSignal) {
+        decoder_->silence();
+        // What comes back after it has to show its own pulse before it locks.
+        pulse_.reset();
+    }
+    tempo_.setNoSignal(noSignal);
 }
 
 void BeatEngine::track(const model::FrameActivation& activation) noexcept {
@@ -369,15 +389,7 @@ void BeatEngine::trackOne(const model::FrameActivation& activation, bool interpo
     frame.interpolated = interpolated;
     // No signal, before the decoder sees this frame: see `Options::noSignalSeconds`.
     quietFrames_ = activation.rms < noSignalRms_ ? quietFrames_ + 1 : 0;
-    if (const bool noSignal = quietFrames_ >= noSignalFrames_; noSignal != noSignal_) {
-        noSignal_ = noSignal;
-        if (noSignal) {
-            decoder_->silence();
-            // What comes back after it has to show its own pulse before it locks.
-            pulse_.reset();
-        }
-        tempo_.setNoSignal(noSignal);
-    }
+    setNoSignal(quietFrames_ >= noSignalFrames_);
     // And while there is none, what the network says is its own memory ringing on, not the
     // input: after "01 - Pirates" stopped dead its downbeat swelled to 0.55 every second or two
     // for as long as the silence lasted, and the decoder heard those swells as beats and set off

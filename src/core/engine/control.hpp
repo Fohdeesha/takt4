@@ -47,6 +47,14 @@ struct Command {
         /// The tempo hold, named directly: pin the decoder to `bpm` and track phase
         /// only, or release it with zero. Ignored by a decoder that cannot.
         HoldTempo,
+        /// **The input has sent nothing at all for as long as no signal takes**
+        /// (`BeatEngine::Options::noSignalSeconds`): a loopback, which Windows sends nothing while
+        /// nothing plays on the output it captures. The tracker counts silence in the hops it is
+        /// given, and an input that sends none gave it nothing to count, so it stayed locked at
+        /// the last tempo for as long as the player was stopped and the rig was never let go of.
+        /// This is no signal, as that much silence is; the first loud hop back clears it as it
+        /// would. A press: START drops one left waiting.
+        InputIdle,
     };
 
     Kind kind;
@@ -70,6 +78,7 @@ struct Command {
         return Command{Kind::SetLockPinned, {}, 0.0, pinned};
     }
     static Command holdTempo(double bpm) noexcept { return Command{Kind::HoldTempo, {}, bpm, false}; }
+    static Command inputIdle() noexcept { return Command{Kind::InputIdle, {}, 0.0, false}; }
 };
 
 /// **A setting, not a press**: what the operator has set up rather than something done to the

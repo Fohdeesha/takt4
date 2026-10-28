@@ -27,6 +27,9 @@ bool ExternalBeats::post(const engine::Command& command) {
     case Kind::SetTempoOptions:
         // The tracker's window, gate and latency: taken, and nothing here for them to change.
         return true;
+    case Kind::InputIdle:
+        // An audio input's silence: a followed source says when it has gone by itself.
+        return true;
     case Kind::SeedTempo:
     case Kind::SetLockPinned:
     case Kind::HoldTempo:

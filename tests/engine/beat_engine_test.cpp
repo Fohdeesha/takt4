@@ -1566,6 +1566,49 @@ TEST_CASE("a tap or a DOWNBEAT press says there is a beat, and the lock no longe
     CHECK(state.acquired);
 }
 
+TEST_CASE("an input that sends nothing at all is no signal, as that much silence is",
+          "[engine][shipped]") {
+    // Windows sends a loopback nothing while nothing plays on the output it captures, and the
+    // tracker counts silence in the hops it is given: with none it stayed locked at the last
+    // tempo for as long as the player was stopped, and the rig was never let go of. The window
+    // says so (`Command::inputIdle`), and it is no signal as counted silence is — kept through
+    // quiet hops, and gone at the first loud one.
+    const std::vector<float> music = excerpt("pirates.wav");
+    const std::unique_ptr<BeatEngine> engine = makeShippedEngine();
+    std::uint64_t hop = 0;
+    const auto feed = [&](const std::vector<float>& signal, std::size_t hops) {
+        EngineFrame frame;
+        EngineBeat beat;
+        for (std::size_t h = 0; h < hops && (h + 1) * kHopSize <= signal.size(); ++h, ++hop) {
+            engine->processHop(signal.data() + h * kHopSize, hop);
+            (void)engine->step();
+            while (engine->popFrame(frame)) {
+            }
+            while (engine->popBeat(beat)) {
+            }
+        }
+    };
+    feed(music, music.size() / kHopSize);
+    REQUIRE(engine->state().locked);
+    REQUIRE_FALSE(engine->state().noSignal);
+
+    REQUIRE(engine->post(Command::inputIdle()));
+    (void)engine->step();
+    takt4::tracking::TempoState state = engine->state();
+    CHECK(state.noSignal);
+    CHECK_FALSE(state.locked);
+    CHECK_FALSE(state.acquired);
+
+    // Quiet hops after it keep it: it is as if the silence had been counted, not about to be.
+    const std::vector<float> silence = quietInput(1.0, std::nullopt);
+    feed(silence, silence.size() / kHopSize);
+    CHECK(engine->state().noSignal);
+
+    // And sound back clears it, as after counted silence.
+    feed(music, 50);
+    CHECK_FALSE(engine->state().noSignal);
+}
+
 TEST_CASE("when the music stops the beat carries on, then stops, and the lock goes",
           "[engine][shipped]") {
     // Beats go on through any breakdown that has sound, and

@@ -994,6 +994,9 @@ private:
     /// is not a fault to reopen. Said once, and cleared when
     /// sound comes back.
     bool nothingPlaying_ = false;
+    /// And quiet for as long as no signal takes, which the engine has been told
+    /// (`engine::Command::Kind::InputIdle`): once a quiet spell.
+    bool idleDeclared_ = false;
     /// When PortAudio last looked for devices during an outage; negative before that.
     double rescannedAt_ = -1.0;
     /// When the input was last reopened on a driver's say-so, within the last minute, and whether

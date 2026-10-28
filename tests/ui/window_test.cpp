@@ -4498,6 +4498,61 @@ TEST_CASE("a loopback that goes quiet is waited for, and an interface that goes 
     }
 }
 
+TEST_CASE("a loopback that has sent nothing for as long as no signal takes is no signal", "[ui]") {
+    // 2026-10-28, a set played into a loopback and then over: the loopback sent nothing, the
+    // window said "nothing playing", and the tracker, which counts silence in the hops it is
+    // given and was given none, stayed locked — source_ok 1 to a show controller, and the rig
+    // never let go of, lasers armed. Now the engine is told once the loopback has been quiet
+    // as long as silence takes to be no signal, and not before.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    SyntheticRun run(tracker);
+    REQUIRE(run.untilLocked());
+    InputDevice loopback;
+    loopback.name = "Speakers [Loopback]";
+    loopback.hostApi = takt4::audio::HostApiKind::Wasapi;
+    loopback.hostApiName = "Windows WASAPI";
+    loopback.maxInputChannels = 2;
+    loopback.defaultSampleRate = 44100.0;
+    loopback.isLoopback = true;
+    controller.assumeRunningOn({loopback, takt4::audio::ChannelSelection::single(0)}, 100.0);
+    using Reading = takt4::audio::InputWatchdog::Reading;
+    using Verdict = takt4::audio::InputWatchdog::Verdict;
+    Reading silent;
+    silent.verdict = Verdict::Silent;
+    const double noSignal = tracker.engine().noSignalSeconds();
+    REQUIRE(noSignal > 1.0);
+
+    // Quiet, but not yet for that long: a pause, and the lock holds as it does through silence.
+    for (const double quiet : {0.6, 2.0, noSignal - 0.1}) {
+        silent.silentForSeconds = quiet;
+        controller.superviseInput(silent, {}, 100.0 + quiet);
+        run.applyPosted();
+        INFO("quiet for " << quiet << " s");
+        CHECK(tracker.engine().state().locked);
+        CHECK_FALSE(tracker.engine().state().noSignal);
+    }
+    CHECK(std::string(controller.window().get_input_reading()) == "nothing playing");
+
+    silent.silentForSeconds = noSignal;
+    controller.superviseInput(silent, {}, 100.0 + noSignal);
+    run.applyPosted();
+    CHECK(tracker.engine().state().noSignal);
+    CHECK_FALSE(tracker.engine().state().locked);
+
+    // Something plays: the loud hops clear it, as after counted silence.
+    Reading healthy;
+    healthy.verdict = Verdict::Healthy;
+    controller.superviseInput(healthy, {}, 110.0);
+    REQUIRE(run.until([&tracker] { return !tracker.engine().state().noSignal; }));
+
+    // And quiet again, as long again: said again.
+    silent.silentForSeconds = noSignal + 0.5;
+    controller.superviseInput(silent, {}, 120.0);
+    run.applyPosted();
+    CHECK(tracker.engine().state().noSignal);
+}
+
 namespace {
 
 /// An ASIO interface running at 44.1 kHz as far as the window knows — nothing is opened.

@@ -1685,6 +1685,7 @@ void WindowController::toggleRun() {
         outage_.reset();
         outageEndedAt_ = -1.0;
         nothingPlaying_ = false;
+        idleDeclared_ = false;
         input_.reset();
         stereoProblem_.clear();
         stereoStatus_.reset();
@@ -1749,6 +1750,7 @@ void WindowController::toggleRun() {
     runner_.setTracking(true);
     wantRunning_ = true;
     nothingPlaying_ = false;
+    idleDeclared_ = false;
     // A START is the operator's word that the input is worth reopening again.
     restarts_.clear();
     restartsHeld_ = false;
@@ -1814,6 +1816,7 @@ void WindowController::assumeRunningOn(const engine::LiveTracker::Running& input
     input_ = input;
     outage_.reset();
     nothingPlaying_ = false;
+    idleDeclared_ = false;
     watchdog_.reset(input.device.defaultSampleRate, now);
     driverResyncs_ = 0;
     window_->set_running(true);
@@ -2113,6 +2116,7 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
     // A loopback that had gone quiet and is sending again.
     if (nothingPlaying_ && reading.verdict == audio::InputWatchdog::Verdict::Healthy) {
         nothingPlaying_ = false;
+        idleDeclared_ = false;
         setStatus("Sound on " + name + " again.", false);
     }
 
@@ -2133,6 +2137,14 @@ void WindowController::superviseInput(const audio::InputWatchdog::Reading& readi
                 setStatus("Nothing is playing on " + name +
                               ". takt4 is listening, and follows it as soon as something plays.",
                           false);
+            }
+            // **And as long as no signal takes, it is no signal.** The tracker counts silence in
+            // the hops it is given, and a loopback sends none, so it stayed locked at the last
+            // tempo for as long as the player was stopped, said so to a show controller, and
+            // never let go of the rig: the lasers kept their last clip. The engine is told, as
+            // if it had counted the silence, and the first sound back clears it as it would.
+            if (!idleDeclared_ && reading.silentForSeconds >= tracker_.engine().noSignalSeconds()) {
+                idleDeclared_ = tracker_.engine().post(engine::Command::inputIdle());
             }
             break;
         }
