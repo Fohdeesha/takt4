@@ -353,22 +353,23 @@ TEST_CASE("the grid moved by less than a third of a beat while locked is not a s
     }
 }
 
-TEST_CASE("the grid moved by half a beat while locked costs one beat, and the counts go on",
+TEST_CASE("the grid moved by half a beat while locked fires no beat twice, and the counts go on",
           "[output][scheduler]") {
-    // Half a beat is further than a beat's stamp ever jitters, so the beat heard there is not
-    // the one predicted on the old grid — and a prediction already fired cannot be taken back.
-    // The jump costs one fire more than the music had, whichever way it lands:
+    // Half a beat is further than a beat's stamp ever jitters, and a prediction already fired
+    // cannot be taken back. Until 2026-10-27 the jump cost one fire more than the music had — the
+    // beat heard on the new grid fired half a beat after the old grid's — and a once-a-bar cue
+    // fired twice wherever the tracker moved its phase like this. Now nothing goes out closer
+    // than `kLockedGap` of a beat to the last fire while locked, so the old grid's beat, already
+    // fired, stands for the music's beat beside it:
     //
-    //   * 50 ms ahead, the beat on the new grid is heard before the old grid's next is due, and
-    //     is fired as it is heard, half a beat after the old grid's.
-    //   * 200 ms ahead, the old grid's next beat has already gone by the time the jumped one is
-    //     heard, which then counts as fired: the music's beat has the old grid's two either side
-    //     of it, half a beat off each way, and nothing on it.
+    //   * 50 ms ahead, the jumped beat is heard after the old grid's has gone, half a beat later,
+    //     and is the anchor for the next but not fired: from the beat after it, the new grid.
+    //   * 200 ms ahead, the old grid's next has gone too by the time the jump is heard, and the
+    //     new grid's first is half a beat after that one: so two of the old grid's stand for the
+    //     music's two, and from the second beat after the jump, the new grid.
     //
-    // Either way no two fires are closer than a third of a beat, the counts never repeat — a
-    // rule on every fourth beat is not fired twice running — and from the beat after the jump
-    // every beat is fired on the new grid. (Measured 2026-09-26, and not what this test first
-    // assumed of the 200 ms case.)
+    // Either way one fire for each beat the music had, the counts never repeat, and no two fires
+    // are closer than `kLockedGap` of a beat.
     const double lead = GENERATE(-0.050, -0.200);
     INFO("fired " << -lead * 1000.0 << " ms ahead");
     std::vector<double> moments;
@@ -380,23 +381,93 @@ TEST_CASE("the grid moved by half a beat while locked costs one beat, and the co
     for (std::size_t i = 1; i < fires.size(); ++i) {
         INFO("fire " << i);
         CHECK(fires[i].beat.beats == fires[i - 1].beat.beats + 1);
-        CHECK(fires[i].beat.moment - fires[i - 1].beat.moment > BeatScheduler::kSameBeat * period);
+        CHECK(fires[i].beat.moment - fires[i - 1].beat.moment >=
+              BeatScheduler::kLockedGap * period);
     }
-    const auto jumped = std::find_if(fires.begin(), fires.end(), [&](const Fire& fire) {
-        return std::abs(fire.beat.moment - moments[16]) < 1e-6;
-    });
-    // Every beat, the one past the end, and the one the jump cost.
-    CHECK(fires.size() == moments.size() + 2);
-    if (lead > -0.1) {
-        REQUIRE(jumped != fires.end());
-        CHECK_FALSE(jumped->beat.predicted); // fired as heard
-    } else {
-        CHECK(jumped == fires.end());
-        CHECK(nearestFire(fires, moments[16]) == Approx(0.5 * period).margin(1e-6));
+    // Every beat once, and the one past the end.
+    CHECK(fires.size() == moments.size() + 1);
+    // The jumped beat itself is not fired: the old grid's, half a beat before it, stands for it.
+    CHECK(nearestFire(fires, moments[16]) == Approx(0.5 * period).margin(1e-6));
+    const std::size_t onTheNewGrid = lead > -0.1 ? 17 : 18;
+    if (lead < -0.1) {
+        CHECK(nearestFire(fires, moments[17]) == Approx(0.5 * period).margin(1e-6));
     }
-    for (std::size_t k = 17; k < moments.size(); ++k) {
+    for (std::size_t k = onTheNewGrid; k < moments.size(); ++k) {
         INFO("beat " << k);
         CHECK(nearestFire(fires, moments[k]) < 1e-6);
+    }
+}
+
+TEST_CASE("a downbeat fired on a prediction and heard more than half a beat late goes out once",
+          "[output][scheduler]") {
+    // 2026-10-27, a set changing meter: the downbeat predicted on the grid went out, then the
+    // tracker's own call of it came 0.44 and 0.63 of a beat later and went out again, a downbeat
+    // both times — 190 and 275 ms apart, and a once-a-bar cue fired twice.
+    const double late = GENERATE(0.44, 0.55, 0.59);
+    INFO(late << " of a beat late");
+    BeatScheduler scheduler;
+    const double period = 60.0 / 138.0;
+    const double first = 1.0;
+    REQUIRE(scheduler.heard(beat(4, 138.0), first, first + 0.06, 0.35).has_value()); // beat 4
+    const auto predicted = scheduler.due(first + period, 0.0, 0.35);
+    REQUIRE(predicted.has_value());
+    CHECK(predicted->event.downbeat);
+    const double heard = first + period + late * period;
+    CHECK_FALSE(scheduler.heard(beat(5, 138.0), heard, heard + 0.06, 0.35).has_value());
+    // And the next goes out a beat on from the one heard, as beat 2.
+    const auto next = scheduler.due(heard + period, 0.0, 0.35);
+    REQUIRE(next.has_value());
+    CHECK(next->moment == Approx(heard + period));
+    CHECK(next->event.beatInBar == 2);
+}
+
+namespace {
+
+/// A beat the tracker called with the place in the bar given, hunting (so nothing is predicted
+/// and every beat is fired as heard).
+EngineBeat placed(std::uint64_t n, std::uint32_t inBar, std::uint32_t meter = 4) {
+    EngineBeat out = beat(n, 128.0, false);
+    out.event.beatsPerBar = meter;
+    out.event.beatInBar = inBar;
+    out.event.downbeat = inBar == 1;
+    out.state.beatsPerBar = meter;
+    out.state.beatInBar = inBar;
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("a bar is never one beat long: a downbeat on the beat after one has no place in the bar",
+          "[output][scheduler]") {
+    // The tracker moves its bar line by a beat — at a change of meter, or counting the wrong one —
+    // and calls a downbeat on the beat after the one it called before. Every downbeat rule and
+    // once-a-bar cue fired on both. The second goes out with no place in the bar, as a beat before
+    // the first bar is known, and the bar runs on to the tracker's next downbeat.
+    BeatScheduler scheduler;
+    const double period = 60.0 / 128.0;
+    const std::vector<std::uint32_t> called{3, 4, 1, 1, 2, 3, 4, 1, 2};
+    std::vector<std::uint32_t> sent;
+    std::vector<bool> downbeats;
+    for (std::size_t i = 0; i < called.size(); ++i) {
+        const double moment = 1.0 + static_cast<double>(i) * period;
+        const auto fired = scheduler.heard(placed(i + 1, called[i]), moment, moment + 0.06, 0.35);
+        REQUIRE(fired.has_value());
+        sent.push_back(fired->event.beatInBar);
+        downbeats.push_back(fired->event.downbeat);
+    }
+    CHECK(sent == std::vector<std::uint32_t>{3, 4, 1, 0, 2, 3, 4, 1, 2});
+    CHECK(downbeats ==
+          std::vector<bool>{false, false, true, false, false, false, false, true, false});
+
+    SECTION("but a meter of one, which a followed source may count, is a downbeat on every beat") {
+        BeatScheduler one;
+        for (std::uint64_t n = 1; n <= 4; ++n) {
+            const double moment = 1.0 + static_cast<double>(n) * period;
+            const auto fired = one.heard(placed(n, 1, 1), moment, moment + 0.06, 0.35);
+            REQUIRE(fired.has_value());
+            CHECK(fired->event.downbeat);
+            CHECK(fired->event.beatInBar == 1);
+        }
     }
 }
 

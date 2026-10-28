@@ -50,6 +50,12 @@ struct ScheduledBeat {
 ///   * The tracker misses a beat in a quiet passage. The prediction goes on for up to
 ///     `kMaxAhead` beats past the last one heard, which carries the outputs through the gap;
 ///     past that it waits to hear one.
+///   * The tracker moves its bar line by a beat, so its downbeat comes on the beat after the one
+///     fired as a downbeat. **A bar is never one beat long**: that beat goes out with no place in
+///     the bar (`beatInBar` 0, as before the first bar is known) and starts no bar, and the bar
+///     runs on to the tracker's next downbeat. Every downbeat rule, bar counter and once-a-bar
+///     cue downstream fired twice running on the beat it was moved to. (Unless the meter is
+///     one, which a followed source may count.)
 ///
 /// Pure: times in, beats out, no clock and no thread of its own, so a test drives it exactly.
 class BeatScheduler {
@@ -70,6 +76,18 @@ public:
     /// euclidean pattern and a rule on every few beats moved a step. Short of half: a jump of
     /// half a beat is the beat between, not this one moved.
     static constexpr double kCorrection = 0.45;
+    /// **While locked, no two fires closer than this share of a beat**, however the beats come.
+    /// A locked tracker's tempo says where the beats are, and a beat heard sooner after the last
+    /// fire than this is that beat moved, not another one: taken as the next anchor and not fired.
+    /// Judged against the longer of the spacing in force at the last fire and the one the beat
+    /// heard carries, so the beat a grid halves on is held to the spacing before it (the next is
+    /// not: a grid that stays halved is the tracker's, see `TempoState::gridBpm`). Seen on a set
+    /// that changed meter (2026-10-27): with the tracker counting the wrong meter its beats came
+    /// half a beat apart (seven in 1.4 s at 138 BPM) — which halves the spacing it measures,
+    /// `TempoState::gridBpm` being the median of its last eight gaps — and a downbeat already
+    /// fired went out again 190 and 275 ms after itself, so a once-a-bar cue fired twice. A jump
+    /// of half a beat now costs the music's beat at the jump rather than adding one.
+    static constexpr double kLockedGap = 0.6;
 
     /// A beat the tracker called, which was in the music at `moment` on the output thread's
     /// clock. Returns it to fire now — or nothing when a prediction has already fired it, or
@@ -122,10 +140,13 @@ private:
     /// Predictions fired from this anchor.
     std::uint32_t ahead_ = 0;
     /// The latest moment fired, and the counts it carried — and whether it was fired on a
-    /// prediction, which a beat heard may correct (`kCorrection`).
+    /// prediction, which a beat heard may correct (`kCorrection`); whether it was a downbeat; and
+    /// the beat spacing in force when it was (`kLockedGap`).
     double firedMoment_ = 0.0;
     bool firedAny_ = false;
     bool firedPredicted_ = false;
+    bool firedDownbeat_ = false;
+    double firedPeriod_ = 0.0;
     std::uint64_t firedBeats_ = 0;
     std::uint64_t firedBars_ = 0;
     /// The tracker's own count at the last beat heard, which is what tells a restart of it.

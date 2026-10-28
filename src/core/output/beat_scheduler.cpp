@@ -63,9 +63,18 @@ ScheduledBeat BeatScheduler::fire(ScheduledBeat beat) noexcept {
     if (firedAny_) {
         beat.beats = std::max(beat.beats, firedBeats_ + 1);
         beat.bars = std::max(beat.bars, firedBars_);
+        // A bar one beat long: the bar line moved by a beat. This one has no place in the bar
+        // and starts none; the bar runs on to the next downbeat. See the class note. (A bar of
+        // one beat that is the meter — a followed source counting one to the bar — is not.)
+        if (firedDownbeat_ && beat.event.downbeat && beat.event.beatsPerBar > 1) {
+            beat.event.downbeat = false;
+            beat.event.beatInBar = 0;
+        }
     }
     firedAny_ = true;
     firedPredicted_ = beat.predicted;
+    firedDownbeat_ = beat.event.downbeat;
+    firedPeriod_ = period_;
     firedMoment_ = beat.moment;
     firedBeats_ = beat.beats;
     firedBars_ = beat.bars;
@@ -98,7 +107,12 @@ std::optional<ScheduledBeat> BeatScheduler::heard(const engine::EngineBeat& beat
     // Fired already: this is the beat a prediction sent — its phase corrected, by up to half a
     // beat after one fired on a prediction (`kCorrection`) — or one older than it.
     const double same = firedPredicted_ ? kCorrection : kSameBeat;
-    const bool fired = firedAny_ && period > 0.0 && moment <= firedMoment_ + same * period;
+    bool fired = firedAny_ && period > 0.0 && moment <= firedMoment_ + same * period;
+    // And, locked, anything closer than `kLockedGap` to the last fire, by the longer spacing.
+    if (!fired && firedAny_ && beat.state.locked && !beat.state.holding) {
+        const double spacing = std::max(period, firedPeriod_);
+        fired = spacing > 0.0 && moment < firedMoment_ + kLockedGap * spacing;
+    }
 
     anchor_ = heard;
     period_ = period;
@@ -144,8 +158,10 @@ std::optional<ScheduledBeat> BeatScheduler::due(double now, double lead, double 
     while (ahead_ < kMaxAhead) {
         const std::uint32_t steps = ahead_ + 1;
         const double moment = anchor_.moment + static_cast<double>(steps) * period_;
-        if (firedAny_ && moment <= firedMoment_ + kSameBeat * period_) {
-            // Fired from the anchor before this one.
+        if (firedAny_ && (moment <= firedMoment_ + kSameBeat * period_ ||
+                          moment < firedMoment_ + kLockedGap * std::max(period_, firedPeriod_))) {
+            // Fired from the anchor before this one — or as good as: closer to the last fire than
+            // a locked beat ever is (`kLockedGap`).
             ahead_ = steps;
             continue;
         }
