@@ -10,22 +10,22 @@
   "failures": {},
   "files": 70,
   "held_out": "build\\training\\manifest.json",
-  "held_out_note": "held out: 70 of 698 files; the other 628 are in the training split of build\\training\\manifest.json",
+  "held_out_note": "held out: 70 of 698 files; the other 628 are not kept out of training by build\\training\\manifest.json",
   "octave_fold": "off",
   "per_group": {
     "ChaChaCha": {
-      "Downbeat F-measure": 0.9786840534666621,
-      "F-measure": 0.9720789801687733,
+      "Downbeat F-measure": 0.9820510568336656,
+      "F-measure": 0.9711805075721873,
       "files": 11
     },
     "Jive": {
-      "Downbeat F-measure": 0.9215106732348112,
-      "F-measure": 0.9448671450128874,
+      "Downbeat F-measure": 0.9419449005655903,
+      "F-measure": 0.9442624038421085,
       "files": 3
     },
     "Quickstep": {
-      "Downbeat F-measure": 0.9506290394549044,
-      "F-measure": 0.9541655785932153,
+      "Downbeat F-measure": 0.9468766942391446,
+      "F-measure": 0.953167333624111,
       "files": 13
     },
     "Rumba-American": {
@@ -39,28 +39,28 @@
       "files": 2
     },
     "Rumba-Misc": {
-      "Downbeat F-measure": 0.8201058201058201,
-      "F-measure": 0.9513114794560155,
+      "Downbeat F-measure": 0.830999066293184,
+      "F-measure": 0.9458840710435323,
       "files": 3
     },
     "Samba": {
-      "Downbeat F-measure": 0.8817336183485251,
-      "F-measure": 0.9339450108342334,
+      "Downbeat F-measure": 0.8886524965717513,
+      "F-measure": 0.9328480719837292,
       "files": 14
     },
     "Tango": {
       "Downbeat F-measure": 0.800889085371844,
-      "F-measure": 0.9725302561215874,
+      "F-measure": 0.9748029833943147,
       "files": 8
     },
     "VienneseWaltz": {
       "Downbeat F-measure": 0.975867269984917,
-      "F-measure": 0.9726127988031752,
+      "F-measure": 0.9709599728739645,
       "files": 4
     },
     "Waltz": {
-      "Downbeat F-measure": 0.7101582343874834,
-      "F-measure": 0.7476867119110487,
+      "Downbeat F-measure": 0.7010476480041697,
+      "F-measure": 0.7425192006650341,
       "files": 11
     }
   },
@@ -69,57 +69,57 @@
   "summary": {
     "Any Metric Level Continuous": {
       "files": 70,
-      "mean": 0.8567134118693518,
-      "median": 0.9322033898305084
+      "mean": 0.8540063057773958,
+      "median": 0.9320107858243452
     },
     "Any Metric Level Total": {
       "files": 70,
-      "mean": 0.8933202860811624,
+      "mean": 0.8935574017784992,
       "median": 0.9323938297467149
     },
     "Cemgil": {
       "files": 70,
-      "mean": 0.8607679993666754,
-      "median": 0.9252236066057655
+      "mean": 0.8596832317495795,
+      "median": 0.9245719827764742
     },
     "Cemgil Best Metric Level": {
       "files": 70,
-      "mean": 0.8621198944869694,
-      "median": 0.9252236066057655
+      "mean": 0.8610083651283116,
+      "median": 0.9245719827764742
     },
     "Correct Metric Level Continuous": {
       "files": 70,
-      "mean": 0.8559412110971509,
-      "median": 0.9322033898305084
+      "mean": 0.853165969642942,
+      "median": 0.9320107858243452
     },
     "Correct Metric Level Total": {
       "files": 70,
-      "mean": 0.8906175833784596,
+      "mean": 0.8901960572406841,
       "median": 0.9323938297467149
     },
     "Downbeat F-measure": {
       "files": 70,
-      "mean": 0.8818830177970242,
+      "mean": 0.8830099722926713,
       "median": 0.9600000000000001
     },
     "F-measure": {
       "files": 70,
-      "mean": 0.9244587111068636,
+      "mean": 0.9230074813203089,
       "median": 0.9648090815273478
     },
     "Goto": {
       "files": 70,
-      "mean": 0.8,
+      "mean": 0.7714285714285715,
       "median": 1.0
     },
     "Information gain": {
       "files": 70,
-      "mean": 0.5797124557411151,
-      "median": 0.5901909992826453
+      "mean": 0.5803195962764625,
+      "median": 0.5936011469266798
     },
     "P-score": {
       "files": 70,
-      "mean": 0.9143170485798328,
+      "mean": 0.9137330163422851,
       "median": 0.9336996336996337
     },
     "Tempo accuracy 1": {

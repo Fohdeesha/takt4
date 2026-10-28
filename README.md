@@ -28,7 +28,7 @@ From the **[latest release](https://github.com/Fohdeesha/takt4/releases/latest)*
 - Half or double speed: **÷2** or **×2**. The button stays lit and the tempo says **÷2 applied** while it's in effect
 - If the number and the beat dots disagree, the line under the tempo says what the beats are going out at and which of **÷2** / **×2** matches them
 - Keep it in a range: tick **keep BPM in** and set a rough range
-- Waltzes or other bars of three: under **inputs**, set **beats per bar** to **3 or 4**. Only while stopped
+- Waltzes or other bars of three: under **inputs**, set **beats per bar** to **3 or 4**. Only while stopped. A change between the two takes it about 8 to 20 seconds to follow
 - **tap** (or **T**) to tap it in
 - **latency** moves everything earlier or later to compensate for input, output, and overall rig latency
 

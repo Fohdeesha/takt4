@@ -9,56 +9,58 @@
   "dataset": "Ballroom (references/ballroom-audio), not vendored",
   "failures": {},
   "files": 698,
+  "held_out": null,
+  "held_out_note": null,
   "octave_fold": "off",
   "per_group": {
     "ChaChaCha": {
-      "Downbeat F-measure": 0.9682242012676796,
-      "F-measure": 0.975670530902695,
+      "Downbeat F-measure": 0.9682610346378463,
+      "F-measure": 0.9749695436733582,
       "files": 111
     },
     "Jive": {
-      "Downbeat F-measure": 0.9653482736192225,
-      "F-measure": 0.9741989092999177,
+      "Downbeat F-measure": 0.964847773118722,
+      "F-measure": 0.9740773287528052,
       "files": 60
     },
     "Quickstep": {
-      "Downbeat F-measure": 0.9576373262031861,
-      "F-measure": 0.9620302474276452,
+      "Downbeat F-measure": 0.9541153203171573,
+      "F-measure": 0.9607851453104332,
       "files": 82
     },
     "Rumba-American": {
-      "Downbeat F-measure": 0.9392049749192607,
-      "F-measure": 0.9651036606792527,
+      "Downbeat F-measure": 0.9433621933621934,
+      "F-measure": 0.9634991353739849,
       "files": 7
     },
     "Rumba-International": {
-      "Downbeat F-measure": 0.9706439080729025,
-      "F-measure": 0.979583702453757,
+      "Downbeat F-measure": 0.9714282217983927,
+      "F-measure": 0.9795483162670959,
       "files": 51
     },
     "Rumba-Misc": {
-      "Downbeat F-measure": 0.8579128603513615,
-      "F-measure": 0.9134614224087887,
+      "Downbeat F-measure": 0.8664176510698587,
+      "F-measure": 0.9142821773980006,
       "files": 40
     },
     "Samba": {
-      "Downbeat F-measure": 0.9180562544084975,
-      "F-measure": 0.9462624765059949,
+      "Downbeat F-measure": 0.9153379784141851,
+      "F-measure": 0.9433357888129619,
       "files": 86
     },
     "Tango": {
-      "Downbeat F-measure": 0.9525307147232812,
-      "F-measure": 0.9643284645448337,
+      "Downbeat F-measure": 0.9535756646054404,
+      "F-measure": 0.9624831824911919,
       "files": 86
     },
     "VienneseWaltz": {
-      "Downbeat F-measure": 0.9646232666562216,
-      "F-measure": 0.9696149659495562,
+      "Downbeat F-measure": 0.9629780926102717,
+      "F-measure": 0.9690317388306501,
       "files": 65
     },
     "Waltz": {
-      "Downbeat F-measure": 0.906069817310159,
-      "F-measure": 0.9155206209929315,
+      "Downbeat F-measure": 0.903899750954322,
+      "F-measure": 0.9146506003095027,
       "files": 110
     }
   },
@@ -67,57 +69,57 @@
   "summary": {
     "Any Metric Level Continuous": {
       "files": 698,
-      "mean": 0.9062563811117107,
+      "mean": 0.9048689018766505,
       "median": 0.9347826086956522
     },
     "Any Metric Level Total": {
       "files": 698,
-      "mean": 0.9304402306231382,
-      "median": 0.9367088607594937
+      "mean": 0.9296670962643778,
+      "median": 0.9358974358974359
     },
     "Cemgil": {
       "files": 698,
-      "mean": 0.8866878268170972,
-      "median": 0.9107132487149439
+      "mean": 0.8858049134257526,
+      "median": 0.9102282915756523
     },
     "Cemgil Best Metric Level": {
       "files": 698,
-      "mean": 0.8878657924769044,
-      "median": 0.9107845845055611
+      "mean": 0.8868695209538503,
+      "median": 0.9102282915756523
     },
     "Correct Metric Level Continuous": {
       "files": 698,
-      "mean": 0.903542030916172,
+      "mean": 0.9036513300262362,
       "median": 0.9347826086956522
     },
     "Correct Metric Level Total": {
       "files": 698,
-      "mean": 0.9274102823593606,
-      "median": 0.9364395367627256
+      "mean": 0.9276460454737648,
+      "median": 0.9358974358974359
     },
     "Downbeat F-measure": {
       "files": 698,
-      "mean": 0.9420522974768469,
-      "median": 0.962962962962963
+      "mean": 0.941486389871504,
+      "median": 0.9615384615384615
     },
     "F-measure": {
       "files": 698,
-      "mean": 0.955492632019805,
-      "median": 0.9662921348314606
+      "mean": 0.9544734194150732,
+      "median": 0.9661969148733575
     },
     "Goto": {
       "files": 698,
-      "mean": 0.9183381088825215,
+      "mean": 0.9140401146131805,
       "median": 1.0
     },
     "Information gain": {
       "files": 698,
-      "mean": 0.6076909596222032,
-      "median": 0.6116568578541406
+      "mean": 0.6074915213743415,
+      "median": 0.6105515730801336
     },
     "P-score": {
       "files": 698,
-      "mean": 0.9396302639788614,
+      "mean": 0.939435567117003,
       "median": 0.9375
     },
     "Tempo accuracy 1": {

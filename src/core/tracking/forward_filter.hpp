@@ -152,10 +152,19 @@ public:
         /// chain climbed back over the incumbent whenever the evidence wobbled — 491 meter
         /// changes in 91 minutes against 143 with no floor, and downbeat F 0.674 against
         /// 0.710; at 1e-15, 247 changes; at 1e-30, 145 and every score to the third decimal
-        /// the same as none. A chain a factor of 1e30 behind needs about seventy nats of
-        /// evidence to win, which a genuine change of meter supplies in well under a minute
-        /// and a wobble never does.
-        double meterFloor = 1e-30;
+        /// the same as none.
+        ///
+        /// **1e-15 since 2026-10-28**, with the margin at 100. A chain a factor of 1e30 behind
+        /// needed about seventy nats to win, and a jazz waltz after a house track supplied them
+        /// 25 seconds after its lock (4/4 to 3/4) and 17 the other way; 1e-15 needs half as many,
+        /// and took 13 and 7.5. Timed on Ballroom's waltzes after a minute of 4/4 and its 4/4
+        /// after a minute of waltz, the median switch went from 14.4 to 13.2 seconds and from 9.5
+        /// to 7.6, Ballroom's downbeat F 0.9421 to 0.9425. What it costs, on the 23 electronic
+        /// tracks with bars of three and four: meter changes while locked 15 to 17 in 91 minutes,
+        /// downbeat F 0.675 to 0.673. (1e-20 was the same as 1e-30 on them, and saved a second;
+        /// 1e-10 made 24 changes.) With bars of four alone, as it ships, there is no other chain
+        /// and the floor does nothing.
+        double meterFloor = 1e-15;
         /// Where the beats are read off the posterior. `Peak` — the activation's peak while
         /// the MAP state is in a beat range — is the rule that scored best on every measure,
         /// on the 23 electronic tracks and on Ballroom alike (`tools/refeval/`):
@@ -172,8 +181,20 @@ public:
         /// to four frames, or the commitment is made from a posterior the beat has already
         /// moved. Six is 60 ms.
         double predictFrames = 6.0;
-        /// No beat within this fraction of a period of the last one: the prototype's 0.5.
-        double minimumBeatFraction = 0.5;
+        /// No beat within this fraction of a period of the last one. **0.7 since 2026-10-28**;
+        /// the prototype's 0.5 let a beat through half a beat after the last wherever the MAP
+        /// state moved its phase — over the 23 electronic tracks, 267 locked beats in 91 minutes
+        /// closer than 0.6 of a beat to the one before (37 at 0.7). Each was a cue fired twice
+        /// downstream, and a run of them halved the spacing the beats were measured at
+        /// (`TempoState::gridBpm`), which Link and the MIDI clock follow: they ran above 1.5
+        /// times the tempo for 42 seconds of 83 locked minutes, 6 at 0.7. Scored: those tracks'
+        /// beat F 0.842 to 0.843, CMLt 0.724 to 0.733, downbeat F 0.664 to 0.671; with the
+        /// 70-140 window on, beat F 0.805 to 0.799 — Winter Now, which the references count at
+        /// twice the window's tempo (a beat half a beat out was one of theirs), and daOooooh and
+        /// True Believer, two of the eight they disagree on, each lost 0.03 to 0.06, and
+        /// continuity at any metrical level rose (AMLt 0.725 to 0.737); Ballroom's beat F 0.9555
+        /// to 0.9544.
+        double minimumBeatFraction = 0.7;
         /// Nothing is emitted until an activation has once reached this — BeatNet+'s own
         /// emission threshold — so a silent start fires nothing. It is also what counts as
         /// evidence of a beat for coasting: see `coastAfterFrames`.
