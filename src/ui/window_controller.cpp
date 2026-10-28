@@ -5385,8 +5385,9 @@ remote::Status WindowController::remoteStatus() const {
     s.source = std::string(remote::sourceName(timingIndex()));
     s.sourceOk =
         following() ? followingNow && state.locked : tracker_.running() && !outage_ && state.locked;
-    s.sourceDetail =
-        std::string(following() ? window_->get_timing_detail() : window_->get_input_reading());
+    s.sourceDetail = following() ? std::string(window_->get_timing_detail())
+                                 : ui::audioSourceDetail(std::string(window_->get_input_reading()),
+                                                         s.state, s.sourceOk);
     s.panic = runner_.panicked();
     s.loadedPreset = loadedPreset_;
     s.presetModified = showModified_;

@@ -502,6 +502,33 @@ TEST_CASE("the build's version is on screen and stays there", "[ui]") {
     CHECK(std::string(controller.window().get_status()).find(version) == std::string::npos);
 }
 
+TEST_CASE("the audio's source detail says why it is not giving beats, beside the level",
+          "[ui][remote]") {
+    // 2026-10-27: a show controller logged "beat source (audio) is not OK" with "-7.7 dB" as the
+    // detail, all through a re-hunt with the music playing well and the beats still coming. The
+    // detail is the level and, whenever source_ok is 0, the tempo panel's word.
+    using takt4::ui::audioSourceDetail;
+    const std::string dot = " \xC2\xB7 ";
+    CHECK(audioSourceDetail("-7.7 dB", "locked", true) == "-7.7 dB");
+    CHECK(audioSourceDetail("-7.7 dB", "hunting", false) == "-7.7 dB" + dot + "hunting");
+    CHECK(audioSourceDetail("-32.4 dB", "no beat", false) == "-32.4 dB" + dot + "no beat");
+    CHECK(audioSourceDetail("-inf dB", "no signal", false) == "-inf dB" + dot + "no signal");
+    CHECK(audioSourceDetail("nothing playing", "no signal", false) ==
+          "nothing playing" + dot + "no signal");
+    CHECK(audioSourceDetail("no audio", "no audio", false) == "no audio"); // once
+    CHECK(audioSourceDetail("", "stopped", false) == "stopped");
+
+    // And the status is made from what the window shows: running, not locked, a level.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    controller.window().set_running(true);
+    controller.window().set_input_reading(slint::SharedString("-7.7 dB"));
+    REQUIRE(std::string(controller.window().get_lock_word()) == "hunting");
+    const takt4::remote::Status status = controller.remoteStatus();
+    CHECK_FALSE(status.sourceOk);
+    CHECK(status.sourceDetail == "-7.7 dB" + dot + "hunting");
+}
+
 TEST_CASE("the status bar's corner says the version and, under it, release or dev", "[ui]") {
     // The corner is always two lines. The full label of a build between
     // releases — "0.9.9 (v0.9.9-1-g16611d86d-dirty)" — left the status line too narrow for either
@@ -12643,6 +12670,9 @@ TEST_CASE("the status a show controller is sent says what the window shows",
     CHECK(stopped.state == "stopped");
     CHECK(stopped.state == std::string(controller.window().get_lock_word()));
     CHECK(stopped.source == "audio");
+    // The audio not giving beats says why, not a level a show controller reads as the fault.
+    CHECK_FALSE(stopped.sourceOk);
+    CHECK(stopped.sourceDetail == "stopped");
     CHECK(stopped.version == std::string(controller.window().get_version()));
     CHECK(stopped.levelDb == takt4::remote::Status::kSilentDb);
     const auto rows = controller.window().get_outputs_list();

@@ -286,6 +286,13 @@ void publishIdleReadouts(MainWindow& window);
 /// The input meter, from one hop's linear RMS and a peak that the caller decays.
 void publishInput(MainWindow& window, float rms, float peak);
 
+/// What the remote status says of the audio as a source (`/status/source_detail`): the input
+/// meter's reading, and when the audio is not giving locked beats, the tempo panel's word after
+/// it — "-7.7 dB · hunting", not "-7.7 dB" beside a source_ok of 0, which a show controller's log
+/// read as the level being the fault. Once where the two say the same ("no audio"), the word
+/// alone where nothing is read ("stopped").
+std::string audioSourceDetail(std::string_view reading, std::string_view state, bool ok);
+
 /// The outputs heading's "/takt4 global messages to", from the rows: how many are OSC, how many of
 /// those are ticked, and what the closed box says — "nothing", the names ticked, or "every OSC
 /// output" when two or more are and that is all of them.

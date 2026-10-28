@@ -604,6 +604,16 @@ void publishInput(MainWindow& window, float rms, float peak) {
         db <= kMeterFloorDb ? "-inf dB" : fixed(static_cast<double>(db), 1) + " dB"));
 }
 
+std::string audioSourceDetail(std::string_view reading, std::string_view state, bool ok) {
+    if (ok || state.empty() || reading == state) {
+        return std::string(reading);
+    }
+    if (reading.empty()) {
+        return std::string(state);
+    }
+    return std::string(reading) + " \xC2\xB7 " + std::string(state);
+}
+
 void publishGlobalMessages(MainWindow& window, const std::vector<OutputRow>& rows) {
     int osc = 0;
     int ticked = 0;
