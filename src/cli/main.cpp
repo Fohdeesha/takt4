@@ -150,11 +150,13 @@ void printUsage(std::ostream& out) {
         << "                      the waltz back)\n"
         << "      --decoder-fps N forward only: its frame rate, default 100\n"
         << "      --meter-margin M, --meter-change P, --meter-floor S, --floor E,\n"
-        << "      --predict F     forward only, for tuning: the meter's incumbent margin,\n"
+        << "      --predict F, --min-beat B\n"
+        << "                      forward only, for tuning: the meter's incumbent margin,\n"
         << "                      the probability of a meter change at a bar, the least\n"
         << "                      share a meter's chain is kept at, the share of the\n"
-        << "                      posterior spread uniformly each frame, and how many\n"
-        << "                      frames ahead the mean-phase rule commits a beat\n"
+        << "                      posterior spread uniformly each frame, how many\n"
+        << "                      frames ahead the mean-phase rule commits a beat, and the\n"
+        << "                      least share of a beat between two beats called\n"
         << "      --hold BPM      pin the decoder to this tempo and track phase only\n"
         << "                      (forward only; the particle filter cannot)\n"
         << "      --no-pulse-wait lock without first hearing a beat: noise, a pad or a\n"
@@ -859,6 +861,8 @@ TrackArgs parseTrackArgs(const std::vector<std::string_view>& args) {
             out.forward.meterFloor = parseDouble(value(), arg);
         } else if (arg == "--predict") {
             out.forward.predictFrames = parseDouble(value(), arg);
+        } else if (arg == "--min-beat") {
+            out.forward.minimumBeatFraction = parseDouble(value(), arg);
         } else if (arg == "--hold") {
             out.holdBpm = parseDouble(value(), arg);
             if (!(out.holdBpm > 0.0)) {
