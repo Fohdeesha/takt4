@@ -112,8 +112,47 @@ TEST_CASE("a stereo pair is judged by how its two sides go together", "[audio][s
         const auto strangers = [&](std::size_t) {
             return std::pair<float, float>{noise(random), noise(random)};
         };
-        CHECK(play(check, 4.0, strangers, sums, now).verdict == Verdict::Fine); // not long enough
-        CHECK(play(check, 6.0, strangers, sums, now).verdict == Verdict::Unrelated);
+        CHECK(play(check, 20.0, strangers, sums, now).verdict == Verdict::Fine); // not long enough
+        CHECK(play(check, 12.0, strangers, sums, now).verdict == Verdict::Unrelated);
+    }
+
+    // A rhythm's loudness at 48 kHz: loud for the first 80 ms of each beat, quieter between, and
+    // louder again on the first beat of each bar of four.
+    const auto pulse = [](std::size_t sample, double bpm) {
+        const double seconds = static_cast<double>(sample) / 48000.0;
+        const double beats = seconds * bpm / 60.0;
+        const double into = (beats - std::floor(beats)) * 60.0 / bpm;
+        const bool barStart = static_cast<long long>(std::floor(beats)) % 4 == 0;
+        return into < 0.080 ? (barStart ? 1.6f : 1.0f) : 0.3f;
+    };
+
+    SECTION("wide stereo whose two sides rise and fall together is never called unrelated") {
+        // Each side's own sound, sharing no waveform at all — a wide mix, a breakdown of pads —
+        // under the one rhythm. Music like this had its sides called "share almost nothing" over
+        // 8 seconds in 235 tracks of 1,312, and over 30 seconds still in 39.
+        const auto wide = [&](std::size_t sample) {
+            const float loud = pulse(sample, 128.0);
+            return std::pair<float, float>{loud * noise(random), loud * noise(random)};
+        };
+        int unrelated = 0;
+        StereoCheck::Reading reading;
+        for (int look = 0; look < 60 * 30; ++look) { // a minute, every look the window makes
+            reading = play(check, 0.033, wide, sums, now);
+            unrelated += reading.verdict == Verdict::Unrelated ? 1 : 0;
+        }
+        CHECK(std::abs(reading.correlation) < 0.1); // the waveform alone would have called it
+        CHECK(unrelated == 0);
+        CHECK(reading.verdict == Verdict::Fine);
+    }
+
+    SECTION("two sources that each rise and fall on their own are unrelated") {
+        // A microphone or another record on the other input: its own sound, on its own rhythm.
+        const auto apart = [&](std::size_t sample) {
+            return std::pair<float, float>{pulse(sample, 128.0) * noise(random),
+                                           pulse(sample, 97.0) * noise(random)};
+        };
+        CHECK(play(check, 20.0, apart, sums, now).verdict == Verdict::Fine); // not long enough
+        CHECK(play(check, 15.0, apart, sums, now).verdict == Verdict::Unrelated);
     }
 
     SECTION("a leg wired back is never called unrelated on the way to fine") {

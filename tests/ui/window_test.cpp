@@ -2297,7 +2297,7 @@ TEST_CASE("a stereo warning that has passed leaves the status line, and only its
             controller.superviseInput({}, {}, now);
         }
     };
-    play(10.0, 0.0); // nothing in common
+    play(31.0, 0.0); // nothing in common, for longer than the check waits
     CHECK(std::string(controller.window().get_status()).find("share almost nothing") !=
           std::string::npos);
     play(10.0, 0.009); // the music, on both
@@ -2306,8 +2306,9 @@ TEST_CASE("a stereo warning that has passed leaves the status line, and only its
     CHECK(cleared.find("share almost nothing") == std::string::npos);
     CHECK_FALSE(controller.statusIsError());
 
-    // Again, with news in between: that stays.
-    play(10.0, 0.0);
+    // Again, with news in between: that stays. (The check waits its thirty seconds from the last
+    // look that still had the music in it, two seconds into this.)
+    play(33.0, 0.0);
     REQUIRE(std::string(controller.window().get_status()).find("share almost nothing") !=
             std::string::npos);
     controller.window().invoke_save_now();

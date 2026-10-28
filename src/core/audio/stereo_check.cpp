@@ -1,6 +1,7 @@
 #include "core/audio/stereo_check.hpp"
 
 #include <cmath>
+#include <iterator>
 #include <limits>
 
 namespace takt4::audio {
@@ -49,6 +50,45 @@ bool StereoCheck::over(double seconds, StereoSums& out) const {
         }
     }
     return false;
+}
+
+double StereoCheck::loudnessTogether(double seconds) const {
+    if (samples_.size() < 3) {
+        return 0.0;
+    }
+    const Sample& last = samples_.back();
+    auto from = samples_.rbegin();
+    while (from != samples_.rend() && last.at - from->at < seconds) {
+        ++from;
+    }
+    if (from == samples_.rend()) {
+        return 0.0;
+    }
+    // Each look's level, from the sums between it and the one before, over the span.
+    double n = 0.0;
+    double sa = 0.0;
+    double sb = 0.0;
+    double saa = 0.0;
+    double sbb = 0.0;
+    double sab = 0.0;
+    for (auto later = samples_.rbegin(); later != from; ++later) {
+        const StereoSums step = between(later->sums, std::next(later)->sums);
+        const double a = levelDb(step.left, step.frames);
+        const double b = levelDb(step.right, step.frames);
+        n += 1.0;
+        sa += a;
+        sb += b;
+        saa += a * a;
+        sbb += b * b;
+        sab += a * b;
+    }
+    const double va = saa - sa * sa / n;
+    const double vb = sbb - sb * sb / n;
+    // A level that has not moved says nothing about whether the other moved with it.
+    if (!(va > 1e-9 * n) || !(vb > 1e-9 * n)) {
+        return 0.0;
+    }
+    return (sab - sa * sb / n) / std::sqrt(va * vb);
 }
 
 StereoCheck::Reading StereoCheck::observe(const StereoSums& sums, double now) {
@@ -100,14 +140,16 @@ StereoCheck::Reading StereoCheck::observe(const StereoSums& sums, double now) {
     // Unrelated over the short window as well as the long one, and only once no short window
     // in the long one has shown the two related: a pair that has just been put right — a
     // flipped leg wired back — has a long window that straddles both and sums to nothing, and
-    // a short one that passes through nothing on the way, and it is not two strangers.
+    // a short one that passes through nothing on the way, and it is not two strangers. And
+    // only when the two sides' loudness has not moved together either: music whose sides
+    // share no waveform still rises and falls on both (see the class note).
     StereoSums longer;
     if (std::abs(reading.correlation) < options_.unrelatedWithin &&
-        now - relatedAt_ >= options_.unrelatedSeconds &&
-        over(options_.unrelatedSeconds, longer) &&
+        now - relatedAt_ >= options_.unrelatedSeconds && over(options_.unrelatedSeconds, longer) &&
         std::abs(correlation(longer)) < options_.unrelatedWithin &&
         levelDb(longer.left, longer.frames) >= options_.judgedAboveDb &&
-        levelDb(longer.right, longer.frames) >= options_.judgedAboveDb) {
+        levelDb(longer.right, longer.frames) >= options_.judgedAboveDb &&
+        loudnessTogether(options_.unrelatedSeconds) < options_.envelopeBelow) {
         reading.verdict = Verdict::Unrelated;
     }
     return reading;
