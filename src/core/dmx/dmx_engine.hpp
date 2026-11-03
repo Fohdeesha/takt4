@@ -7,7 +7,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace takt4::dmx {
@@ -83,7 +86,24 @@ public:
     /// A payload aimed at channels no selected fixture has — a pan on a wash, a color on a
     /// dimmer — starts nothing and is counted in `missed()`. That is not an error: one rule
     /// aimed at a group holding both kinds of fixture is an ordinary thing to want.
-    void start(const FixtureSet& fixtures, const Payload& payload, double now);
+    ///
+    /// `owner` is the rule that sent it, or empty for an effect nobody's rule owns (one fired by
+    /// hand). **Each channel remembers who drove it last** — so the last effect's owner, by the
+    /// same precedence — which is what `release` gives back.
+    void start(const FixtureSet& fixtures, const Payload& payload, double now,
+               std::string_view owner = {});
+
+    /// **Every channel a rule drove last, back to its fixture's parked level** — for the rules
+    /// `stale` names (it is asked each owner's id). What muting, switching off or deleting a rule
+    /// does: DMX is a state, and a rule that stopped sending used to leave its lights wherever its
+    /// last effect put them, with nothing that would ever move them again. The rule's running
+    /// effects stop where they are; its levels, colours and positions fade back over
+    /// `kReleaseSeconds`, and every other channel it held — a laser zone's arm and clip, a gobo —
+    /// switches at once. A channel another rule or a hand has driven since is not its any more,
+    /// and stays.
+    void release(const std::function<bool(std::string_view)>& stale, double now);
+    /// How long a released rule's lights take to get back to parked.
+    static constexpr double kReleaseSeconds = 0.5;
 
     /// Advances every running effect and writes the frames. Call every round, effect or no
     /// effect — that is what makes a duration mean seconds rather than rounds.
@@ -149,10 +169,8 @@ public:
     /// does not use it.
     std::span<const std::uint8_t> levels(PortAddress universe) const noexcept;
 
-    /// How many times this universe's levels have changed. What tells a sender "this frame is
-    /// new, send it now" from "nothing has moved, send it again when the keep-alive is due" —
-    /// see `kKeepAliveSeconds`. A released universe's moves on every tick, so it is sent at
-    /// the 44 Hz ceiling while it is being released.
+    /// How many times this universe's levels have changed: what a delayed node's history keeps a
+    /// frame for, and skips an unchanged one by. A released universe's moves on every tick.
     std::uint64_t revision(PortAddress universe) const noexcept;
 
     /// Effects currently animating.
@@ -242,6 +260,8 @@ private:
         double duration = 0.0;
         std::vector<Track> tracks;
         std::vector<Move> moves;
+        /// Who started it: an index into `owners_`, 0 for nobody. See `start`.
+        std::uint16_t owner = 0;
     };
 
     /// What the patch says a channel is: its place in its fixture, its role and its parked
@@ -260,6 +280,8 @@ private:
         std::array<std::uint8_t, kChannelsPerUniverse> levels{};
         /// What the patch makes of each channel — see `Meaning` and `setPatch`.
         std::array<Meaning, kChannelsPerUniverse> meaning{};
+        /// Who drove each channel last — an index into `owners_`, 0 for nobody. See `start`.
+        std::array<std::uint16_t, kChannelsPerUniverse> owner{};
         std::uint64_t revision = 0;
     };
 
@@ -277,6 +299,9 @@ private:
         std::array<double, kEmitters.size()> color{};
         /// Whether the channels need writing again from the two above.
         bool dirty = false;
+        /// Who drove the intensity (0) and each colour (1 + its `kEmitters` index) last, as
+        /// `Buffer::owner` does a channel.
+        std::array<std::uint16_t, kEmitters.size() + 1> owner{};
         /// Each emitter's channels, 0-based in the fixture's universe, every cell's in order —
         /// laid out with the patch (`layOut`). Found again with `channelOf` on every round, a pixel
         /// bar cost cells × channels each time it was written: a square of its size, a thousand
@@ -316,7 +341,12 @@ private:
     void releaseTestHolds() noexcept;
     /// `start`, on the fixtures `fixtures` names — or, with `everyFixture`, on every enabled
     /// fixture of the patch, past the `kMaxRoutableFixtures` a mask can name. `blackout`'s.
-    void launch(const Payload& payload, double now, const FixtureSet& fixtures, bool everyFixture);
+    void launch(const Payload& payload, double now, const FixtureSet& fixtures, bool everyFixture,
+                std::uint16_t owner = 0);
+    /// Marks every channel and virtual part `running` drives as its owner's.
+    void claim(const Running& running) noexcept;
+    /// `owner`'s index in `owners_`, added if it is new; 0 for empty.
+    std::uint16_t ownerIndex(std::string_view owner);
     /// Re-aims every running effect at the new patch, by fixture — see `setPatch`.
     /// `mapped[i]` is where the old patch's fixture `i` is in the new one, or `kNoFixture`.
     void retarget(const std::vector<std::uint16_t>& mapped);
@@ -344,6 +374,9 @@ private:
     Running staging_;
     std::uint64_t started_ = 0;
     std::uint64_t missed_ = 0;
+    /// The rules that have started an effect, by id; index 0 is nobody. Indexes rather than
+    /// strings on every channel, and never shrunk, so an index stays its rule's.
+    std::vector<std::string> owners_{std::string{}};
 };
 
 } // namespace takt4::dmx

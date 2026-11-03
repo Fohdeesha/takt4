@@ -99,13 +99,24 @@ void RuleSink::setNow(double now) noexcept {
 }
 
 bool RuleSink::send(const trigger::Message& message) {
+    return sendFrom(message, {});
+}
+
+bool RuleSink::sendFrom(const trigger::Message& message, std::string_view ruleId) {
     if (message.kind == trigger::Message::Kind::Osc) {
         return sendOsc(message);
     }
     if (message.kind == trigger::Message::Kind::Dmx) {
-        return !lightingHeld_ && sendDmx(message);
+        return !lightingHeld_ && sendDmx(message, ruleId);
     }
     return sendMidi(message);
+}
+
+void RuleSink::letGoOfLighting(const std::function<bool(std::string_view)>& stale, double now) {
+    std::erase_if(dmxQueue_,
+                  [&stale](const HeldDmx& held) { return !held.rule.empty() && stale(held.rule); });
+    transports_.dmx().release(stale, now);
+    sayUpcomingCues();
 }
 
 void RuleSink::dropQueuedHolds() noexcept {
@@ -116,7 +127,8 @@ void RuleSink::dropQueuedHolds() noexcept {
     });
 }
 
-void RuleSink::startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload, double at) {
+void RuleSink::startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload, double at,
+                        std::string_view rule) {
     // So "delivered" means something different for this kind than for the other two: it means
     // the effect reached at least one real channel, not that a datagram left. That is the
     // honest reading — a fade that reaches nothing is exactly as undeliverable as an OSC
@@ -124,7 +136,7 @@ void RuleSink::startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& pay
     const std::uint64_t before = transports_.dmx().missed();
     // **At `at`**: an effect held for its moment runs from that moment, not from the round that
     // got to it a millisecond or so later.
-    transports_.dmx().start(fixtures, payload, at);
+    transports_.dmx().start(fixtures, payload, at, rule);
     if (transports_.dmx().missed() != before) {
         ++undeliverable_;
         return;
@@ -175,7 +187,7 @@ void RuleSink::startHeldDmx(double until) {
         return true;
     });
     for (const HeldDmx& held : going) {
-        startDmx(held.fixtures, held.payload, std::min(now_, dueOf(held)));
+        startDmx(held.fixtures, held.payload, std::min(now_, dueOf(held)), held.rule);
     }
 }
 
@@ -203,7 +215,7 @@ void RuleSink::sayUpcomingCues() {
     transports_.artnet().setUpcomingCues(upcoming_);
 }
 
-bool RuleSink::sendDmx(const trigger::Message& message) {
+bool RuleSink::sendDmx(const trigger::Message& message, std::string_view rule) {
     // **Nothing goes on a wire here, and that is the whole shape of DMX.** The effect is
     // handed to the engine, which owns the universe buffers and spends the next two bars
     // turning "fade to full" into forty frames a second of slightly different levels.
@@ -214,18 +226,18 @@ bool RuleSink::sendDmx(const trigger::Message& message) {
     // which each node's own delay then takes back from the frames it is sent (see
     // `OutputTarget::delaySeconds` and `dmx::ArtNetPublisher`). With no node set early that
     // lead is nothing, and the start is where it always was.
-    const HeldDmx held{message.moment, message.fixtures, message.payload};
+    HeldDmx held{message.moment, message.fixtures, message.payload, std::string(rule)};
     if (dueOf(held) <= now_) {
         // Whatever was held to go a hair after this goes first: see `kReleaseFirstSeconds`.
         startHeldDmx(now_ + kReleaseFirstSeconds);
-        startDmx(message.fixtures, message.payload, now_);
+        startDmx(message.fixtures, message.payload, now_, rule);
         return true;
     }
     if (dmxQueue_.size() >= roomFor(message)) {
         ++dropped_;
         return false;
     }
-    dmxQueue_.push_back(held);
+    dmxQueue_.push_back(std::move(held));
     return true;
 }
 
@@ -279,16 +291,16 @@ void RuleSink::releaseDue(double now) {
         const bool ahead = lastLighting != kNone && i < lastLighting && due <= now + kReleaseFirstSeconds;
         if (due > now && !ahead) {
             if (kept != i) {
-                dmxQueue_[kept] = held;
+                dmxQueue_[kept] = std::move(held);
             }
             ++kept;
             continue;
         }
-        going.push_back(held);
+        going.push_back(std::move(held));
     }
     dmxQueue_.resize(kept);
     for (const HeldDmx& held : going) {
-        startDmx(held.fixtures, held.payload, std::min(now, dueOf(held)));
+        startDmx(held.fixtures, held.payload, std::min(now, dueOf(held)), held.rule);
     }
     // And what is still held, for the Art-Net side to keep clear for.
     sayUpcomingCues();
@@ -302,7 +314,7 @@ void RuleSink::flushQueued() {
     }
     midiQueue_.clear();
     for (const HeldDmx& held : dmxQueue_) {
-        startDmx(held.fixtures, held.payload, now_);
+        startDmx(held.fixtures, held.payload, now_, held.rule);
     }
     dmxQueue_.clear();
 }

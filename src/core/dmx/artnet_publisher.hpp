@@ -32,10 +32,14 @@ bool sameNode(const ArtNetSender& a, const ArtNetSender& b);
 ///     always be the maximum rate of 44Hz."* A node handed frames faster drops them, and
 ///     takt4's output thread comes round every millisecond — a thousand frames a second into
 ///     a node that wants forty-four is how a fade turns into a stutter.
-///   * **Never slower than the keep-alive.** A universe nobody has touched is still re-sent
-///     every `kKeepAliveSeconds`, because that is what tells a node the controller is alive.
-///     Nodes that stop hearing a source hold, fade or release depending on how they are set,
-///     and none of those is what an operator meant by "the lights are not changing right now".
+///   * **And never slower: every universe, every frame.** Each node is sent each universe at that
+///     44 Hz whether anything moved or not, the way a lighting desk streams. Sending a universe
+///     only when it changed, plus a re-send every 0.9 s (all the specification asks of an input
+///     that is not changing), left Liberation drawing nothing at all while nothing moved —
+///     measured: its zones dark with a clip armed on each beat, and lit again the moment any
+///     channel of the universe moved, even one of a zone with no clip. Nodes that stop hearing a
+///     source hold, fade or release depending on how they are set, and none of those is what an
+///     operator meant by "the lights are not changing right now".
 ///
 /// The pacing is per **target and universe**, not per publisher: two nodes fed the same
 /// universe keep their own clocks, so one that was added mid-set gets its first frame at once
@@ -200,11 +204,10 @@ private:
     /// history holds when it does not reach that far back. Null when there is no history yet.
     const Frame* frameAt(PortAddress universe, double at) const noexcept;
 
-    /// What one target knows about one universe: which frame it last sent and when.
+    /// What one target knows about one universe: when it was last sent a frame.
     struct Paced {
         PortAddress universe = 0;
         double lastSentAt = -1.0;
-        std::uint64_t lastRevision = 0;
         bool everSent = false;
     };
 
@@ -242,9 +245,6 @@ private:
     std::vector<History> history_;
     /// Whether a cue is seen by a node `lag` behind within the period from `now`.
     bool cueSoon(PortAddress universe, double lag, double now) const noexcept;
-    /// A revision no frame has: what a node's pacing is left holding when what it last showed
-    /// was not the lighting — so the lighting goes at the next frame.
-    static constexpr std::uint64_t kNeverSent = ~std::uint64_t{0};
     /// See `setUpcomingCues` and `cueStarted`; the cues started are kept as long as a lag can be.
     std::vector<std::pair<PortAddress, double>> upcoming_;
     std::vector<std::pair<PortAddress, double>> started_;

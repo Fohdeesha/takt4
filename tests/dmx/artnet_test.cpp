@@ -337,7 +337,7 @@ TEST_CASE("an Art-Net node at a broadcast address really sends", "[dmx][artnet][
 
 // The pacing rules are the whole of what this class does, and both of them are felt on a rig:
 // too fast and a node drops frames mid-fade, too slow and a node decides takt4 has gone away.
-TEST_CASE("frames are paced at 44 Hz and kept alive when nothing moves", "[dmx][artnet]") {
+TEST_CASE("frames are streamed at 44 Hz whether anything moves or not", "[dmx][artnet]") {
     LoopbackReceiver receiver;
     DmxEngine engine;
     engine.setPatch({rgbAt("par", 0, 1)});
@@ -372,12 +372,21 @@ TEST_CASE("frames are paced at 44 Hz and kept alive when nothing moves", "[dmx][
         CHECK(static_cast<std::uint8_t>(datagram[18]) == 255); // red, channel 1
     }
 
-    SECTION("an unchanged universe is re-sent on the keep-alive and not before") {
+    SECTION("an unchanged universe is sent every frame period, and no faster") {
+        // Liberation drew nothing while an unchanged universe came only every 0.9 s.
         REQUIRE(publisher.publish(engine, 0.0) == 1);
         (void)receiver.receive();
-        CHECK(publisher.publish(engine, 0.5) == 0);
-        CHECK(publisher.publish(engine, 0.89) == 0);
-        CHECK(publisher.publish(engine, 0.95) == 1);
+        CHECK(publisher.publish(engine, 0.010) == 0);
+        CHECK(publisher.publish(engine, 0.023) == 1);
+        CHECK(publisher.publish(engine, 0.030) == 0);
+        CHECK(publisher.publish(engine, 0.046) == 1);
+        // A second of one-millisecond rounds with nothing moving: 44 frames, give or take one.
+        std::size_t frames = 0;
+        for (int ms = 47; ms < 1047; ++ms) {
+            frames += publisher.publish(engine, ms / 1000.0);
+        }
+        CHECK(frames >= 43);
+        CHECK(frames <= 44);
     }
 
     SECTION("every node is fed every universe the patch uses") {
@@ -397,7 +406,7 @@ TEST_CASE("frames are paced at 44 Hz and kept alive when nothing moves", "[dmx][
 
     SECTION("a node added mid-set is fed at once rather than waiting out the other's clock") {
         // The pacing is per target *and* universe, not per publisher. If it were shared, a
-        // node plugged in half way through a keep-alive would sit dark until the next one.
+        // node plugged in half way through the other's frame period would wait out the rest.
         REQUIRE(publisher.publish(engine, 0.0) == 1);
         (void)receiver.receive();
 
@@ -832,12 +841,11 @@ TEST_CASE("a delay raised while the lighting runs never shows a node a flash twi
     CHECK(nodes.first(1, 255, 1.0) < 1.400 + kArtNetFrame);
 }
 
-TEST_CASE("a frame a node failed to take is sent again at the next frame, not the keep-alive",
-          "[dmx][artnet]") {
-    // A failed send was recorded as the frame sent, so a static look a node missed waited 0.9 s
-    // for the keep-alive. A name the test binaries' sandbox lets nobody look up never has an
-    // address, so every send to it fails, on every system. (0.0.0.1, used first, failed on
-    // Windows only: Linux takes it as a destination, and the sandbox then said it was sent.)
+TEST_CASE("a frame a node failed to take is sent again at the next frame", "[dmx][artnet]") {
+    // A node that refuses frames is tried every frame period. A name the test binaries' sandbox
+    // lets nobody look up never has an address, so every send to it fails, on every system.
+    // (0.0.0.1, used first, failed on Windows only: Linux takes it as a destination, and the
+    // sandbox then said it was sent.)
     DmxEngine engine;
     engine.setPatch({rgbAt("par", 0, 1)});
     ArtNetPublisher publisher;
@@ -858,8 +866,8 @@ TEST_CASE("a frame a node failed to take is sent again at the next frame, not th
 
 TEST_CASE("a node taken back during its farewell is sent the lighting at the next frame",
           "[dmx][artnet]") {
-    // Its farewell sends it zeros, and what it showed last was not the lighting — but its pacing
-    // remembered the lighting as sent, and it waited up to 0.9 s dark for the keep-alive.
+    // Its farewell sends it zeros, and what it showed last was not the lighting: it is sent the
+    // lighting again at once, not left dark.
     using takt4::testing::kArtNetFrame;
     takt4::testing::ArtNetNodes nodes(1);
     DmxEngine engine;
@@ -963,7 +971,7 @@ TEST_CASE("a node re-spelled, localhost as 127.0.0.1 or back again, is sent no f
                 ++after;
             }
         }
-        // A still look goes at the keep-alive's pace; a farewell's zeros would have gone at 44 Hz.
+        // Every frame after the re-spelling lit: a farewell's zeros would have come between.
         CHECK(after >= 1);
         CHECK(publisher.leaving() == 0);
     }

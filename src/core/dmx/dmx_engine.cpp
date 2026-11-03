@@ -93,6 +93,7 @@ void DmxEngine::setPatch(std::vector<Fixture> patch) {
         if (old != static_cast<std::size_t>(-1)) {
             buffer.levels = buffers_[old].levels;
             buffer.meaning = buffers_[old].meaning;
+            buffer.owner = buffers_[old].owner;
             buffer.revision = buffers_[old].revision;
         }
         rebuilt.push_back(buffer);
@@ -133,17 +134,19 @@ void DmxEngine::setPatch(std::vector<Fixture> patch) {
             const Meaning& was = buffer.meaning[at];
             const Meaning& now = after[b][at];
             if (now.covered && now != was) {
-                // Newly patched, or patched to mean something else: parked.
+                // Newly patched, or patched to mean something else: parked, and nobody's.
                 if (buffer.levels[at] != now.parked) {
                     buffer.levels[at] = now.parked;
                     ++buffer.revision;
                 }
+                buffer.owner[at] = 0;
             } else if (!now.covered && was.covered) {
                 // Nobody's any more: released, which is zero.
                 if (buffer.levels[at] != 0) {
                     buffer.levels[at] = 0;
                     ++buffer.revision;
                 }
+                buffer.owner[at] = 0;
             }
             buffer.meaning[at] = now;
         }
@@ -166,8 +169,8 @@ void DmxEngine::setPatch(std::vector<Fixture> patch) {
         const bool already = std::any_of(released_.begin(), released_.end(),
                                          [was](const Released& one) { return one.universe == was; });
         if (!kept && !already) {
-            // Its revision moves on from the one the sender last saw, so the first zero frame
-            // goes at once rather than at the next keep-alive.
+            // Its revision moves on, so its first zero frame is a change to a delayed node's
+            // history.
             released_.push_back(Released{was, -1.0, revision(was) + 1});
         }
     }
@@ -434,6 +437,7 @@ void DmxEngine::reset() {
     for (Buffer& buffer : buffers_) {
         buffer.levels.fill(0);
         buffer.meaning.fill(Meaning{});
+        buffer.owner.fill(0);
         ++buffer.revision;
     }
     // Nothing carried over: a reset is the rig from nothing.
@@ -907,15 +911,182 @@ void DmxEngine::preempt(const Running& running) {
     std::erase_if(running_, [](const Running& r) { return r.tracks.empty() && r.moves.empty(); });
 }
 
-void DmxEngine::start(const FixtureSet& fixtures, const Payload& payload, double now) {
-    launch(payload, now, fixtures, false);
+void DmxEngine::start(const FixtureSet& fixtures, const Payload& payload, double now,
+                      std::string_view owner) {
+    launch(payload, now, fixtures, false, ownerIndex(owner));
+}
+
+std::uint16_t DmxEngine::ownerIndex(std::string_view owner) {
+    if (owner.empty()) {
+        return 0;
+    }
+    const auto found = std::find(owners_.begin() + 1, owners_.end(), owner);
+    if (found != owners_.end()) {
+        return static_cast<std::uint16_t>(found - owners_.begin());
+    }
+    if (owners_.size() >= 0xFFFF) {
+        return 0; // sixty-five thousand rule ids in one run: owned by nobody rather than wrapped
+    }
+    owners_.emplace_back(owner);
+    return static_cast<std::uint16_t>(owners_.size() - 1);
+}
+
+void DmxEngine::claim(const Running& running) noexcept {
+    for (const Track& track : running.tracks) {
+        if (track.isVirtual) {
+            if (track.fixture < virtuals_.size() && track.component < kEmitters.size() + 1) {
+                virtuals_[track.fixture].owner[track.component] = running.owner;
+            }
+            continue;
+        }
+        if (track.buffer >= buffers_.size()) {
+            continue;
+        }
+        Buffer& buffer = buffers_[track.buffer];
+        if (track.channel < kChannelsPerUniverse) {
+            buffer.owner[track.channel] = running.owner;
+        }
+        if (track.fine < kChannelsPerUniverse) {
+            buffer.owner[track.fine] = running.owner;
+        }
+    }
+    for (const Move& move : running.moves) {
+        if (move.buffer >= buffers_.size()) {
+            continue;
+        }
+        Buffer& buffer = buffers_[move.buffer];
+        for (const std::uint16_t channel : {move.pan, move.panFine, move.tilt, move.tiltFine}) {
+            if (channel < kChannelsPerUniverse) {
+                buffer.owner[channel] = running.owner;
+            }
+        }
+    }
+}
+
+void DmxEngine::release(const std::function<bool(std::string_view)>& stale, double now) {
+    std::vector<bool> going(owners_.size(), false);
+    bool any = false;
+    for (std::size_t i = 1; i < owners_.size(); ++i) {
+        going[i] = stale(owners_[i]);
+        any = any || going[i];
+    }
+    if (!any) {
+        return;
+    }
+    // Its effects stop where they are: one left running would go on moving what is handed back.
+    std::erase_if(running_, [&going](const Running& running) { return going[running.owner]; });
+
+    staging_.tracks.clear();
+    staging_.moves.clear();
+    staging_.payload = Payload{};
+    staging_.payload.kind = EffectKind::Level;
+    staging_.payload.curve = Curve::EaseInOut;
+    staging_.start = now;
+    staging_.duration = kReleaseSeconds;
+    staging_.owner = 0;
+    // What fades back: a level, a colour, a position. The rest — a laser zone's arm and clip, a
+    // gobo, a shutter — is a switch, and a clip number faded would play every clip between.
+    const auto fades = [](Role role) {
+        return role == Role::Dimmer || role == Role::Pan || role == Role::Tilt ||
+               role == Role::Cyan || role == Role::Magenta || role == Role::Yellow ||
+               role == Role::ColorBlend ||
+               std::find(kEmitters.begin(), kEmitters.end(), role) != kEmitters.end();
+    };
+    for (std::size_t i = 0; i < patch_.size(); ++i) {
+        const Fixture& fixture = patch_[i];
+        const std::size_t found = bufferOf(fixture.universe);
+        if (!fixture.enabled || found == static_cast<std::size_t>(-1)) {
+            continue;
+        }
+        const auto b = static_cast<std::uint32_t>(found);
+        Buffer& buffer = buffers_[b];
+        const auto parkedAt = [&fixture](std::size_t position) -> std::uint8_t {
+            return position < fixture.parked.size() ? fixture.parked[position] : 0;
+        };
+        std::array<std::uint16_t, kRoles.size()> seen{}; // how many of each role so far
+        for (std::size_t position = 0; position < fixture.channels.size(); ++position) {
+            const Role role = fixture.channels[position];
+            const std::uint16_t nth = seen[static_cast<std::size_t>(role)]++;
+            const std::size_t dmx = std::size_t{fixture.address} + position;
+            if (dmx < 1 || dmx > kChannelsPerUniverse) {
+                continue;
+            }
+            const auto at = static_cast<std::uint16_t>(dmx - 1);
+            if (!going[buffer.owner[at]]) {
+                continue;
+            }
+            buffer.owner[at] = 0;
+            if (isFine(role)) {
+                continue; // goes back with its coarse byte
+            }
+            Track track;
+            track.buffer = b;
+            track.channel = at;
+            track.fixture = static_cast<std::uint16_t>(i);
+            track.source = role;
+            track.nth = nth;
+            double parked = unitOfByte(parkedAt(position));
+            const Role partner = role == Role::Pan    ? Role::PanFine
+                                 : role == Role::Tilt ? Role::TiltFine
+                                                      : Role::Unused;
+            if (partner != Role::Unused) {
+                if (const std::uint16_t fine = channelOf(fixture, partner, nth); fine != 0) {
+                    track.fine = static_cast<std::uint16_t>(fine - 1);
+                    buffer.owner[track.fine] = 0;
+                    const std::size_t finePosition =
+                        std::size_t{fine} - std::size_t{fixture.address};
+                    parked = (parkedAt(position) * 256.0 + parkedAt(finePosition)) / 65535.0;
+                }
+            }
+            track.to = parked;
+            track.from = fades(role) ? readChannel(b, track.channel, track.fine) : parked;
+            staging_.tracks.push_back(track);
+        }
+        // A fixture whose brightness is its colour: its colour and intensity, as parked — the
+        // colour its emitters are parked at, at full intensity, which is how it starts.
+        if (i < virtuals_.size() && virtuals_[i].active) {
+            Virtual& state = virtuals_[i];
+            for (std::size_t component = 0; component < state.owner.size(); ++component) {
+                if (!going[state.owner[component]]) {
+                    continue;
+                }
+                state.owner[component] = 0;
+                Track track;
+                track.isVirtual = true;
+                track.fixture = static_cast<std::uint16_t>(i);
+                track.component = static_cast<std::uint8_t>(component);
+                if (component == kIntensity) {
+                    track.source = Role::Dimmer;
+                    track.from = state.intensity;
+                    track.to = 1.0;
+                } else {
+                    const Role emitter = kEmitters[component - 1];
+                    track.source = emitter;
+                    track.from = state.color[component - 1];
+                    const std::uint16_t channel = channelOf(fixture, emitter);
+                    track.to = channel == 0 ? 0.0
+                                            : unitOfByte(parkedAt(std::size_t{channel} -
+                                                                  std::size_t{fixture.address}));
+                }
+                staging_.tracks.push_back(track);
+            }
+        }
+    }
+    if (staging_.tracks.empty()) {
+        return;
+    }
+    preempt(staging_);
+    running_.push_back(staging_);
+    evaluate(running_.back(), now);
+    composeVirtuals();
 }
 
 void DmxEngine::launch(const Payload& payload, double now, const FixtureSet& fixtures,
-                       bool everyFixture) {
+                       bool everyFixture, std::uint16_t owner) {
     staging_.tracks.clear();
     staging_.moves.clear();
     staging_.payload = payload;
+    staging_.owner = owner;
     staging_.start = now;
     staging_.duration = payload.durationSeconds > 0.0f && takesDuration(payload.kind)
                             ? static_cast<double>(payload.durationSeconds)
@@ -948,6 +1119,7 @@ void DmxEngine::launch(const Payload& payload, double now, const FixtureSet& fix
     }
 
     preempt(staging_);
+    claim(staging_);
     running_.push_back(staging_);
     // Evaluated once here, so the levels are this moment's at once: a snap is in the next frame
     // made and a flash is at full in it, rather than waiting for the next round to evaluate it.

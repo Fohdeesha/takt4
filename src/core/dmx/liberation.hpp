@@ -18,8 +18,9 @@
 // **The source of truth is Liberation's own "DMX Input Fixture Profiles" document** (dated
 // 2026-05-14, shipped with Liberation 1.2.1 Build 96 and unchanged through 1.4.0 Build 103). A
 // zone renders only while its Arm channel is at 250 or more, a clip is selected, and its Intensity
-// is above zero, and it goes dark two seconds after its data stops. takt4 sends a frame at least
-// every `kKeepAliveSeconds`, which is what keeps it lit between changes.
+// is above zero, and it goes dark two seconds after its data stops — the document says. In fact
+// it drew nothing while a frame came only when something changed and every 0.9 s otherwise,
+// so takt4 streams every universe at 44 Hz (`ArtNetPublisher`).
 namespace takt4::dmx::liberation {
 
 /// Rows of Liberation's clip deck. A clip is named by its column across the whole deck and its

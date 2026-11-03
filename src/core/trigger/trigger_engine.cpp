@@ -97,6 +97,12 @@ void TriggerEngine::releaseRule(std::string_view id, double now) {
     }
 }
 
+void TriggerEngine::dropLighting(const std::function<bool(std::string_view)>& stale) {
+    std::erase_if(pending_, [&stale](const Pending& waiting) {
+        return isDmx(waiting.message.kind) && stale(waiting.ruleId);
+    });
+}
+
 void TriggerEngine::remapPending(const std::vector<int>& outputs,
                                  const std::vector<int>& fixtures) noexcept {
     const auto remap = [&](Message& message) {
@@ -190,7 +196,7 @@ bool TriggerEngine::beatSatisfies(const Rule& rule, const Context& context) noex
 
 void TriggerEngine::deliver(const Message& message, std::string_view ruleId, bool followUp,
                             std::span<const Value> slots) {
-    const bool taken = sink_.send(message);
+    const bool taken = sink_.sendFrom(message, ruleId);
     ++sent_;
     if (observer_) {
         // After the sink, so what an observer is told about has already gone out. A UI

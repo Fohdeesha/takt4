@@ -609,6 +609,11 @@ void OutputRunner::releaseStale(bool fresh) {
         });
 }
 
+void OutputRunner::letGoOfLighting(const std::function<bool(std::string_view)>& stale, double now) {
+    triggers_.dropLighting(stale);
+    sink_.letGoOfLighting(stale, now);
+}
+
 void OutputRunner::releaseRefused() {
     if (heldNotes_.empty()) {
         return;
@@ -885,16 +890,26 @@ void OutputRunner::apply(const OutputCommand& command) {
             triggers_.setRules(command.ruleConfigs, command.freshRules);
             rulesApplied_ = command.generation;
             resolveRouting();
+            std::vector<std::string> stopped;
             if (!command.freshRules) {
                 for (const std::string& id : sending) {
                     const trigger::Rule* const after = triggers_.find(id);
                     if (after == nullptr || !after->enabled() || after->muted()) {
                         triggers_.releaseRule(id, now);
+                        stopped.push_back(id);
                     }
                 }
             }
             // And whatever a rule holds that it can no longer let go of itself.
             releaseStale(command.freshRules);
+            // The lights of every rule this set stopped — deleted, switched off or muted — back
+            // where they are parked; and on a show loaded fresh, everything the last one lit.
+            letGoOfLighting(
+                [&](std::string_view id) {
+                    return command.freshRules ||
+                           std::find(stopped.begin(), stopped.end(), id) != stopped.end();
+                },
+                now);
             break;
         }
         case OutputCommand::Kind::Panic:
@@ -963,6 +978,13 @@ void OutputRunner::apply(const OutputCommand& command) {
                 triggers_.releaseRule(id, now);
                 releaseHolds([&id](const std::string& owner) { return owner == id; });
             }
+            // **And its lights back where they are parked**: a DMX level is a state, and the
+            // rule that set it was the only thing that would ever have moved it again.
+            letGoOfLighting(
+                [&quietened](std::string_view id) {
+                    return std::find(quietened.begin(), quietened.end(), id) != quietened.end();
+                },
+                now);
             break;
         }
         case OutputCommand::Kind::RuleRate:

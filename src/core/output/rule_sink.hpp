@@ -6,6 +6,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -52,6 +55,13 @@ public:
     /// `holdLighting`. A message that reached no output at all is still taken — it is counted as
     /// undeliverable, and nothing is waiting to be let go of on an output that is not there.
     bool send(const trigger::Message& message) override;
+    /// The same, from a rule: a lighting effect remembers whose it is, so the rule's channels
+    /// can be given back (`letGoOfLighting`).
+    bool sendFrom(const trigger::Message& message, std::string_view ruleId) override;
+    /// **The lighting of the rules `stale` names, back to parked** — those rules muted, switched
+    /// off or deleted. Their effects still held for their moment are dropped, and every channel
+    /// one of them drove last goes back to its fixture's parked level (`dmx::DmxEngine::release`).
+    void letGoOfLighting(const std::function<bool(std::string_view)>& stale, double now);
 
     /// The output thread's clock, which is what every hold is measured against — and where on
     /// it a lighting effect starts, since an effect **starts** at an instant and runs for a
@@ -123,10 +133,11 @@ public:
 private:
     bool sendOsc(const trigger::Message& message);
     bool sendMidi(const trigger::Message& message);
-    bool sendDmx(const trigger::Message& message);
+    bool sendDmx(const trigger::Message& message, std::string_view rule);
     /// Starts one effect at `at` — now, or the moment it was held for — counting whether it
-    /// reached a real channel.
-    void startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload, double at);
+    /// reached a real channel. `rule` is whose it is, empty for nobody's.
+    void startDmx(const dmx::FixtureSet& fixtures, const dmx::Payload& payload, double at,
+                  std::string_view rule);
 
     Transports& transports_;
     /// See `setNow`. Zero until the first round, which only matters offline: an effect started
@@ -157,6 +168,8 @@ private:
         double moment = 0.0;
         dmx::FixtureSet fixtures{};
         dmx::Payload payload;
+        /// The rule that sent it, or empty.
+        std::string rule;
     };
     /// When each goes, as things are now.
     double dueOf(const HeldMidi& held) const noexcept;

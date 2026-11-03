@@ -180,6 +180,11 @@ public:
     /// hazard, and a laser's clip is taken off by the runner.
     void releaseRule(std::string_view id, double now);
 
+    /// Forgets every lighting message still owed by the rules `stale` names, fires and
+    /// follow-ups both — for the runner putting those rules' lights back to parked
+    /// (`output::RuleSink::letGoOfLighting`), which a fade owed a beat later would undo.
+    void dropLighting(const std::function<bool(std::string_view)>& stale);
+
     /// Sends `message` as a follow-up of `ruleId` — what the runner releases a held note or a
     /// laser zone with, so the log shows the release beside the press it lets go of.
     void sendRelease(std::string_view ruleId, const Message& message) {

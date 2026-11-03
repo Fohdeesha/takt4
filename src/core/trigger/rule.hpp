@@ -619,6 +619,13 @@ public:
     /// kMaxQueued`). What a refused release would have let go of is then still held, and has to
     /// be let go of later.
     virtual bool send(const Message& message) = 0;
+    /// The same, from the rule `ruleId`. What `TriggerEngine` calls. A sink that keeps state per
+    /// rule — the lighting, which gives a rule's channels back when it stops sending
+    /// (`dmx::DmxEngine::release`) — takes this; the rest have only `send`.
+    virtual bool sendFrom(const Message& message, std::string_view ruleId) {
+        (void)ruleId;
+        return send(message);
+    }
 };
 
 /// One rule: *when → only if → send*.

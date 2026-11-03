@@ -55,25 +55,12 @@ inline constexpr std::size_t kArtDmxMaxSize = kArtDmxHeaderSize + kChannelsPerUn
 /// How fast a DMX512 gateway can be driven: *"For a gateway outputting DMX512, this will
 /// always be the maximum rate of 44Hz."*
 ///
-/// It is a ceiling and not a target. A node handed frames faster than it can pass them on
-/// drops them, and dropping them is the *good* case — some drop the wrong ones.
-/// `ArtNetPublisher` paces every universe of every node against this, and nothing in takt4 may
-/// send faster.
+/// A node handed frames faster than it can pass them on drops them, and dropping them is the
+/// *good* case — some drop the wrong ones. So nothing in takt4 sends faster; and
+/// `ArtNetPublisher` streams every universe to every node at this rate, changed or not, as a
+/// lighting desk does (why: see its class comment).
 inline constexpr double kMaxRefreshHz = 44.0;
 
-/// How long a universe may go unchanged before it is sent again anyway.
-///
-/// The specification's own words are *"an input that is active but not changing, will
-/// re-transmit the last valid ArtDmx packet at approximately 4-second intervals"*, followed
-/// immediately by the note that supersedes it: *"In order to converge the needs of Art-Net
-/// and sACN it is recommended that Art-Net devices actually use a re-transmit time of 800mS
-/// to 1000mS"*. The recommendation is what is implemented; 900 ms sits in the middle of it.
-///
-/// This is what tells a node the difference between "nothing is changing" and "the
-/// controller has gone away", and a node that decides the latter may hold, fade or release
-/// depending on how it is configured. A keep-alive is therefore not an optimisation to be
-/// switched off: it is the thing that keeps the lights on between drops.
-inline constexpr double kKeepAliveSeconds = 0.9;
 
 /// A 15-bit Port-Address: *"one of the 32,768 possible addresses to which a DMX frame can be
 /// directed ... composed of Net+Sub-Net+Universe"*.

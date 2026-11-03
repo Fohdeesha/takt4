@@ -184,6 +184,8 @@ address                               send                                does
 - A moving head's **how far it moves** keeps random positions and paths inside the range you set
 - A fixture with several heads moves them all. In a rule, tick which **heads** move, and slide **spread** to stagger them; a second rule can move the others
 - **panic** freezes the lights where they are; **stop** and quitting black them out
+- Muting, switching off or deleting a rule puts the channels it drove back to their parked levels: levels, colors and positions fade back over half a second, the rest switch at once. Channels another rule has driven since stay where it put them
+- Every universe goes to every node 44 times a second, whether anything changed or not
 
 ## Lasers ([Liberation](https://liberationlaser.com/))
 
@@ -192,7 +194,7 @@ address                               send                                does
 3. **add** patches a Liberation zone per laser, adds an Art-Net output to Liberation, switches Link on and adds a trigger per laser: every beat, 2 beats, bar and 2 bars to start. Tick **also move each laser** for a circle, figure 8, sweep or random spots, as far as you set from the center
 4. In Liberation, do what the prompt lists: DMX Input on with Art-Net, one Extended 32ch profile per laser at the addresses it shows, tempo source set to Ableton Link
 
-- A clip arms its zone and sets its intensity. **stop**, quitting, **panic** and **no signal** (the input silent for 4 s) disarm every laser. So does muting or switching off its rule. Unticking or deleting an Art-Net output sends it zeros for 3 s, so its lights go dark and its lasers disarm
+- A clip arms its zone and sets its intensity. **stop**, quitting, **panic** and **no signal** (the input silent for 4 s) disarm every laser. So does muting or switching off its rule. Muting a laser's movement brings it back to the center. Unticking or deleting an Art-Net output sends it zeros for 3 s, so its lights go dark and its lasers disarm
 - Nothing fires until takt4 has a lock
 
 ## Saving

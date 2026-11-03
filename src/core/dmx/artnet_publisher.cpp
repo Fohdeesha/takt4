@@ -174,12 +174,6 @@ ArtNetPublisher::setTargets(const std::vector<TargetConfig>& configs) {
                 going->target.sender->port() == config.port) {
                 target = std::move(going->target);
                 leaving_.erase(going);
-                // What it was last sent is its farewell's zeros, whatever the lighting it last
-                // had says: sent the lighting again at the next frame, not at the keep-alive —
-                // it waited up to 0.9 s dark.
-                for (Paced& paced : target.paced) {
-                    paced.lastRevision = kNeverSent;
-                }
                 break;
             }
         }
@@ -264,7 +258,7 @@ ArtNetPublisher::Paced& ArtNetPublisher::pacedFor(Target& target, PortAddress un
             return paced;
         }
     }
-    target.paced.push_back(Paced{universe, -1.0, 0, false});
+    target.paced.push_back(Paced{universe, -1.0, false});
     return target.paced.back();
 }
 
@@ -355,7 +349,6 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
                 continue;
             }
             std::span<const std::uint8_t> levels = engine.levels(universe);
-            std::uint64_t revision = engine.revision(universe);
             // Not a released one: its history still holds the lit frames from before it was
             // dropped, and "dark, now" is the whole point of releasing it.
             if (lag > 0.0 && !released) {
@@ -365,31 +358,15 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
                 // instant's, whichever way the subtraction rounded.
                 if (const Frame* const past = frameAt(universe, now - lag + 1e-9)) {
                     levels = std::span<const std::uint8_t>(past->levels);
-                    revision = past->revision;
                 }
             }
             if (levels.empty()) {
                 continue;
             }
 
+            // **Every frame period, moved or not** — see the class comment. The first frame
+            // goes at once, and the 44 Hz period after a frame was already passed over above.
             Paced& paced = pacedFor(target, universe);
-            const double since = now - paced.lastSentAt;
-
-            bool due = false;
-            if (!paced.everSent) {
-                // The first frame goes out at once. A node that has just been pointed at
-                // should light up now, not within a keep-alive.
-                due = true;
-            } else if (revision != paced.lastRevision) {
-                // Something moved. Send it as soon as the 44 Hz ceiling allows — and no
-                // sooner, because a thousand frames a second is how a fade becomes a stutter.
-                due = since >= kMinFramePeriod;
-            } else {
-                due = since >= kKeepAliveSeconds;
-            }
-            if (!due) {
-                continue;
-            }
 
             // Always the full 512 channels. The specification allows any even length from 2
             // and explicitly blesses the other choice — *"products which convert Art-Net to
@@ -397,15 +374,12 @@ std::size_t ArtNetPublisher::publish(const DmxEngine& engine, double now) {
             // node has certainly been tested against. At 44 Hz it is 23 KB/s per universe,
             // which is not a number worth optimising on a wired rig and not a protocol worth
             // running on a wireless one.
-            // **A frame that did not go is not the frame sent**: the 44 Hz pacing counts from the
-            // attempt, and the lighting it carried is tried again at the next frame. It used to be
-            // recorded as sent, so a static look a failing node missed waited for the 0.9 s
-            // keep-alive.
+            // The 44 Hz pacing counts from the attempt, sent or not: a node that refused this
+            // frame is tried again at the next, which carries the lighting as it is by then.
             const bool went = target.sender->sendDmx(universe, levels);
             if (went) {
                 ++sent_;
                 ++datagrams;
-                paced.lastRevision = revision;
             } else {
                 ++failed_;
             }
@@ -501,7 +475,6 @@ std::size_t ArtNetPublisher::flush(const DmxEngine& engine, double now) {
                 ++failed_;
             }
             paced.lastSentAt = now;
-            paced.lastRevision = engine.revision(universe);
             paced.everSent = true;
         }
     }

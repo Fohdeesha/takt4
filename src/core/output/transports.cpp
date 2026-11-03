@@ -626,8 +626,8 @@ void Transports::advance(double now, const tracking::TempoState& state, bool run
 
     // The lighting half, and the reason it is here rather than in `publish`: a fade is not
     // waiting for a beat, it is waiting for a clock. Every running effect is advanced and the
-    // frames that are due go out — at most 44 times a second per universe, and at least once
-    // per keep-alive, both of which `ArtNetPublisher` decides.
+    // frames that are due go out — every universe 44 times a second, which `ArtNetPublisher`
+    // paces.
     //
     // Ticked even with no Art-Net target configured. It costs nothing with no patch, and with
     // a patch and no node it keeps the levels a UI shows honest, so that an operator building

@@ -373,7 +373,7 @@ public:
     /// **An application starts this once and leaves it running.** It used to start and stop with
     /// the tracker, so before Start nothing was
     /// transmitted at all: the patch editor's IDENTIFY and TEST changed a buffer nobody sent, a
-    /// Stop to change input dropped the Art-Net keep-alive so nodes fell back to their failsafe,
+    /// Stop to change input stopped the Art-Net stream so nodes fell back to their failsafe,
     /// and a control surface's PANIC reached rules that could not hear it. The tracker's Start
     /// and Stop reach this as `setTracking`.
     ///
@@ -840,6 +840,10 @@ private:
     /// full queue — let go of again and sent at once. For PANIC,
     /// Stop and quit, which promise to leave nothing on.
     void releaseRefused();
+    /// The lighting of the rules `stale` names back to parked: what they still owe dropped, and
+    /// every channel one of them drove last faded back (`RuleSink::letGoOfLighting`). For a rule
+    /// muted, switched off or deleted, and for every rule when a show is loaded.
+    void letGoOfLighting(const std::function<bool(std::string_view)>& stale, double now);
     /// Every zone has just been disarmed by the engine — PANIC, Stop, quit, no signal.
     void forgetZones() noexcept { heldZones_.clear(); }
     /// **The input gone quiet or gone altogether**: the lasers

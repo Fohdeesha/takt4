@@ -2007,7 +2007,8 @@ TEST_CASE("the outputs run with the tracker stopped", "[output][dmx]") {
         CHECK(sawRgb(node, 0, 0, 0));
         REQUIRE(runner.sync());
         CHECK_FALSE(runner.tracking());
-        // And the keep-alive: frames keep coming with nothing moving.
+        // And the stream: frames keep coming at 44 Hz with nothing moving — nearly a hundred in
+        // 2.2 s, where a frame only on change and every 0.9 s was two or three.
         int frames = 0;
         const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds{2200};
         while (std::chrono::steady_clock::now() < until) {
@@ -2015,7 +2016,7 @@ TEST_CASE("the outputs run with the tracker stopped", "[output][dmx]") {
                 ++frames;
             }
         }
-        CHECK(frames >= 2);
+        CHECK(frames >= 40);
     }
 
     SECTION("and PANIC freezes rather than blacking out") {
@@ -2357,7 +2358,7 @@ TEST_CASE("STOP leaves the lights out, fires nothing after it and lets go of wha
     listener.join();
 
     CHECK(dark);
-    CHECK(frames >= 2); // the keep-alive: still sent, still dark
+    CHECK(frames >= 30); // the stream: still sent, 44 a second, still dark
     CHECK(litAfter == 0);
     const std::lock_guard<std::mutex> lock(mutex);
     int pressesAfter = 0;
@@ -3162,6 +3163,132 @@ std::vector<std::string> releasesLogged(OutputRunner& runner) {
 }
 
 } // namespace
+
+namespace {
+
+/// A random spot's worth of movement on the zone, at once: the Liberation preset's "random spots",
+/// fixed so a test can find it.
+Rule::Config spotsRule() {
+    Rule::Config rule;
+    rule.id = "spots";
+    rule.trigger = takt4::trigger::Trigger::Manual;
+    rule.sendKind = takt4::trigger::Message::Kind::Dmx;
+    rule.dmx.effect = takt4::dmx::EffectKind::Position;
+    rule.dmx.fixtures = {"laser"};
+    rule.dmx.pan = takt4::trigger::fixedNumber(90);
+    rule.dmx.tilt = takt4::trigger::fixedNumber(20);
+    rule.dmx.unit = takt4::trigger::DelayUnit::Milliseconds;
+    rule.dmx.durationSeconds = 0.0;
+    return rule;
+}
+
+/// The lamp at a level, by a rule of its own.
+Rule::Config lampRule() {
+    Rule::Config rule;
+    rule.id = "lamp";
+    rule.trigger = takt4::trigger::Trigger::Manual;
+    rule.sendKind = takt4::trigger::Message::Kind::Dmx;
+    rule.dmx.effect = takt4::dmx::EffectKind::Level;
+    rule.dmx.fixtures = {"lamp"};
+    rule.dmx.level = takt4::trigger::fixedNumber(180);
+    rule.dmx.unit = takt4::trigger::DelayUnit::Milliseconds;
+    rule.dmx.durationSeconds = 0.0;
+    return rule;
+}
+
+/// Arm, Position X coarse and fine, Position Y coarse and fine, and the lamp.
+std::array<std::uint8_t, 6> zoneMoveAndLamp(const OutputRunner& runner) {
+    return runner.inspect([](const auto&, const Transports& transports, const auto&) {
+        const auto levels = transports.dmx().levels(0);
+        return std::array<std::uint8_t, 6>{levels[0],  levels[11], levels[12],
+                                           levels[13], levels[14], levels[99]};
+    });
+}
+
+/// Waits up to `seconds` for `levels` to be what the runner shows.
+bool cameTo(const OutputRunner& runner, const std::array<std::uint8_t, 6>& levels, double seconds) {
+    const auto until = std::chrono::steady_clock::now() +
+                       std::chrono::milliseconds{static_cast<int>(seconds * 1000.0)};
+    while (std::chrono::steady_clock::now() < until) {
+        if (zoneMoveAndLamp(runner) == levels) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    INFO("arm, X, X fine, Y, Y fine, lamp: "
+         << int{zoneMoveAndLamp(runner)[0]} << " " << int{zoneMoveAndLamp(runner)[1]} << " "
+         << int{zoneMoveAndLamp(runner)[2]} << " " << int{zoneMoveAndLamp(runner)[3]} << " "
+         << int{zoneMoveAndLamp(runner)[4]} << " " << int{zoneMoveAndLamp(runner)[5]});
+    CHECK(zoneMoveAndLamp(runner) == levels);
+    return zoneMoveAndLamp(runner) == levels;
+}
+
+/// Armed, the spot 90 % across and 20 % down the zone's travel, the lamp at its rule's level.
+bool spotAndLamp(const OutputRunner& runner) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < until) {
+        const std::array<std::uint8_t, 6> now = zoneMoveAndLamp(runner);
+        if (now[0] == 255 && now[1] == 230 && now[3] == 51 && now[5] == 180) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    return false;
+}
+
+} // namespace
+
+TEST_CASE("a rule that stops sending puts the lights it drove back where they are parked",
+          "[output][dmx][release]") {
+    // Muting a laser zone's "random spots" left the zone's content wherever its last spot was:
+    // DMX is a state, and the muted rule was the only thing that would ever have moved it again.
+    // The zone's position now glides back to its parked middle, and what other rules drive — the
+    // clip that arms the zone, a lamp — stays where they put it.
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, zoneBesideLamp());
+    runner.start();
+    runner.post(OutputCommand::rules({heldClip(), spotsRule(), lampRule()}));
+    runner.post(OutputCommand::testRule("clip"));
+    runner.post(OutputCommand::testRule("spots"));
+    runner.post(OutputCommand::testRule("lamp"));
+    REQUIRE(runner.sync());
+    REQUIRE(spotAndLamp(runner));
+
+    SECTION("muted from the editor's dot") {
+        runner.post(OutputCommand::ruleMuted("spots", true));
+    }
+    SECTION("muted from a control surface") {
+        runner.setRuleMuted("spots", true);
+    }
+    SECTION("switched off") {
+        runner.post(OutputCommand::ruleEnabled("spots", false));
+    }
+    SECTION("deleted") {
+        runner.post(OutputCommand::rules({heldClip(), lampRule()}));
+    }
+    REQUIRE(runner.sync());
+    // Still armed with its clip, the lamp where its rule put it; the content back in the middle.
+    CHECK(cameTo(runner, {255, 128, 0, 128, 0, 180}, takt4::dmx::DmxEngine::kReleaseSeconds + 1.0));
+    runner.stop();
+}
+
+TEST_CASE("a show loaded puts every light the last one drove back where it is parked",
+          "[output][dmx][release]") {
+    auto engine = std::make_unique<BeatEngine>(weights(), stateSpace(), particleOptions());
+    OutputRunner runner(*engine, zoneBesideLamp());
+    runner.start();
+    runner.post(OutputCommand::rules({heldClip(), spotsRule(), lampRule()}));
+    runner.post(OutputCommand::testRule("clip"));
+    runner.post(OutputCommand::testRule("spots"));
+    runner.post(OutputCommand::testRule("lamp"));
+    REQUIRE(runner.sync());
+    REQUIRE(spotAndLamp(runner));
+
+    runner.post(OutputCommand::rules({heldClip(), spotsRule(), lampRule()}, true));
+    REQUIRE(runner.sync());
+    CHECK(cameTo(runner, {0, 128, 0, 128, 0, 0}, takt4::dmx::DmxEngine::kReleaseSeconds + 1.0));
+    runner.stop();
+}
 
 TEST_CASE("a rule that stops sending lets go of what it holds", "[output][trigger][release]") {
     // Muting a rule by its dot in the rules editor could leave its laser playing, and the same

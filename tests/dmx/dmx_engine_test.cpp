@@ -2,6 +2,7 @@
 #include "core/dmx/dmx_engine.hpp"
 #include "core/dmx/effect.hpp"
 #include "core/dmx/fixture.hpp"
+#include "core/dmx/liberation.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -10,6 +11,8 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 using takt4::dmx::Color;
@@ -575,7 +578,7 @@ TEST_CASE("a re-patch re-parks what changed and releases what is gone", "[dmx][e
             const std::span<const std::uint8_t> dark = rig.levels(3);
             REQUIRE(dark.size() == 512);
             CHECK(std::all_of(dark.begin(), dark.end(), [](std::uint8_t v) { return v == 0; }));
-            // A fresh frame every round, so a sender paces it at its ceiling, not its keep-alive.
+            // A fresh frame every round: its revision moves on each tick.
             const std::uint64_t first = rig.revision(3);
             rig.tick(10.0);
             const std::uint64_t second = rig.revision(3);
@@ -986,4 +989,167 @@ TEST_CASE("a channel test that ends on a par a colour rule moved leaves the rule
     engine.tick(1.6); // the test has let go
     CHECK(engine.levels(0)[0] == 0);
     CHECK(engine.levels(0)[2] == 255);
+}
+
+namespace {
+
+Payload position(float pan, float tilt, double seconds = 0.0) {
+    Payload payload;
+    payload.kind = EffectKind::Position;
+    payload.pan = pan;
+    payload.tilt = tilt;
+    payload.durationSeconds = static_cast<float>(seconds);
+    payload.curve = Curve::Linear;
+    return payload;
+}
+
+/// The rule `who`, and no other.
+auto only(std::string who) {
+    return [who = std::move(who)](std::string_view id) { return id == who; };
+}
+
+} // namespace
+
+TEST_CASE("a released rule's channels go back to their parked levels", "[dmx][engine][release]") {
+    DmxEngine engine;
+    engine.setPatch({head16("head", 1)});
+    engine.start(0b1, position(1.0f, 0.0f), 0.0, "spots");
+    engine.start(0b1, level(Role::Dimmer, 200), 0.0, "dim");
+    engine.tick(0.5);
+    REQUIRE(at(engine, 0, 1) == 255); // pan at the end of its travel
+    REQUIRE(at(engine, 0, 2) == 255);
+    REQUIRE(at(engine, 0, 3) == 0);
+    REQUIRE(at(engine, 0, 6) == 200);
+
+    engine.release(only("spots"), 1.0);
+
+    SECTION("its position glides back, the fine bytes with it") {
+        engine.tick(1.0 + DmxEngine::kReleaseSeconds / 2.0);
+        CHECK(at(engine, 0, 1) > 128);
+        CHECK(at(engine, 0, 1) < 255);
+        engine.tick(1.0 + DmxEngine::kReleaseSeconds);
+        CHECK(at(engine, 0, 1) == 128);
+        CHECK(at(engine, 0, 2) == 0);
+        CHECK(at(engine, 0, 3) == 128);
+        CHECK(at(engine, 0, 4) == 0);
+    }
+
+    SECTION("and nothing another rule drove moves") {
+        engine.tick(2.0);
+        CHECK(at(engine, 0, 6) == 200);
+        CHECK(at(engine, 0, 7) == 255); // the parked shutter, nobody's
+    }
+
+    SECTION("released twice, the second finds nothing of its") {
+        engine.tick(2.0);
+        engine.start(0b1, level(Role::Dimmer, 90), 2.0, "dim");
+        engine.release(only("spots"), 2.5);
+        engine.tick(4.0);
+        CHECK(at(engine, 0, 1) == 128);
+        CHECK(at(engine, 0, 6) == 90);
+    }
+}
+
+TEST_CASE("a channel another rule has driven since stays where that rule put it",
+          "[dmx][engine][release]") {
+    DmxEngine engine;
+    engine.setPatch({head16("head", 1)});
+    engine.start(0b1, position(1.0f, 1.0f), 0.0, "a");
+    engine.start(0b1, position(0.0f, 0.0f), 0.1, "b");
+    engine.release(only("a"), 0.2);
+    engine.tick(2.0);
+    CHECK(at(engine, 0, 1) == 0);
+    CHECK(at(engine, 0, 3) == 0);
+}
+
+TEST_CASE("a released rule's running effect stops, and its channels still go back",
+          "[dmx][engine][release]") {
+    DmxEngine engine;
+    engine.setPatch({head16("head", 1)});
+    engine.start(0b1, position(1.0f, 1.0f, 2.0), 0.0, "slow");
+    engine.tick(0.5);
+    REQUIRE(at(engine, 0, 1) > 128);
+    engine.release(only("slow"), 0.5);
+    engine.tick(3.0);
+    CHECK(at(engine, 0, 1) == 128);
+    CHECK(at(engine, 0, 3) == 128);
+    CHECK(engine.running() == 0);
+}
+
+TEST_CASE("an effect nobody's rule started is never released", "[dmx][engine][release]") {
+    DmxEngine engine;
+    engine.setPatch({head16("head", 1)});
+    engine.start(0b1, position(1.0f, 1.0f), 0.0); // fired by hand
+    engine.release([](std::string_view) { return true; }, 1.0);
+    engine.tick(2.0);
+    CHECK(at(engine, 0, 1) == 255);
+    CHECK(at(engine, 0, 3) == 255);
+}
+
+TEST_CASE("a laser zone's movement released leaves it armed and centred, and its clip released "
+          "disarms it at once",
+          "[dmx][engine][release][liberation]") {
+    namespace liberation = takt4::dmx::liberation;
+    DmxEngine engine;
+    engine.setPatch({liberation::zone("laser 1", 0, 1)});
+    Payload clip;
+    clip.kind = EffectKind::Clip;
+    clip.clip = static_cast<std::uint16_t>(1 + liberation::indexOf({3, 1}));
+    clip.level = 255;
+    engine.start(0b1, clip, 0.0, "clips");
+    engine.start(0b1, position(0.9f, 0.2f), 0.0, "spots");
+    engine.tick(0.1);
+    REQUIRE(at(engine, 0, 1) == 255); // armed
+    REQUIRE(at(engine, 0, 12) != 128);
+
+    engine.release(only("spots"), 1.0);
+    engine.tick(1.0 + DmxEngine::kReleaseSeconds);
+    CHECK(at(engine, 0, 1) == 255);  // still armed
+    CHECK(at(engine, 0, 2) == 255);  // still lit
+    CHECK(at(engine, 0, 4) != 0);    // its clip still selected
+    CHECK(at(engine, 0, 12) == 128); // Position X, centred
+    CHECK(at(engine, 0, 13) == 0);
+    CHECK(at(engine, 0, 14) == 128); // Position Y, centred
+    CHECK(at(engine, 0, 15) == 0);
+
+    engine.release(only("clips"), 2.0);
+    // A switch, at once: a clip number faded would play every clip between.
+    CHECK(at(engine, 0, 1) == 0);
+    CHECK(at(engine, 0, 3) == 0);
+    CHECK(at(engine, 0, 4) == 0);
+    // The intensity fades.
+    engine.tick(2.0 + DmxEngine::kReleaseSeconds / 2.0);
+    CHECK(at(engine, 0, 2) > 0);
+    CHECK(at(engine, 0, 2) < 255);
+    engine.tick(2.0 + DmxEngine::kReleaseSeconds);
+    CHECK(at(engine, 0, 2) == 0);
+}
+
+TEST_CASE("an LED par's colour and brightness go back as parked", "[dmx][engine][release]") {
+    DmxEngine engine;
+    engine.setPatch({rgb("par", 1)});
+    Payload red;
+    red.kind = EffectKind::Color;
+    red.color = Color{255, 0, 0};
+    red.curve = Curve::Linear;
+    engine.start(0b1, red, 0.0, "red");
+    engine.start(0b1, level(Role::Dimmer, 0), 0.1, "dim");
+    engine.tick(0.2);
+    REQUIRE(at(engine, 0, 1) == 0); // red, dimmed out
+
+    SECTION("the dimmer's rule released: its brightness is back, in the red rule's colour") {
+        engine.release(only("dim"), 1.0);
+        engine.tick(1.0 + DmxEngine::kReleaseSeconds);
+        CHECK(at(engine, 0, 1) == 255);
+        CHECK(at(engine, 0, 2) == 0);
+    }
+
+    SECTION("the colour's rule released: dark, as parked, and a colour rule lights it again") {
+        engine.release(only("red"), 1.0);
+        engine.release(only("dim"), 1.0);
+        engine.tick(1.0 + DmxEngine::kReleaseSeconds);
+        CHECK(at(engine, 0, 1) == 0);
+        engine.start(0b1, red, 2.0, "red");
+        CHECK(at(engine, 0, 1) == 255);
+    }
 }
