@@ -1310,13 +1310,25 @@ private:
     /// class, but a beat observer is the obvious next thing to give it.
     output::OutputRunner runner_;
     /// The beat dots on the rig's clock (`publishBeatDots`): the newest fired beat taken, the
-    /// beat the dots show while it is the latest the rig has played, and the timer that moves
-    /// them on at the next one's due time.
+    /// beat the dots show while it is the latest the rig has played, the beats fired and not yet
+    /// played, earliest first, and the timer that moves the dots on at the earliest one's time.
     std::function<output::OutputRunner::ShownBeat()> shownBeatSource_;
     std::uint64_t dotSerial_ = 0;
     std::uint32_t dotBeatInBar_ = 0;
     std::uint64_t dotBars_ = 0;
+    struct DotBeat {
+        double due = 0.0;
+        std::uint32_t beatInBar = 0;
+        std::uint64_t bars = 0;
+    };
+    std::deque<DotBeat> dotsDue_;
+    /// Room for every beat that can be waiting: an output's delay fires a beat at most a second
+    /// early, which is five beats at 300 BPM.
+    static constexpr std::size_t kMaxDotsDue = 16;
     slint::Timer dotTimer_;
+    /// Lights the newest of the waiting beats whose time has come, and sets the timer for the
+    /// next one's.
+    void showDueDots();
 
     /// The machine's MIDI inputs, each opened once however many things listen to it — the control
     /// input below, and a MIDI clock being followed. **After `runner_`**, whose Link clock stamps

@@ -4654,6 +4654,7 @@ void WindowController::publishBeatDots(const tracking::TempoState& state) {
         // Stopped, reset, or no beat yet: nothing fired before this holds — after a silence
         // either, when it waits for a beat again and the last one fired would be lit over "no beat".
         dotBeatInBar_ = 0;
+        dotsDue_.clear();
         dotTimer_.stop();
         return;
     }
@@ -4661,28 +4662,52 @@ void WindowController::publishBeatDots(const tracking::TempoState& state) {
         shownBeatSource_ ? shownBeatSource_() : runner_.shownBeat();
     if (shown.serial != dotSerial_) {
         dotSerial_ = shown.serial;
-        const auto show = [this](std::uint32_t beatInBar, std::uint64_t bars) {
-            dotBeatInBar_ = beatInBar;
-            dotBars_ = bars;
-            window_->set_beat_in_bar(static_cast<int>(beatInBar));
-            window_->set_bars(static_cast<int>(bars));
-        };
         // Ahead of its time, as a locked beat is whenever the latency leaves room: lit when it is
-        // played, by a timer of its own rather than on whichever redraw comes after.
-        const double wait = shown.due - runner_.elapsed();
-        if (wait > 0.001) {
-            dotTimer_.start(slint::TimerMode::SingleShot,
-                            std::chrono::milliseconds(std::llround(wait * 1000.0)),
-                            [show, shown] { show(shown.beatInBar, shown.bars); });
-        } else {
-            dotTimer_.stop();
-            show(shown.beatInBar, shown.bars);
+        // played, by the timer rather than on whichever redraw comes after. **Queued behind the
+        // beats still waiting, never in their place**: an output's negative delay fires each beat
+        // that much early, and a row at -520 ms fires it more than a beat early at 128 BPM. With
+        // one timer restarted by every beat, the timer never fired, and from the lock on the dots
+        // stayed on the last beat heard. One played no later than a beat still waiting takes that
+        // one's place — the latency was turned down between them.
+        while (!dotsDue_.empty() && dotsDue_.back().due >= shown.due) {
+            dotsDue_.pop_back();
         }
+        dotsDue_.push_back(DotBeat{shown.due, shown.beatInBar, shown.bars});
+        if (dotsDue_.size() > kMaxDotsDue) {
+            dotsDue_.pop_front();
+        }
+        showDueDots();
+    } else if (!dotsDue_.empty() && !dotTimer_.running()) {
+        showDueDots();
     }
     if (dotBeatInBar_ != 0) {
         window_->set_beat_in_bar(static_cast<int>(dotBeatInBar_));
         window_->set_bars(static_cast<int>(dotBars_));
     }
+}
+
+void WindowController::showDueDots() {
+    const double now = runner_.elapsed();
+    bool played = false;
+    while (!dotsDue_.empty() && dotsDue_.front().due - now <= 0.001) {
+        dotBeatInBar_ = dotsDue_.front().beatInBar;
+        dotBars_ = dotsDue_.front().bars;
+        dotsDue_.pop_front();
+        played = true;
+    }
+    if (played) {
+        window_->set_beat_in_bar(static_cast<int>(dotBeatInBar_));
+        window_->set_bars(static_cast<int>(dotBars_));
+    }
+    if (dotsDue_.empty()) {
+        dotTimer_.stop();
+        return;
+    }
+    // The earliest waiting beat's own time, which no beat fired after it moves.
+    const double wait = dotsDue_.front().due - now;
+    dotTimer_.start(slint::TimerMode::SingleShot,
+                    std::chrono::milliseconds(std::max<long long>(1, std::llround(wait * 1000.0))),
+                    [this] { showDueDots(); });
 }
 
 void WindowController::publishLevels() {

@@ -2658,6 +2658,118 @@ TEST_CASE("the beat dots move when the rig plays the beat, not when the window h
     CHECK(controller.window().get_beat_in_bar() == heard);
 }
 
+TEST_CASE("the beat dots follow beats fired more than a beat before the rig plays them", "[ui]") {
+    // A locked beat is fired as far ahead as the earliest output's delay asks, and a row at
+    // -520 ms fires each one 0.52 s before it is played: more than a beat at 128 BPM. Each beat
+    // restarted the one timer the dots were waiting on before it could fire, so from the lock on
+    // the dots stayed on the last beat heard while hunting, for as long as the lock held, and the
+    // BPM went on moving beside them.
+    LiveTracker tracker(kWeights, kStateSpace);
+    WindowController controller(tracker);
+    using Shown = takt4::output::OutputRunner::ShownBeat;
+    Shown shown;
+    controller.setShownBeatSource([&shown] { return shown; });
+    const auto redraw = [&controller](const takt4::tracking::TempoState& drawn) {
+        takt4::ui::publishTempoState(controller.window(), drawn);
+        controller.publishBeatDots(drawn);
+    };
+    TempoState state;
+    state.bpm = 128.0;
+    state.locked = true;
+    state.beatsPerBar = 4;
+    state.beatInBar = 2; // the tracker's own, which the fired beats are drawn over
+    state.bars = 9;
+
+    const auto runnerNow = [&controller] { return controller.outputs().elapsed(); };
+    constexpr double kPeriod = 60.0 / 128.0;
+    constexpr double kAhead = 0.52;
+    constexpr int kBeats = 8;
+
+    // A beat heard while hunting, its time already come: lit at once.
+    const double start = runnerNow();
+    std::uint64_t serial = 1;
+    shown = Shown{start - 0.1, start - 0.05, 3, 9, serial};
+    redraw(state);
+    REQUIRE(controller.window().get_beat_in_bar() == 3);
+
+    // Then locked: beat k fired a period after the one before, and played 0.52 s after it fired.
+    struct Fired {
+        double due;
+        int beatInBar;
+    };
+    std::vector<Fired> fired;
+    struct Seen {
+        double from; // before the timers ran
+        double to;   // after the beat lit was read
+        int lit;
+    };
+    std::vector<Seen> seen;
+    std::uint32_t beat = 4;
+    std::uint64_t bars = 9;
+    const double until = start + kBeats * kPeriod + kAhead + 0.2;
+    while (runnerNow() < until) {
+        const int k = static_cast<int>(fired.size()) + 1;
+        if (k <= kBeats && runnerNow() >= start + k * kPeriod) {
+            const double due = start + k * kPeriod + kAhead;
+            if (beat == 1) {
+                ++bars;
+            }
+            shown = Shown{due, due, beat, bars, ++serial};
+            fired.push_back(Fired{due, static_cast<int>(beat)});
+            beat = beat % 4 + 1;
+        }
+        const double from = runnerNow();
+        slint::platform::update_timers_and_animations();
+        redraw(state);
+        const int lit = controller.window().get_beat_in_bar();
+        seen.push_back(Seen{from, runnerNow(), lit});
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    REQUIRE(fired.size() == static_cast<std::size_t>(kBeats));
+
+    // Each beat lit from its own time until the next one's, and not before: checked everywhere
+    // but within a margin either side of a beat's time, for a redraw's lateness — a margin from
+    // before the timers ran to after the dot was read, so a runner that stalls mid-redraw is not
+    // counted against the dots.
+    constexpr double kMargin = 0.06;
+    int wrong = 0;
+    int checked = 0;
+    std::set<std::size_t> shownBeats;
+    for (const Seen& sample : seen) {
+        int expected = 3;
+        std::optional<std::size_t> current;
+        bool nearATime = false;
+        for (std::size_t i = 0; i < fired.size(); ++i) {
+            nearATime = nearATime ||
+                        (fired[i].due > sample.from - kMargin && fired[i].due < sample.to + kMargin);
+            if (fired[i].due <= sample.from) {
+                expected = fired[i].beatInBar;
+                current = i;
+            }
+        }
+        if (nearATime) {
+            continue;
+        }
+        ++checked;
+        if (sample.lit != expected) {
+            if (wrong < 5) {
+                UNSCOPED_INFO("at " << (sample.from - start) << " s beat " << sample.lit
+                                    << " was lit, not " << expected);
+            }
+            ++wrong;
+        } else if (current) {
+            shownBeats.insert(*current);
+        }
+    }
+    INFO(checked << " redraws checked, " << wrong << " wrong; " << shownBeats.size() << " of "
+                 << fired.size() << " beats lit");
+    // A redraw every 5 ms, or every 16 where the sleep is the system tick's: either way some
+    // tens in every beat.
+    CHECK(checked > 100);
+    CHECK(wrong == 0);
+    CHECK(shownBeats.size() == fired.size());
+}
+
 TEST_CASE("a settings file from before the mono tick opens on the stereo pair and says so",
           "[ui]") {
     LiveTracker tracker(kWeights, kStateSpace);
