@@ -49,6 +49,7 @@ using takt4::output::OutputCommand;
 using takt4::output::OutputRunner;
 using takt4::output::Transports;
 using takt4::testing::LateRounds;
+using takt4::testing::LoopbackDrain;
 using takt4::testing::LoopbackReceiver;
 using takt4::trigger::Rule;
 
@@ -512,10 +513,12 @@ TEST_CASE("a rule fires from the real beats, on the output thread", "[output][tr
     REQUIRE(runner.triggers().ruleCount() == 1);
     REQUIRE(runner.triggers().rule(0).valid());
 
+    LoopbackDrain drain(receiver); // read as it arrives: see LoopbackDrain
     runner.start();
     feedExcerpt(*engine);
     waitForBeats(runner, kSentBeats);
     runner.stop();
+    const std::vector<std::string> arrived = drain.stop();
 
     // The excerpt has five downbeats, all of them after the lock, and the rule is on downbeats.
     CHECK(runner.triggers().rule(0).fires() == kSentDownbeats);
@@ -531,15 +534,12 @@ TEST_CASE("a rule fires from the real beats, on the output thread", "[output][tr
     // design — one OSC target, both namespaces — and a test that assumed otherwise would be
     // asserting an ordering nothing promises.
     std::uint64_t matched = 0;
-    std::uint64_t seen = 0;
-    for (std::string datagram = receiver.receive(); !datagram.empty();
-         datagram = receiver.receive()) {
-        ++seen;
+    for (const std::string& datagram : arrived) {
         if (datagram.find("/composition/layers/1/clips/") != std::string::npos) {
             ++matched;
         }
     }
-    INFO(seen << " datagrams arrived in all");
+    INFO(arrived.size() << " datagrams arrived in all");
     CHECK(matched == kSentDownbeats);
 }
 
@@ -639,6 +639,7 @@ TEST_CASE("the octave fold reaches the wire, not just the readout", "[output][tr
         rule.address = "/flash";
         rule.sendValue = false;
         runner.post(OutputCommand::rules({rule}));
+        LoopbackDrain drain(receiver); // read as it arrives: see LoopbackDrain
         runner.start();
         if (halve) {
             REQUIRE(engine->post(takt4::engine::Command::halve()));
@@ -646,10 +647,10 @@ TEST_CASE("the octave fold reaches the wire, not just the readout", "[output][tr
         feedExcerpt(*engine);
         waitForBeats(runner, halve ? kSentBeats / 2 : kSentBeats);
         runner.stop();
+        const std::vector<std::string> arrived = drain.stop();
 
         std::uint64_t flashes = 0;
-        for (std::string datagram = receiver.receive(); !datagram.empty();
-             datagram = receiver.receive()) {
+        for (const std::string& datagram : arrived) {
             if (datagram.find("/flash") != std::string::npos) {
                 ++flashes;
             }

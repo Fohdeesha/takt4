@@ -11,12 +11,16 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <span>
 #include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #include <winsock2.h>
@@ -289,6 +293,52 @@ private:
     int socket_ = -1;
 #endif
     std::uint16_t port_ = 0;
+};
+
+/// Reads a `LoopbackReceiver` on a thread of its own from construction to `stop()`, so a test
+/// that counts everything a run sent does not depend on the socket holding all of it unread.
+/// A Linux socket holds about 220 small datagrams by default — the kernel charges each its whole
+/// buffer, not its bytes — and a run under a sanitizer sends more than that: the newest were
+/// dropped, and a count of the rule's datagrams came up a few short.
+///
+/// The thread uses no Catch2 macro, which is not safe off the test's own thread.
+class LoopbackDrain {
+public:
+    explicit LoopbackDrain(LoopbackReceiver& receiver)
+        : receiver_(receiver), thread_([this] { run(); }) {}
+
+    ~LoopbackDrain() { (void)stop(); }
+
+    LoopbackDrain(const LoopbackDrain&) = delete;
+    LoopbackDrain& operator=(const LoopbackDrain&) = delete;
+
+    /// Everything that arrived, in order, up to the first half-second with nothing more.
+    std::vector<std::string> stop() {
+        if (thread_.joinable()) {
+            stopping_.store(true, std::memory_order_relaxed);
+            thread_.join();
+            for (std::string datagram = receiver_.receive(); !datagram.empty();
+                 datagram = receiver_.receive()) {
+                datagrams_.push_back(std::move(datagram));
+            }
+        }
+        return datagrams_;
+    }
+
+private:
+    void run() {
+        while (!stopping_.load(std::memory_order_relaxed)) {
+            std::string datagram = receiver_.receive();
+            if (!datagram.empty()) {
+                datagrams_.push_back(std::move(datagram));
+            }
+        }
+    }
+
+    LoopbackReceiver& receiver_;
+    std::atomic<bool> stopping_{false};
+    std::vector<std::string> datagrams_; // the thread's until it is joined
+    std::thread thread_;                 // last: it starts at once, on everything above
 };
 
 } // namespace takt4::testing
